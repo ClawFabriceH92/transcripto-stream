@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.WavFileWriter
+import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -65,6 +66,10 @@ class StreamViewModel(
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
 
+    // Moteur sélectionné : "google" (qualité Android, cloud) ou "whisper" (100% local)
+    private val _selectedEngine = MutableStateFlow("google")
+    val selectedEngine: StateFlow<String> = _selectedEngine.asStateFlow()
+
     private val _liveText = MutableStateFlow("")
     val liveText: StateFlow<String> = _liveText.asStateFlow()
 
@@ -90,6 +95,7 @@ class StreamViewModel(
 
     // ---- Internes ----
     private val engine = WhisperStreamEngine()
+    private var googleEngine: GoogleSpeechEngine? = null
     private var recorder: PcmAudioRecorder? = null
     private var wavWriter: WavFileWriter? = null
     private var activeRecordingFile: File? = null
@@ -138,6 +144,12 @@ class StreamViewModel(
         if (_isStreaming.value) stopStreaming() else startStreaming()
     }
 
+    fun setEngine(engine: String) {
+        if (!_isStreaming.value && (engine == "google" || engine == "whisper")) {
+            _selectedEngine.value = engine
+        }
+    }
+
     fun startStreaming() {
         if (_modelState.value !is ModelState.Ready || _isStreaming.value) return
         validatedText = ""
@@ -146,6 +158,34 @@ class StreamViewModel(
         _lastError.value = null
         _transcriptionCount.value = 0
         _lastWindowText.value = ""
+
+        if (_selectedEngine.value == "google") {
+            startGoogleStreaming()
+        } else {
+            startWhisperStreaming()
+        }
+    }
+
+    private fun startGoogleStreaming() {
+        val g = GoogleSpeechEngine(
+            appContext,
+            onPartial = { partial ->
+                _liveText.value = (validatedText + " " + partial).trim()
+            },
+            onFinal = { final ->
+                if (final != validatedText) {
+                    validatedText = (validatedText + " " + final).trim()
+                }
+                _liveText.value = validatedText
+            },
+            onError = { msg -> _lastError.value = msg },
+        )
+        if (!g.start()) return
+        googleEngine = g
+        _isStreaming.value = true
+    }
+
+    private fun startWhisperStreaming() {
         writePos = 0
         filled = false
         windowStart = 0
@@ -205,6 +245,8 @@ class StreamViewModel(
         _isStreaming.value = false
         streamJob?.cancel()
         streamJob = null
+        googleEngine?.stop()
+        googleEngine = null
         recorder?.stop()
         recorder = null
         try {

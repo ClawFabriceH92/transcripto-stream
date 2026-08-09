@@ -6,12 +6,12 @@ Application Android **minimale** de transcription vocale **en temps réel**, 100
 
 ## Fonctionnement
 
-- Capture audio continue **PCM 16 kHz mono** (AudioRecord)
-- **Fenêtre glissante avec avance réelle** : on transcrit tout le nouvel audio (chevauchement 1 s), pas une fenêtre fixe — le texte avance même avec un modèle lent
-- **Conservation audio** : chaque enregistrement est écrit en WAV (`filesDir/recordings/`) et reste disponible après l'arrêt
-- **Transcription différée** : bouton « Transcrire l'audio enregistré » → whisper traite le fichier complet (meilleure qualité que le live)
-- **Déduplication** du chevauchement entre fenêtres → le texte s'accumule sans doublons
-- Compteur de transcriptions + dernière fenêtre brute affichés (debug)
+- **Deux moteurs de transcription temps réel** :
+  - **Google (qualité)** — SpeechRecognizer système, la même qualité que Gboard/assistant Android. Audio envoyé au service du fournisseur (cloud) sauf pack hors-ligne téléchargé.
+  - **Whisper (100% local)** — whisper.cpp Base embarqué, l'audio ne quitte jamais l'appareil. Qualité inférieure (surtout en français), mais confidentiel.
+- **Conservation audio** (mode Whisper) : chaque enregistrement est écrit en WAV (`filesDir/recordings/`) et reste disponible après l'arrêt
+- **Transcription différée** (mode Whisper) : bouton « Transcrire l'audio enregistré » → whisper traite le fichier complet
+- **Fenêtre glissante avec avance réelle** (mode Whisper) : on transcrit tout le nouvel audio (chevauchement 1 s)
 
 ## Architecture
 

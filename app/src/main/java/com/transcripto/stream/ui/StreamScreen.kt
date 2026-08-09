@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +58,7 @@ fun StreamScreen() {
 
     val modelState by vm.modelState.collectAsStateWithLifecycle()
     val isStreaming by vm.isStreaming.collectAsStateWithLifecycle()
+    val selectedEngine by vm.selectedEngine.collectAsStateWithLifecycle()
     val liveText by vm.liveText.collectAsStateWithLifecycle()
     val lastError by vm.lastError.collectAsStateWithLifecycle()
     val loadMessage by vm.loadMessage.collectAsStateWithLifecycle()
@@ -113,6 +116,37 @@ fun StreamScreen() {
                     )
                 }
                 is ModelState.Ready -> {
+                    // Sélecteur de moteur
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = selectedEngine == "google",
+                            onClick = { vm.setEngine("google") },
+                            enabled = !isStreaming,
+                            label = { Text("Google (qualité)") },
+                        )
+                        FilterChip(
+                            selected = selectedEngine == "whisper",
+                            onClick = { vm.setEngine("whisper") },
+                            enabled = !isStreaming,
+                            label = { Text("Whisper (100% local)") },
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = if (selectedEngine == "google") {
+                            "⚠ Audio envoyé au service de reconnaissance (cloud). Mode Whisper = hors-ligne, mais qualité inférieure."
+                        } else {
+                            "100% local : l'audio ne quitte pas l'appareil."
+                        },
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
                     Text(
                         text = if (isStreaming) "● Écoute…" else "Prêt — appuie pour transcrire",
                         color = if (isStreaming) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurfaceVariant,
