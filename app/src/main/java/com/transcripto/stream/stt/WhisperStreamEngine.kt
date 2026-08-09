@@ -1,0 +1,112 @@
+package com.transcripto.stream.stt
+
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+
+/**
+ * Résultat d'une transcription de fenêtre.
+ */
+data class StreamResult(
+    val fullText: String,
+    val segments: List<Pair<Long, Long>>, // startMs, endMs
+    val error: String? = null,
+)
+
+/**
+ * Pont JNI vers whisper.cpp — transcription d'un buffer PCM brut.
+ *
+ * Native library: libwhisper.so (compilée avec whisper_jni.cpp)
+ */
+class WhisperStreamEngine {
+
+    private var nativeHandle: Long = 0L
+
+    @Volatile
+    var isLoaded: Boolean = false
+        private set
+
+    val nativeLibAvailable: Boolean
+        get() = NativeHolder.available
+
+    suspend fun loadModel(modelPath: String): Result<Unit> = withContext(Dispatchers.IO) {
+        if (!NativeHolder.available) {
+            return@withContext Result.failure(
+                IllegalStateException("libwhisper.so absente de l'APK")
+            )
+        }
+        try {
+            nativeHandle = nativeLoadModel(modelPath)
+            isLoaded = true
+            Result.success(Unit)
+        } catch (e: Throwable) {
+            isLoaded = false
+            Result.failure(IllegalStateException("Échec chargement modèle : ${e.message}", e))
+        }
+    }
+
+    suspend fun unloadModel(): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            if (nativeHandle != 0L) {
+                nativeUnloadModel(nativeHandle)
+                nativeHandle = 0L
+            }
+            isLoaded = false
+            Result.success(Unit)
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Transcrit un buffer PCM (int16 LE, mono, 16 kHz) — bloquant, à appeler hors du main thread.
+     */
+    suspend fun transcribeBuffer(
+        pcmBytes: ByteArray,
+        language: String = "fr",
+    ): StreamResult = withContext(Dispatchers.IO) {
+        if (!isLoaded) {
+            return@withContext StreamResult("", emptyList(), "Modèle non chargé")
+        }
+        try {
+            val json = nativeTranscribeBuffer(nativeHandle, pcmBytes, language)
+            val obj = JSONObject(json)
+            if (obj.has("error")) {
+                StreamResult("", emptyList(), obj.getString("error"))
+            } else {
+                val segments = mutableListOf<Pair<Long, Long>>()
+                val arr = obj.optJSONArray("segments")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val seg = arr.getJSONObject(i)
+                        segments.add(seg.optLong("start_ms", 0L) to seg.optLong("end_ms", 0L))
+                    }
+                }
+                StreamResult(obj.optString("full_text", ""), segments)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "transcribeBuffer: ${e.message}")
+            StreamResult("", emptyList(), e.message)
+        }
+    }
+
+    // ---- JNI stubs ----
+    private external fun nativeLoadModel(modelPath: String): Long
+    private external fun nativeTranscribeBuffer(handle: Long, pcm: ByteArray, language: String): String
+    private external fun nativeUnloadModel(handle: Long)
+
+    private object NativeHolder {
+        val available: Boolean = try {
+            System.loadLibrary("whisper")
+            true
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e(TAG, "libwhisper.so introuvable : ${e.message}")
+            false
+        }
+    }
+
+    companion object {
+        private const val TAG = "WhisperStream"
+    }
+}

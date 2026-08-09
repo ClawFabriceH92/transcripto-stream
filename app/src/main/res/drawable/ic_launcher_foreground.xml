@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Cercle de fond -->
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M54,54m-54,0a54,54 0,1 1,108 0a54,54 0,1 1,-108 0" />
+    <!-- Onde sonore stylisée -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,34h6v40h-6z M58,34h6v40h-6z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,42h5v24h-5z M67,42h5v24h-5z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M29,48h4v12h-4z M75,48h4v12h-4z" />
+</vector>
