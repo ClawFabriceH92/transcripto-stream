@@ -28,7 +28,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -209,9 +208,6 @@ private fun MainScreen(vm: StreamViewModel) {
     val lastError by vm.lastError.collectAsStateWithLifecycle()
     val loadMessage by vm.loadMessage.collectAsStateWithLifecycle()
     val extractionProgress by vm.extractionProgress.collectAsStateWithLifecycle()
-    val modelLoadMs by vm.modelLoadMs.collectAsStateWithLifecycle()
-    val transcriptionCount by vm.transcriptionCount.collectAsStateWithLifecycle()
-    val lastWindowText by vm.lastWindowText.collectAsStateWithLifecycle()
     val lastRecording by vm.lastRecording.collectAsStateWithLifecycle()
     val isTranscribingFile by vm.isTranscribingFile.collectAsStateWithLifecycle()
     val fileTranscript by vm.fileTranscript.collectAsStateWithLifecycle()
@@ -270,16 +266,16 @@ private fun MainScreen(vm: StreamViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(20.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
             text = "Transcripto Stream",
             style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(top = 24.dp),
+            modifier = Modifier.padding(top = 12.dp),
         )
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
         val state = modelState
         when (state) {
@@ -309,21 +305,21 @@ private fun MainScreen(vm: StreamViewModel) {
                         selected = selectedEngine == "google",
                         onClick = { vm.setEngine("google") },
                         enabled = !isStreaming,
-                        label = { Text("Google (qualité)") },
+                        label = { Text("Google") },
                     )
                     FilterChip(
                         selected = selectedEngine == "whisper",
                         onClick = { vm.setEngine("whisper") },
                         enabled = !isStreaming,
-                        label = { Text("Whisper (100% local)") },
+                        label = { Text("Whisper (local)") },
                     )
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
                 Text(
                     text = if (selectedEngine == "google") {
-                        "⚠ Audio envoyé au service de reconnaissance (cloud). Mode Whisper = hors-ligne, mais qualité inférieure."
+                        "Audio envoyé au cloud — Whisper = 100% local"
                     } else {
-                        "100% local : l'audio ne quitte pas l'appareil."
+                        "100% local : l'audio ne quitte pas l'appareil"
                     },
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -331,6 +327,7 @@ private fun MainScreen(vm: StreamViewModel) {
 
                 Spacer(Modifier.height(8.dp))
 
+                // Statut
                 Text(
                     text = when {
                         isStreaming && isPaused -> "⏸ En pause — ${formatTime(elapsedSec)}"
@@ -340,26 +337,11 @@ private fun MainScreen(vm: StreamViewModel) {
                     color = if (isStreaming) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                if (modelLoadMs > 0) {
-                    Text(
-                        "Modèle chargé en ${modelLoadMs / 1000}s",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
                 if (lastError != null) {
                     Text(
                         "⚠ $lastError",
                         color = MaterialTheme.colorScheme.error,
                         fontSize = 12.sp,
-                    )
-                }
-                if (transcriptionCount > 0) {
-                    Text(
-                        "$transcriptionCount transcription${if (transcriptionCount > 1) "s" else ""} · dernière : « ${lastWindowText.take(40)} »",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
                     )
                 }
                 if (feedback != null) {
@@ -372,9 +354,9 @@ private fun MainScreen(vm: StreamViewModel) {
                     )
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
 
-                // Texte transcrit en direct
+                // ---- Zone texte live : toujours prioritaire ----
                 val scrollState = rememberScrollState()
                 Box(
                     modifier = Modifier
@@ -384,7 +366,7 @@ private fun MainScreen(vm: StreamViewModel) {
                             MaterialTheme.colorScheme.surfaceVariant,
                             MaterialTheme.shapes.medium,
                         )
-                        .padding(16.dp),
+                        .padding(14.dp),
                 ) {
                     Text(
                         text = liveText.ifBlank { "Le texte apparaîtra ici en direct…" },
@@ -399,23 +381,24 @@ private fun MainScreen(vm: StreamViewModel) {
                     scrollState.animateScrollTo(scrollState.maxValue)
                 }
 
-                // ---- Audio conservé + transcription différée ----
+                // ---- Actions du dernier enregistrement : UNIQUEMENT après l'arrêt ----
                 val recording = lastRecording
-                if (recording != null) {
-                    Spacer(Modifier.height(12.dp))
+                if (recording != null && !isStreaming) {
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        "Audio conservé : ${recording.name}${if (recording.extension == "enc") " 🔒 (chiffré)" else ""}",
-                        fontSize = 11.sp,
+                        "${recording.name}${if (recording.extension == "enc") " 🔒" else ""}",
+                        fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(4.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Button(
                             onClick = { vm.togglePlayback() },
-                            enabled = !isTranscribingFile && !isStreaming,
+                            enabled = !isTranscribingFile,
                             modifier = Modifier.weight(1f),
                         ) {
                             Text(if (isPlaying) "■ Arrêter" else "▶ Écouter")
@@ -425,7 +408,7 @@ private fun MainScreen(vm: StreamViewModel) {
                             enabled = !isTranscribingFile,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(if (isTranscribingFile) "Transcription…" else "Transcrire")
+                            Text(if (isTranscribingFile) "…" else "Transcrire")
                         }
                         OutlinedButton(
                             onClick = { vm.deleteLastRecording() },
@@ -435,39 +418,23 @@ private fun MainScreen(vm: StreamViewModel) {
                             Text("Supprimer")
                         }
                     }
-                    Spacer(Modifier.height(6.dp))
-                    // Vitesse de lecture (cycle 0.5 → 1 → 1.5 → 2)
+                    Spacer(Modifier.height(4.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Vitesse :", fontSize = 12.sp)
-                        val speeds = listOf(0.5f, 1.0f, 1.5f, 2.0f)
-                        speeds.forEach { s ->
-                            FilterChip(
-                                selected = vm.settings.playbackSpeed == s,
-                                onClick = { vm.setPlaybackSpeed(s) },
-                                label = { Text(if (s == 1.0f) "1x" else "${s}x") },
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth(),
                     ) {
                         OutlinedButton(
                             onClick = {
                                 val text = fileTranscript.ifBlank { liveText }
                                 if (vm.copyText(text)) {
-                                    feedback = "✓ Texte copié dans le presse-papiers"
+                                    feedback = "✓ Texte copié"
                                 } else {
                                     feedback = "Rien à copier pour l'instant"
                                 }
                             },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("📋 Copier le texte")
+                            Text("📋 Copier")
                         }
                         OutlinedButton(
                             onClick = {
@@ -484,28 +451,42 @@ private fun MainScreen(vm: StreamViewModel) {
                             },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("✉ Email texte + WAV")
+                            Text("✉ Email")
+                        }
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Vitesse :", fontSize = 11.sp)
+                        listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { s ->
+                            FilterChip(
+                                selected = vm.settings.playbackSpeed == s,
+                                onClick = { vm.setPlaybackSpeed(s) },
+                                label = { Text(if (s == 1.0f) "1x" else "${s}x", fontSize = 11.sp) },
+                            )
                         }
                     }
                     if (isTranscribingFile) {
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(4.dp))
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                     if (fileTranscript.isNotBlank()) {
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(140.dp)
+                                .height(110.dp)
                                 .background(
                                     MaterialTheme.colorScheme.secondaryContainer,
                                     MaterialTheme.shapes.medium,
                                 )
-                                .padding(12.dp),
+                                .padding(10.dp),
                         ) {
                             Text(
                                 text = fileTranscript,
-                                style = MaterialTheme.typography.bodyMedium,
+                                style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .verticalScroll(rememberScrollState()),
@@ -514,8 +495,9 @@ private fun MainScreen(vm: StreamViewModel) {
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
 
+                // ---- Boutons principaux ----
                 if (isStreaming) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(24.dp),
@@ -523,7 +505,7 @@ private fun MainScreen(vm: StreamViewModel) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(
                                 modifier = Modifier
-                                    .size(72.dp)
+                                    .size(68.dp)
                                     .background(
                                         color = if (isPaused) MaterialTheme.colorScheme.primary else Color(0xFFF57C00),
                                         shape = CircleShape,
@@ -534,10 +516,10 @@ private fun MainScreen(vm: StreamViewModel) {
                                 Text(
                                     text = if (isPaused) "▶" else "⏸",
                                     color = Color.White,
-                                    fontSize = 30.sp,
+                                    fontSize = 28.sp,
                                 )
                             }
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(4.dp))
                             Text(
                                 text = if (isPaused) "Reprendre" else "Pause",
                                 fontSize = 11.sp,
@@ -547,7 +529,7 @@ private fun MainScreen(vm: StreamViewModel) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(
                                 modifier = Modifier
-                                    .size(72.dp)
+                                    .size(68.dp)
                                     .background(Color(0xFFD32F2F), CircleShape)
                                     .clickable { vm.toggleStreaming() },
                                 contentAlignment = Alignment.Center,
@@ -555,10 +537,10 @@ private fun MainScreen(vm: StreamViewModel) {
                                 Text(
                                     text = "■",
                                     color = Color.White,
-                                    fontSize = 30.sp,
+                                    fontSize = 28.sp,
                                 )
                             }
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(4.dp))
                             Text(
                                 text = "Arrêter",
                                 fontSize = 11.sp,
@@ -569,7 +551,7 @@ private fun MainScreen(vm: StreamViewModel) {
                 } else {
                     Box(
                         modifier = Modifier
-                            .size(96.dp)
+                            .size(88.dp)
                             .background(
                                 color = MaterialTheme.colorScheme.primary,
                                 shape = CircleShape,
@@ -582,16 +564,17 @@ private fun MainScreen(vm: StreamViewModel) {
                         Text(
                             text = "▶",
                             color = Color.White,
-                            fontSize = 40.sp,
+                            fontSize = 38.sp,
                         )
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
                     Text(
                         text = "Appuyer pour parler",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Spacer(Modifier.height(4.dp))
             }
         }
     }
