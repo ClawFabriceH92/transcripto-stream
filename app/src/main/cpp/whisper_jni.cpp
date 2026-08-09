@@ -45,10 +45,14 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeLoadModel(
 /**
  * Transcrit un buffer PCM brut (int16 LE, mono, 16 kHz) et retourne un JSON :
  * {"full_text":"...","segments":[{"start_ms":..,"end_ms":..,"text":".."}],"language":"fr"}
+ *
+ * @param initial_prompt vocabulaire personnalisé injecté comme prompt initial (peut être vide)
+ *                        — améliore la reconnaissance des termes métier (noms de clients, CAC, etc.)
  */
 JNIEXPORT jstring JNICALL
 Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
-    JNIEnv *env, jobject /*thiz*/, jlong handle, jbyteArray pcm, jstring language) {
+    JNIEnv *env, jobject /*thiz*/, jlong handle, jbyteArray pcm, jstring language,
+    jstring initial_prompt) {
 
     if (!handle) return env->NewStringUTF("{\"error\":\"model not loaded\"}");
     auto *ctx = reinterpret_cast<whisper_context *>(handle);
@@ -71,6 +75,20 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
     }
 
     const char *lang = env->GetStringUTFChars(language, nullptr);
+    std::string lang_copy = lang;
+
+    const char *prompt = nullptr;
+    std::string prompt_copy;
+    if (initial_prompt != nullptr) {
+        prompt = env->GetStringUTFChars(initial_prompt, nullptr);
+        if (prompt != nullptr) {
+            prompt_copy = prompt;
+            // "auto" est le mot-clé côté Kotlin pour la détection automatique
+            if (prompt_copy == "auto") prompt_copy.clear();
+        }
+    }
+    // Le prompt initial doit rester alloué pendant whisper_full : on passe notre copie
+    const char *effective_prompt = (prompt_copy.empty()) ? nullptr : prompt_copy.c_str();
 
     auto wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     wparams.print_realtime = false;
@@ -78,8 +96,10 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
     wparams.print_timestamps = false;
     wparams.print_special = false;
     wparams.translate = false;
-    wparams.language = lang;
+    // "auto" (ou "auto-detect") -> nullptr pour la détection automatique de la langue
+    wparams.language = (lang_copy == "auto" || lang_copy == "auto-detect") ? nullptr : lang;
     wparams.n_threads = 4;
+    wparams.initial_prompt = effective_prompt;
 
     std::string result;
     int ret = whisper_full_parallel(ctx, wparams, samples.data(), nsamples, 1);
@@ -100,9 +120,10 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
             result += "\"end_ms\":" + std::to_string(t1 * 10) + ",";
             result += "\"text\":\"" + json_escape(whisper_full_get_segment_text(ctx, i)) + "\"}";
         }
-        result += "],\"language\":\"" + std::string(lang) + "\"}";
+        result += "],\"language\":\"" + lang_copy + "\"}";
     }
 
+    if (prompt != nullptr) env->ReleaseStringUTFChars(initial_prompt, prompt);
     env->ReleaseStringUTFChars(language, lang);
     return env->NewStringUTF(result.c_str());
 }

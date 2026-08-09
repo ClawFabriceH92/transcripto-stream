@@ -23,6 +23,8 @@ class GoogleSpeechEngine(
     private val onPartial: (String) -> Unit,
     private val onFinal: (String) -> Unit,
     private val onError: (String) -> Unit,
+    private val language: String = "fr",
+    private val hints: List<String> = emptyList(),
 ) {
 
     companion object {
@@ -84,9 +86,16 @@ class GoogleSpeechEngine(
                     RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                 )
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fr-FR")
+                when (language) {
+                    "en" -> putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+                    "fr" -> putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fr-FR")
+                    else -> {} // "auto" : on laisse le moteur détecter
+                }
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                if (hints.isNotEmpty() && android.os.Build.VERSION.SDK_INT >= 31) {
+                    putExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(hints))
+                }
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
             }
             recognizer?.startListening(intent)

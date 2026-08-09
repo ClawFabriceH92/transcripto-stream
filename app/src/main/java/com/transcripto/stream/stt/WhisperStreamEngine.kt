@@ -72,16 +72,21 @@ class WhisperStreamEngine {
 
     /**
      * Transcrit un buffer PCM (int16 LE, mono, 16 kHz) — bloquant, à appeler hors du main thread.
+     *
+     * @param language "fr", "en", "auto" (détection automatique côté natif)
+     * @param initialPrompt vocabulaire personnalisé injecté comme prompt initial Whisper
+     *                       (termes métier, noms de clients…) — null/vide = désactivé
      */
     suspend fun transcribeBuffer(
         pcmBytes: ByteArray,
         language: String = "fr",
+        initialPrompt: String? = null,
     ): StreamResult = withContext(Dispatchers.IO) {
         if (!isLoaded) {
             return@withContext StreamResult("", emptyList(), "Modèle non chargé")
         }
         try {
-            val json = nativeTranscribeBuffer(nativeHandle, pcmBytes, language)
+            val json = nativeTranscribeBuffer(nativeHandle, pcmBytes, language, initialPrompt ?: "")
             val obj = JSONObject(json)
             if (obj.has("error")) {
                 StreamResult("", emptyList(), obj.getString("error"))
@@ -110,7 +115,12 @@ class WhisperStreamEngine {
 
     // ---- JNI stubs ----
     private external fun nativeLoadModel(modelPath: String): Long
-    private external fun nativeTranscribeBuffer(handle: Long, pcm: ByteArray, language: String): String
+    private external fun nativeTranscribeBuffer(
+        handle: Long,
+        pcm: ByteArray,
+        language: String,
+        initialPrompt: String,
+    ): String
     private external fun nativeUnloadModel(handle: Long)
 
     private object NativeHolder {
