@@ -33,7 +33,9 @@ class WhisperStreamEngine {
     suspend fun loadModel(modelPath: String): Result<Unit> = withContext(Dispatchers.IO) {
         if (!NativeHolder.available) {
             return@withContext Result.failure(
-                IllegalStateException("libwhisper.so absente de l'APK")
+                IllegalStateException(
+                    "libwhisper.so non chargée : ${NativeHolder.loadError ?: "absente de l'APK"}"
+                )
             )
         }
         try {
@@ -97,11 +99,14 @@ class WhisperStreamEngine {
     private external fun nativeUnloadModel(handle: Long)
 
     private object NativeHolder {
+        var loadError: String? = null
         val available: Boolean = try {
             System.loadLibrary("whisper")
             true
         } catch (e: UnsatisfiedLinkError) {
-            Log.e(TAG, "libwhisper.so introuvable : ${e.message}")
+            // Le message contient la vraie cause (ex: "dlopen failed: library libomp.so not found")
+            Log.e(TAG, "Échec chargement libwhisper.so : ${e.message}")
+            loadError = e.message
             false
         }
     }
