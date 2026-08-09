@@ -40,7 +40,7 @@ class StreamViewModel(
         private const val SAMPLE_RATE = 16000
         private const val WINDOW_SECONDS = 4
         private const val TICK_MS = 1500L
-        private const val MODEL_ASSET = "models/ggml-tiny.bin"
+        private const val MODEL_ASSET = "models/ggml-base.bin"
     }
 
     // ---- État exposé à l'UI (observable par Compose) ----
@@ -86,7 +86,7 @@ class StreamViewModel(
                 )
                 return@launch
             }
-            _loadMessage.value = "Chargement du modèle Whisper (75 Mo)…"
+            _loadMessage.value = "Chargement du modèle Whisper (142 Mo)…"
             val t0 = System.currentTimeMillis()
             val loaded = withTimeoutOrNull(120_000L) {
                 engine.loadModel(extracted.getOrThrow())
@@ -208,7 +208,7 @@ class StreamViewModel(
     private suspend fun ensureModelExtracted(): Result<String> = withContext(Dispatchers.IO) {
         try {
             val dir = File(appContext.filesDir, "models").apply { mkdirs() }
-            val dest = File(dir, "ggml-tiny.bin")
+            val dest = File(dir, "ggml-base.bin")
             if (!dest.exists() || dest.length() == 0L) {
                 Log.i(TAG, "Extraction du modèle depuis assets…")
                 val total = appContext.assets.open(MODEL_ASSET).use { it.available() }

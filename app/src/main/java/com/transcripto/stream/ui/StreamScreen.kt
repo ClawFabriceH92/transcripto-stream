@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -73,6 +74,7 @@ fun StreamScreen() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .navigationBarsPadding()
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -151,17 +153,16 @@ fun StreamScreen() {
                         scrollState.animateScrollTo(scrollState.maxValue)
                     }
 
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(16.dp))
 
                     // Bouton micro : fond rond + symbole + clic
                     Box(
                         modifier = Modifier
-                            .size(88.dp)
+                            .size(96.dp)
                             .background(
                                 color = if (isStreaming) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary,
                                 shape = CircleShape,
                             )
-                            .align(Alignment.CenterHorizontally)
                             .clickable {
                                 if (!hasMicPermission) {
                                     permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -174,9 +175,15 @@ fun StreamScreen() {
                         Text(
                             text = if (isStreaming) "■" else "▶",
                             color = Color.White,
-                            fontSize = 34.sp,
+                            fontSize = 40.sp,
                         )
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = if (isStreaming) "Arrêter" else "Appuyer pour parler",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

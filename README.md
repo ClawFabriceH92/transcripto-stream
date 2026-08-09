@@ -7,7 +7,7 @@ Application Android **minimale** de transcription vocale **en temps réel**, 100
 ## Fonctionnement
 
 - Capture audio continue **PCM 16 kHz mono** (AudioRecord)
-- **Fenêtre glissante de 4 s** transcrite toutes les ~1,5 s par whisper.cpp (modèle Tiny embarqué)
+- **Fenêtre glissante de 4 s** transcrite toutes les ~1,5 s par whisper.cpp (modèle Base embarqué)
 - **Déduplication** du chevauchement entre fenêtres → le texte s'accumule sans doublons
 - Délai d'affichage : ~4 s (le temps de la fenêtre) — évolution prévue vers un vrai streaming VAD
 
@@ -16,8 +16,8 @@ Application Android **minimale** de transcription vocale **en temps réel**, 100
 ```
 app/src/main/
 ├── cpp/whisper_jni.cpp          # JNI : transcription d'un buffer PCM (pas de fichier)
-├── assets/models/ggml-tiny.bin  # Modèle Whisper Tiny (~75 Mo, gitignoré)
-├── jniLibs/arm64-v8a/           # libwhisper.so + libggml*.so + libc++_shared.so (gitignorés)
+├── assets/models/ggml-base.bin  # Modèle Whisper Base (~142 Mo, gitignoré)
+├── jniLibs/arm64-v8a/           # libwhisper.so + libggml*.so + libomp + libc++_shared (gitignorés)
 └── java/com/transcripto/stream/
     ├── MainActivity.kt
     ├── audio/PcmAudioRecorder.kt   # AudioRecord → ring buffer
