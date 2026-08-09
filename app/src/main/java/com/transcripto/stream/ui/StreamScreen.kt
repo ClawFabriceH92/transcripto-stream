@@ -317,9 +317,9 @@ private fun MainScreen(vm: StreamViewModel) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = if (selectedEngine == "google") {
-                        "Google (cloud) : bonne qualité, mais PAS de sauvegarde audio"
+                        "Google : moteur système — local si pack hors-ligne, sinon cloud · pas de sauvegarde audio"
                     } else {
-                        "Whisper (local) : audio sauvegardé + transcrit en direct"
+                        "Whisper : 100% local · audio sauvegardé + transcrit"
                     },
                     fontSize = 10.sp,
                     color = if (selectedEngine == "google") {

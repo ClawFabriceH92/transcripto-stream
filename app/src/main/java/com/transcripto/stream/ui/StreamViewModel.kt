@@ -116,10 +116,10 @@ class StreamViewModel(
 
     private val _elapsedSec = MutableStateFlow(0L)
     val elapsedSec: StateFlow<Long> = _elapsedSec.asStateFlow()
-    // Moteur sélectionné : "google" (qualité Android, cloud, PAS de sauvegarde audio)
-    // ou "whisper" (100% local, audio sauvegardé + transcrit) — Whisper est le défaut car
-    // le SpeechRecognizer Google ne peut PAS cohabiter avec l'AudioRecord (conflit micro).
-    private val _selectedEngine = MutableStateFlow("whisper")
+    // Moteur sélectionné : "google" (moteur système Android — cloud par défaut,
+    // local si pack hors-ligne téléchargé) ou "whisper" (100% local + sauvegarde audio).
+    // Google ne peut PAS cohabiter avec l'AudioRecord (conflit micro) → pas de WAV en Google.
+    private val _selectedEngine = MutableStateFlow("google")
     val selectedEngine: StateFlow<String> = _selectedEngine.asStateFlow()
 
     private val _liveText = MutableStateFlow("")
