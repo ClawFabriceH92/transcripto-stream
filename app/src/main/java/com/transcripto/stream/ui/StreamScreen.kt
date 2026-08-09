@@ -18,9 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +37,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -53,10 +51,13 @@ fun StreamScreen() {
         }
     )
 
-    val modelState = vm.modelState
-    val isStreaming = vm.isStreaming
-    val liveText = vm.liveText
-    val lastError = vm.lastError
+    val modelState by vm.modelState.collectAsStateWithLifecycle()
+    val isStreaming by vm.isStreaming.collectAsStateWithLifecycle()
+    val liveText by vm.liveText.collectAsStateWithLifecycle()
+    val lastError by vm.lastError.collectAsStateWithLifecycle()
+    val loadMessage by vm.loadMessage.collectAsStateWithLifecycle()
+    val extractionProgress by vm.extractionProgress.collectAsStateWithLifecycle()
+    val modelLoadMs by vm.modelLoadMs.collectAsStateWithLifecycle()
 
     var hasMicPermission by remember {
         mutableStateOf(
@@ -84,15 +85,21 @@ fun StreamScreen() {
             Spacer(Modifier.height(16.dp))
 
             // État du modèle
-            when (modelState) {
+            val state = modelState
+            when (state) {
                 is ModelState.Loading -> {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(8.dp))
-                    Text("Chargement du modèle Whisper…")
+                    Text(loadMessage.ifBlank { "Chargement du modèle Whisper…" })
+                    val progress = extractionProgress
+                    if (progress != null) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("Extraction : ${(progress * 100).toInt()} %", fontSize = 12.sp)
+                    }
                 }
                 is ModelState.Error -> {
                     Text(
-                        "Erreur : ${modelState.message}",
+                        "Erreur : ${state.message}",
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -102,6 +109,13 @@ fun StreamScreen() {
                         color = if (isStreaming) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    if (modelLoadMs > 0) {
+                        Text(
+                            "Modèle chargé en ${modelLoadMs / 1000}s",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     if (lastError != null) {
                         Text(
                             "⚠ $lastError",
@@ -139,7 +153,7 @@ fun StreamScreen() {
 
                     Spacer(Modifier.height(20.dp))
 
-                    // Bouton micro
+                    // Bouton micro : fond rond + symbole + clic
                     Box(
                         modifier = Modifier
                             .size(88.dp)
@@ -147,20 +161,6 @@ fun StreamScreen() {
                                 color = if (isStreaming) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary,
                                 shape = CircleShape,
                             )
-                            .align(Alignment.CenterHorizontally),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = if (isStreaming) Icons.Filled.Stop else Icons.Filled.Mic,
-                            contentDescription = if (isStreaming) "Arrêter" else "Démarrer",
-                            tint = Color.White,
-                            modifier = Modifier.size(40.dp),
-                        )
-                    }
-                    // Le clic sur le bouton : gère la permission puis le démarrage/arrêt.
-                    Box(
-                        modifier = Modifier
-                            .size(88.dp)
                             .align(Alignment.CenterHorizontally)
                             .clickable {
                                 if (!hasMicPermission) {
@@ -169,7 +169,14 @@ fun StreamScreen() {
                                     vm.toggleStreaming()
                                 }
                             },
-                    )
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (isStreaming) "■" else "▶",
+                            color = Color.White,
+                            fontSize = 34.sp,
+                        )
+                    }
                 }
             }
         }

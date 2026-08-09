@@ -80,7 +80,6 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
     wparams.translate = false;
     wparams.language = lang;
     wparams.n_threads = 4;
-    wparams.n_processors = 1;
 
     std::string result;
     int ret = whisper_full_parallel(ctx, wparams, samples.data(), nsamples, 1);

@@ -9,9 +9,13 @@ import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
 
@@ -24,6 +28,8 @@ sealed interface ModelState {
 /**
  * Transcription en temps réel : capture PCM 16 kHz continue, fenêtre glissante de 4 s,
  * transcription toutes les 1,5 s, déduplication du chevauchement à l'affichage.
+ *
+ * Tous les états sont exposés en [StateFlow] pour que Compose se recompose.
  */
 class StreamViewModel(
     private val appContext: Context,
@@ -37,18 +43,27 @@ class StreamViewModel(
         private const val MODEL_ASSET = "models/ggml-tiny.bin"
     }
 
-    // ---- État exposé à l'UI ----
-    var modelState: ModelState = ModelState.Loading
-        private set
+    // ---- État exposé à l'UI (observable par Compose) ----
+    private val _modelState = MutableStateFlow<ModelState>(ModelState.Loading)
+    val modelState: StateFlow<ModelState> = _modelState.asStateFlow()
 
-    var isStreaming: Boolean = false
-        private set
+    private val _extractionProgress = MutableStateFlow<Float?>(null) // 0..1 pendant l'extraction
+    val extractionProgress: StateFlow<Float?> = _extractionProgress.asStateFlow()
 
-    var liveText: String = ""
-        private set
+    private val _loadMessage = MutableStateFlow("Chargement du modèle Whisper…")
+    val loadMessage: StateFlow<String> = _loadMessage.asStateFlow()
 
-    var lastError: String? = null
-        private set
+    private val _modelLoadMs = MutableStateFlow(0L)
+    val modelLoadMs: StateFlow<Long> = _modelLoadMs.asStateFlow()
+
+    private val _isStreaming = MutableStateFlow(false)
+    val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
+
+    private val _liveText = MutableStateFlow("")
+    val liveText: StateFlow<String> = _liveText.asStateFlow()
+
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     // ---- Internes ----
     private val engine = WhisperStreamEngine()
@@ -63,35 +78,54 @@ class StreamViewModel(
 
     init {
         viewModelScope.launch {
-            modelState = ModelState.Loading
-            val result = ensureModelExtracted().flatMap { engine.loadModel(it) }
-            modelState = if (result.isSuccess) {
+            _loadMessage.value = "Extraction du modèle depuis l'APK…"
+            val extracted = ensureModelExtracted()
+            if (extracted.isFailure) {
+                _modelState.value = ModelState.Error(
+                    "Extraction : ${extracted.exceptionOrNull()?.message ?: "erreur inconnue"}"
+                )
+                return@launch
+            }
+            _loadMessage.value = "Chargement du modèle Whisper (75 Mo)…"
+            val t0 = System.currentTimeMillis()
+            val loaded = withTimeoutOrNull(120_000L) {
+                engine.loadModel(extracted.getOrThrow())
+            }
+            if (loaded == null) {
+                _modelState.value = ModelState.Error(
+                    "Chargement trop long (>120 s). Modèle ou mémoire insuffisante ?"
+                )
+                return@launch
+            }
+            _modelLoadMs.value = System.currentTimeMillis() - t0
+            _modelState.value = if (loaded.isSuccess) {
+                _loadMessage.value = ""
                 ModelState.Ready(engine)
             } else {
-                ModelState.Error(result.exceptionOrNull()?.message ?: "Erreur inconnue")
+                ModelState.Error(loaded.exceptionOrNull()?.message ?: "Erreur de chargement")
             }
         }
     }
 
     fun toggleStreaming() {
-        if (isStreaming) stopStreaming() else startStreaming()
+        if (_isStreaming.value) stopStreaming() else startStreaming()
     }
 
     fun startStreaming() {
-        if (modelState !is ModelState.Ready || isStreaming) return
+        if (_modelState.value !is ModelState.Ready || _isStreaming.value) return
         validatedText = ""
-        liveText = ""
-        lastError = null
+        _liveText.value = ""
+        _lastError.value = null
         writePos = 0
         filled = false
 
         val rec = PcmAudioRecorder(SAMPLE_RATE) { buf, n -> appendSamples(buf, n) }
         if (!rec.start()) {
-            lastError = "Impossible de démarrer l'enregistrement (micro ?)"
+            _lastError.value = "Impossible de démarrer l'enregistrement (micro ?)"
             return
         }
         recorder = rec
-        isStreaming = true
+        _isStreaming.value = true
 
         streamJob = viewModelScope.launch {
             while (isActive) {
@@ -102,7 +136,7 @@ class StreamViewModel(
                 val res = engine.transcribeBuffer(pcm, "fr")
                 transcribing = false
                 if (res.error != null) {
-                    lastError = res.error
+                    _lastError.value = res.error
                 } else if (res.fullText.isNotBlank()) {
                     mergeLive(res.fullText)
                 }
@@ -114,7 +148,7 @@ class StreamViewModel(
     private var transcribing = false
 
     fun stopStreaming() {
-        isStreaming = false
+        _isStreaming.value = false
         streamJob?.cancel()
         streamJob = null
         recorder?.stop()
@@ -167,7 +201,7 @@ class StreamViewModel(
         if (extra.isNotEmpty()) {
             validatedText = (validatedText.trim() + " " + extra).trim()
         }
-        liveText = validatedText
+        _liveText.value = validatedText
     }
 
     // ---- Modèle ----
@@ -177,20 +211,28 @@ class StreamViewModel(
             val dest = File(dir, "ggml-tiny.bin")
             if (!dest.exists() || dest.length() == 0L) {
                 Log.i(TAG, "Extraction du modèle depuis assets…")
+                val total = appContext.assets.open(MODEL_ASSET).use { it.available() }
                 appContext.assets.open(MODEL_ASSET).use { input ->
                     FileOutputStream(dest).use { output ->
                         val buf = ByteArray(64 * 1024)
+                        var done = 0L
                         while (true) {
                             val n = input.read(buf)
                             if (n <= 0) break
                             output.write(buf, 0, n)
+                            done += n
+                            if (total > 0) {
+                                _extractionProgress.value = (done.toFloat() / total).coerceIn(0f, 1f)
+                            }
                         }
                     }
                 }
+                _extractionProgress.value = null
                 Log.i(TAG, "Modèle extrait : ${dest.length()} octets")
             }
             Result.success(dest.absolutePath)
         } catch (e: Exception) {
+            Log.e(TAG, "Extraction échouée", e)
             Result.failure(e)
         }
     }
