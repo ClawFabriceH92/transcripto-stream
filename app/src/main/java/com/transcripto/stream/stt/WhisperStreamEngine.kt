@@ -6,11 +6,20 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
+ * Un segment transcrit avec ses timestamps.
+ */
+data class SegmentData(
+    val text: String,
+    val startMs: Long,
+    val endMs: Long,
+)
+
+/**
  * Résultat d'une transcription de fenêtre.
  */
 data class StreamResult(
     val fullText: String,
-    val segments: List<Pair<Long, Long>>, // startMs, endMs
+    val segments: List<SegmentData>,
     val error: String? = null,
 )
 
@@ -77,12 +86,18 @@ class WhisperStreamEngine {
             if (obj.has("error")) {
                 StreamResult("", emptyList(), obj.getString("error"))
             } else {
-                val segments = mutableListOf<Pair<Long, Long>>()
+                val segments = mutableListOf<SegmentData>()
                 val arr = obj.optJSONArray("segments")
                 if (arr != null) {
                     for (i in 0 until arr.length()) {
                         val seg = arr.getJSONObject(i)
-                        segments.add(seg.optLong("start_ms", 0L) to seg.optLong("end_ms", 0L))
+                        segments.add(
+                            SegmentData(
+                                text = seg.optString("text", ""),
+                                startMs = seg.optLong("start_ms", 0L),
+                                endMs = seg.optLong("end_ms", 0L),
+                            )
+                        )
                     }
                 }
                 StreamResult(obj.optString("full_text", ""), segments)

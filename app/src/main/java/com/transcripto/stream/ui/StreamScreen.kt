@@ -26,6 +26,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,6 +48,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 
+private fun formatTime(sec: Long): String {
+    val mm = sec / 60
+    val ss = sec % 60
+    return "%02d:%02d".format(mm, ss)
+}
+
 @Composable
 fun StreamScreen() {
     val context = LocalContext.current
@@ -58,6 +65,8 @@ fun StreamScreen() {
 
     val modelState by vm.modelState.collectAsStateWithLifecycle()
     val isStreaming by vm.isStreaming.collectAsStateWithLifecycle()
+    val isPaused by vm.isPaused.collectAsStateWithLifecycle()
+    val elapsedSec by vm.elapsedSec.collectAsStateWithLifecycle()
     val selectedEngine by vm.selectedEngine.collectAsStateWithLifecycle()
     val liveText by vm.liveText.collectAsStateWithLifecycle()
     val lastError by vm.lastError.collectAsStateWithLifecycle()
@@ -69,6 +78,7 @@ fun StreamScreen() {
     val lastRecording by vm.lastRecording.collectAsStateWithLifecycle()
     val isTranscribingFile by vm.isTranscribingFile.collectAsStateWithLifecycle()
     val fileTranscript by vm.fileTranscript.collectAsStateWithLifecycle()
+    val isPlaying by vm.isPlaying.collectAsStateWithLifecycle()
 
     var hasMicPermission by remember {
         mutableStateOf(
@@ -79,6 +89,26 @@ fun StreamScreen() {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> hasMicPermission = granted }
+
+    var hasNotifPermission by remember {
+        mutableStateOf(
+            android.os.Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasNotifPermission = granted }
+
+    // Vérifie/obtient toutes les permissions puis démarre l'enregistrement.
+    fun ensurePermissionsAndStart(vm: StreamViewModel) {
+        when {
+            !hasMicPermission -> permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            !hasNotifPermission -> notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            else -> vm.toggleStreaming()
+        }
+    }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -148,7 +178,11 @@ fun StreamScreen() {
                     Spacer(Modifier.height(8.dp))
 
                     Text(
-                        text = if (isStreaming) "● Écoute…" else "Prêt — appuie pour transcrire",
+                        text = when {
+                            isStreaming && isPaused -> "⏸ En pause — ${formatTime(elapsedSec)}"
+                            isStreaming -> "● Écoute… ${formatTime(elapsedSec)}"
+                            else -> "Prêt — appuie pour transcrire"
+                        },
                         color = if (isStreaming) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -212,11 +246,27 @@ fun StreamScreen() {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.height(6.dp))
-                        Button(
-                            onClick = { vm.transcribeLastRecording() },
-                            enabled = !isTranscribingFile,
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(if (isTranscribingFile) "Transcription du fichier…" else "Transcrire l'audio enregistré")
+                            Button(
+                                onClick = { vm.togglePlayback() },
+                                enabled = !isTranscribingFile && !isStreaming,
+                            ) {
+                                Text(if (isPlaying) "■ Arrêter l'écoute" else "▶ Écouter")
+                            }
+                            Button(
+                                onClick = { vm.transcribeLastRecording() },
+                                enabled = !isTranscribingFile,
+                            ) {
+                                Text(if (isTranscribingFile) "Transcription…" else "Transcrire")
+                            }
+                            OutlinedButton(
+                                onClick = { vm.deleteLastRecording() },
+                                enabled = !isTranscribingFile && !isPlaying,
+                            ) {
+                                Text("Supprimer")
+                            }
                         }
                         if (isTranscribingFile) {
                             Spacer(Modifier.height(6.dp))
@@ -247,35 +297,84 @@ fun StreamScreen() {
 
                     Spacer(Modifier.height(16.dp))
 
-                    // Bouton micro : fond rond + symbole + clic
-                    Box(
-                        modifier = Modifier
-                            .size(96.dp)
-                            .background(
-                                color = if (isStreaming) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary,
-                                shape = CircleShape,
-                            )
-                            .clickable {
-                                if (!hasMicPermission) {
-                                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                } else {
-                                    vm.toggleStreaming()
+                    if (isStreaming) {
+                        // Pendant l'enregistrement : Pause / Reprendre + Stop
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(24.dp),
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(72.dp)
+                                        .background(
+                                            color = if (isPaused) MaterialTheme.colorScheme.primary else Color(0xFFF57C00),
+                                            shape = CircleShape,
+                                        )
+                                        .clickable { vm.togglePause() },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = if (isPaused) "▶" else "⏸",
+                                        color = Color.White,
+                                        fontSize = 30.sp,
+                                    )
                                 }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = if (isPaused) "Reprendre" else "Pause",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(72.dp)
+                                        .background(Color(0xFFD32F2F), CircleShape)
+                                        .clickable { vm.stopStreaming() },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = "■",
+                                        color = Color.White,
+                                        fontSize = 30.sp,
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = "Arrêter",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    } else {
+                        // Prêt : bouton démarrer
+                        Box(
+                            modifier = Modifier
+                                .size(96.dp)
+                                .background(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shape = CircleShape,
+                                )
+                                .clickable {
+                                    ensurePermissionsAndStart(vm)
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "▶",
+                                color = Color.White,
+                                fontSize = 40.sp,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
                         Text(
-                            text = if (isStreaming) "■" else "▶",
-                            color = Color.White,
-                            fontSize = 40.sp,
+                            text = "Appuyer pour parler",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = if (isStreaming) "Arrêter" else "Appuyer pour parler",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
             }
         }

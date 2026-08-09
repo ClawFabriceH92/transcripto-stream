@@ -1,12 +1,17 @@
 package com.transcripto.stream.ui
 
 import android.content.Context
+import android.media.MediaPlayer
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.transcripto.stream.RecordingService
+import com.transcripto.stream.RecordingState
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.stt.GoogleSpeechEngine
+import com.transcripto.stream.stt.SegmentData
+import com.transcripto.stream.stt.StreamResult
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +28,8 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.min
 
 sealed interface ModelState {
     data object Loading : ModelState
@@ -66,6 +73,12 @@ class StreamViewModel(
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
 
+    private val _isPaused = MutableStateFlow(false)
+    val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
+
+    private val _elapsedSec = MutableStateFlow(0L)
+    val elapsedSec: StateFlow<Long> = _elapsedSec.asStateFlow()
+
     // Moteur sélectionné : "google" (qualité Android, cloud) ou "whisper" (100% local)
     private val _selectedEngine = MutableStateFlow("google")
     val selectedEngine: StateFlow<String> = _selectedEngine.asStateFlow()
@@ -93,6 +106,9 @@ class StreamViewModel(
     private val _fileTranscript = MutableStateFlow("")
     val fileTranscript: StateFlow<String> = _fileTranscript.asStateFlow()
 
+    private val _isPlaying = MutableStateFlow(false)
+    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+
     // ---- Internes ----
     private val engine = WhisperStreamEngine()
     private var googleEngine: GoogleSpeechEngine? = null
@@ -100,6 +116,8 @@ class StreamViewModel(
     private var wavWriter: WavFileWriter? = null
     private var activeRecordingFile: File? = null
     private var streamJob: Job? = null
+    private var chronoJob: Job? = null
+    private var mediaPlayer: MediaPlayer? = null
 
     // Ring buffer (WINDOW_SECONDS + marge) — on garde un peu plus pour le chevauchement
     private val ringSize = SAMPLE_RATE * (WINDOW_SECONDS + OVERLAP_SECONDS)
@@ -150,6 +168,87 @@ class StreamViewModel(
         }
     }
 
+    fun togglePause() {
+        if (!_isStreaming.value) return
+        if (_isPaused.value) {
+            _isPaused.value = false
+            RecordingState.isPaused = false
+            googleEngine?.resume()
+            // Reset du ring pour ne pas transcrire l'audio de la pause
+            writePos = 0
+            filled = false
+            windowStart = 0
+        } else {
+            _isPaused.value = true
+            RecordingState.isPaused = true
+            googleEngine?.pause()
+        }
+    }
+
+    /**
+     * Lecture / arrêt de l'écoute du dernier enregistrement WAV.
+     */
+    fun togglePlayback() {
+        val file = _lastRecording.value ?: return
+        if (_isPlaying.value) {
+            stopPlayback()
+        } else {
+            try {
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(file.absolutePath)
+                    setOnCompletionListener {
+                        _isPlaying.value = false
+                        release()
+                        mediaPlayer = null
+                    }
+                    setOnErrorListener { _, _, _ ->
+                        _isPlaying.value = false
+                        release()
+                        mediaPlayer = null
+                        true
+                    }
+                    prepare()
+                    start()
+                }
+                _isPlaying.value = true
+            } catch (e: Exception) {
+                _lastError.value = "Lecture impossible : ${e.message}"
+            }
+        }
+    }
+
+    private fun stopPlayback() {
+        try {
+            mediaPlayer?.stop()
+        } catch (_: Exception) {}
+        mediaPlayer?.release()
+        mediaPlayer = null
+        _isPlaying.value = false
+    }
+
+    fun deleteLastRecording() {
+        if (_isStreaming.value) return
+        _lastRecording.value?.delete()
+        _lastRecording.value = null
+        activeRecordingFile = null
+        _fileTranscript.value = ""
+    }
+
+    private fun startChrono() {
+        _elapsedSec.value = 0L
+        RecordingState.elapsedSec = 0L
+        chronoJob?.cancel()
+        chronoJob = viewModelScope.launch {
+            while (isActive) {
+                delay(1000)
+                if (!_isPaused.value) {
+                    _elapsedSec.value++
+                    RecordingState.elapsedSec = _elapsedSec.value
+                }
+            }
+        }
+    }
+
     fun startStreaming() {
         if (_modelState.value !is ModelState.Ready || _isStreaming.value) return
         validatedText = ""
@@ -158,6 +257,11 @@ class StreamViewModel(
         _lastError.value = null
         _transcriptionCount.value = 0
         _lastWindowText.value = ""
+        _isPaused.value = false
+        RecordingState.isActive = true
+        RecordingState.isPaused = false
+        startChrono()
+        RecordingService.start(appContext)
 
         if (_selectedEngine.value == "google") {
             startGoogleStreaming()
@@ -204,8 +308,10 @@ class StreamViewModel(
         _lastRecording.value = recFile
 
         val rec = PcmAudioRecorder(SAMPLE_RATE) { buf, n ->
-            appendSamples(buf, n)
-            writer.write(buf, n)
+            if (!_isPaused.value) {
+                appendSamples(buf, n)
+                writer.write(buf, n)
+            }
         }
         if (!rec.start()) {
             _lastError.value = "Impossible de démarrer l'enregistrement (micro ?)"
@@ -219,7 +325,7 @@ class StreamViewModel(
         streamJob = viewModelScope.launch {
             while (isActive) {
                 delay(TICK_MS)
-                if (transcribing) continue
+                if (transcribing || _isPaused.value) continue
                 val (pcm, newMs) = snapshotNewAudio()
                 if (newMs < MIN_NEW_MS) continue
                 transcribing = true
@@ -243,8 +349,14 @@ class StreamViewModel(
 
     fun stopStreaming() {
         _isStreaming.value = false
+        _isPaused.value = false
+        RecordingState.isActive = false
+        RecordingState.isPaused = false
+        RecordingService.stop(appContext)
         streamJob?.cancel()
         streamJob = null
+        chronoJob?.cancel()
+        chronoJob = null
         googleEngine?.stop()
         googleEngine = null
         recorder?.stop()
@@ -274,11 +386,103 @@ class StreamViewModel(
                 if (res.error != null) {
                     _lastError.value = res.error
                 } else {
-                    _fileTranscript.value = res.fullText.trim()
+                    _fileTranscript.value = withContext(Dispatchers.IO) {
+                        buildSpeakerMarkedTranscript(pcm, res)
+                    }
                 }
             }
             _isTranscribingFile.value = false
         }
+    }
+
+    /**
+     * Reconstruit le texte avec détection approximative des changements d'interlocuteur :
+     * - pause > 1,2 s entre deux segments whisper → marqueur [pause]
+     * - variation de pitch fondamental (F0) > 20 % entre segments consécutifs → marqueur [changement d'interlocuteur]
+     * Approximation : le pitch ne distingue pas deux voix proches (deux hommes) — c'est une piste, pas une diarisation fiable.
+     */
+    private fun buildSpeakerMarkedTranscript(pcm: ByteArray, res: StreamResult): String {
+        val segments = res.segments
+        if (segments.isEmpty()) return res.fullText.trim()
+        val shorts = byteArrayToShorts(pcm)
+        val sb = StringBuilder()
+        var prevF0: Double? = null
+        for ((i, seg) in segments.withIndex()) {
+            if (seg.text.isBlank()) continue
+            if (i > 0) {
+                val prev = segments[i - 1]
+                val gap = seg.startMs - prev.endMs
+                if (gap > 1200) {
+                    sb.append(" [pause ${gap / 1000}s] ")
+                }
+            }
+            val s0 = ((seg.startMs * SAMPLE_RATE) / 1000L).toInt().coerceIn(0, shorts.size - 1)
+            val s1 = ((seg.endMs * SAMPLE_RATE) / 1000L).toInt().coerceIn(s0 + 1, shorts.size)
+            val f0 = averagePitch(shorts, s0, s1)
+            if (prevF0 != null && f0 != null) {
+                val ratio = abs(f0 - prevF0) / min(f0, prevF0)
+                if (ratio > 0.20) {
+                    sb.append(" [changement d'interlocuteur] ")
+                }
+            }
+            prevF0 = f0 ?: prevF0
+            sb.append(seg.text.trim()).append(" ")
+        }
+        return sb.toString().trim()
+    }
+
+    private fun byteArrayToShorts(bytes: ByteArray): ShortArray {
+        val n = bytes.size / 2
+        val out = ShortArray(n)
+        for (i in 0 until n) {
+            out[i] = ((bytes[2 * i].toInt() and 0xFF) or (bytes[2 * i + 1].toInt() shl 8)).toShort()
+        }
+        return out
+    }
+
+    /**
+     * Pitch fondamental moyen d'un segment (autocorrélation, fenêtres 30 ms).
+     * Retourne null si le segment est trop court ou trop peu voisé.
+     */
+    private fun averagePitch(pcm: ShortArray, start: Int, end: Int): Double? {
+        val win = 480      // 30 ms @16 kHz
+        val hop = 240      // 15 ms
+        val pitches = mutableListOf<Double>()
+        var s = start
+        while (s + win < end) {
+            val f0 = f0Window(pcm, s, win)
+            if (f0 != null && f0 in 60.0..300.0) pitches.add(f0)
+            s += hop
+        }
+        if (pitches.size < 3) return null
+        // médiane (robuste aux octaves parasites)
+        pitches.sort()
+        return pitches[pitches.size / 2]
+    }
+
+    private fun f0Window(pcm: ShortArray, offset: Int, len: Int): Double? {
+        // autocorrélation sur lags 40..267 (≈ 60–400 Hz à 16 kHz)
+        var bestLag = -1
+        var bestScore = 0.0
+        var energy = 0.0
+        for (i in 0 until len) {
+            val v = pcm[offset + i].toDouble()
+            energy += v * v
+        }
+        if (energy < 1e6) return null // trop de silence
+        for (lag in 40..267) {
+            var score = 0.0
+            for (i in 0 until len - lag) {
+                score += pcm[offset + i].toDouble() * pcm[offset + i + lag].toDouble()
+            }
+            score /= (len - lag)
+            if (score > bestScore) {
+                bestScore = score
+                bestLag = lag
+            }
+        }
+        if (bestLag <= 0 || bestScore <= 0) return null
+        return SAMPLE_RATE.toDouble() / bestLag
     }
 
     private fun readWavPcm(file: File): ByteArray? {
@@ -407,6 +611,7 @@ class StreamViewModel(
 
     override fun onCleared() {
         stopStreaming()
+        stopPlayback()
         viewModelScope.launch {
             engine.unloadModel()
         }

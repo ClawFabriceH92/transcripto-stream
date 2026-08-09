@@ -60,6 +60,22 @@ class GoogleSpeechEngine(
         recognizer = null
     }
 
+    /** Met en pause : arrête l'écoute en cours (le texte déjà validé reste). */
+    fun pause() {
+        running = false
+        try {
+            recognizer?.stopListening()
+        } catch (_: Exception) {}
+    }
+
+    /** Reprend l'écoute après une pause. */
+    fun resume() {
+        if (recognizer == null) return
+        running = true
+        busyRestarts = 0
+        startListening()
+    }
+
     private fun startListening() {
         if (!running) return
         try {
