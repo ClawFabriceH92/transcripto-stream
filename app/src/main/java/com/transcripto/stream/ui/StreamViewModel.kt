@@ -79,6 +79,7 @@ class StreamViewModel(
         private const val VAD_THRESHOLD = 300.0 // RMS int16 : silence ~<50, parole >500
         private const val REC_DIR = "recordings"
         private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+        private val REC_START_END_FORMAT = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
         private val TXT_DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
     }
 
@@ -150,12 +151,19 @@ class StreamViewModel(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    // ---- Nommage proposé à l'arrêt de l'enregistrement ----
+    private val _pendingName = MutableStateFlow<File?>(null)
+    val pendingName: StateFlow<File?> = _pendingName.asStateFlow()
+    private val _pendingNameDefault = MutableStateFlow("")
+    val pendingNameDefault: StateFlow<String> = _pendingNameDefault.asStateFlow()
+
     // ---- Internes ----
     private val engine = WhisperStreamEngine()
     private var googleEngine: GoogleSpeechEngine? = null
     private var recorder: PcmAudioRecorder? = null
     private var wavWriter: WavFileWriter? = null
     private var activeRecordingFile: File? = null
+    private var activeStartTime: Long = 0L
     private var streamJob: Job? = null
     private var chronoJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
@@ -230,9 +238,13 @@ class StreamViewModel(
     fun selectRecording(item: RecordingItem) {
         _lastRecording.value = item.file
         activeRecordingFile = null
-        _fileTranscript.value = item.transcript
-            .substringAfter("----\n")
-            .trim()
+        // Relit le .txt COMPLET (pas l'aperçu tronqué à 200 caractères de la liste)
+        val txt = File(item.file.parentFile, item.baseName + ".txt")
+        _fileTranscript.value = if (txt.exists()) {
+            txt.readText().substringAfter("----\n").trim()
+        } else {
+            item.transcript
+        }
     }
 
     fun lockNow() {
@@ -350,38 +362,29 @@ class StreamViewModel(
         startChrono()
         RecordingService.start(appContext)
 
+        // Le WAV est conservé dans les DEUX modes (Google et Whisper)
+        if (!startAudioCapture()) {
+            RecordingService.stop(appContext)
+            RecordingState.isActive = false
+            chronoJob?.cancel()
+            chronoJob = null
+            return
+        }
+        _isStreaming.value = true
+
         if (_selectedEngine.value == "google") {
-            startGoogleStreaming()
+            if (!startGoogleStreaming()) stopStreaming()
         } else {
             startWhisperStreaming()
         }
     }
 
-    private fun startGoogleStreaming() {
-        val g = GoogleSpeechEngine(
-            appContext,
-            onPartial = { partial ->
-                _liveText.value = (validatedText + " " + partial).trim()
-            },
-            onFinal = { final ->
-                if (final != validatedText) {
-                    validatedText = (validatedText + " " + final).trim()
-                }
-                _liveText.value = validatedText
-            },
-            onError = { msg -> _lastError.value = msg },
-            language = settings.language,
-            hints = settings.vocabularyList,
-        )
-        if (!g.start()) return
-        googleEngine = g
-        _isStreaming.value = true
-    }
-
-    private fun startWhisperStreaming() {
+    /** Crée le fichier WAV + le recorder (commun aux deux moteurs). */
+    private fun startAudioCapture(): Boolean {
         writePos = 0
         filled = false
         windowStart = 0
+        activeStartTime = System.currentTimeMillis()
 
         val recDir = recordingsDir()
         val recFile = File(recDir, "rec_${REC_DATE_FORMAT.format(Date())}.wav")
@@ -389,7 +392,7 @@ class StreamViewModel(
             WavFileWriter(recFile)
         } catch (e: Exception) {
             _lastError.value = "Impossible de créer le fichier audio : ${e.message}"
-            return
+            return false
         }
         wavWriter = writer
         activeRecordingFile = recFile
@@ -408,19 +411,45 @@ class StreamViewModel(
                         ).toInt().toShort()
                     }
                 }
-                appendSamples(buf, n)
                 writer.write(buf, n)
+                // Le ring buffer ne sert qu'au moteur Whisper (transcription locale)
+                if (_selectedEngine.value == "whisper") appendSamples(buf, n)
             }
         }
         if (!rec.start()) {
             _lastError.value = "Impossible de démarrer l'enregistrement (micro ?)"
             try { writer.close() } catch (_: Exception) {}
             wavWriter = null
-            return
+            activeRecordingFile = null
+            _lastRecording.value = null
+            return false
         }
         recorder = rec
-        _isStreaming.value = true
+        return true
+    }
 
+    private fun startGoogleStreaming(): Boolean {
+        val g = GoogleSpeechEngine(
+            appContext,
+            onPartial = { partial ->
+                _liveText.value = (validatedText + " " + partial).trim()
+            },
+            onFinal = { final ->
+                if (final != validatedText) {
+                    validatedText = (validatedText + " " + final).trim()
+                }
+                _liveText.value = validatedText
+            },
+            onError = { msg -> _lastError.value = msg },
+            language = settings.language,
+            hints = settings.vocabularyList,
+        )
+        if (!g.start()) return false
+        googleEngine = g
+        return true
+    }
+
+    private fun startWhisperStreaming() {
         val prompt = settings.vocabularyList.joinToString(", ")
         streamJob = viewModelScope.launch {
             while (isActive) {
@@ -472,22 +501,75 @@ class StreamViewModel(
         activeRecordingFile = null
         _lastRecording.value = raw
 
-        if (raw != null) {
+        if (raw != null && raw.exists()) {
+            // Enregistrements quasi vides (< 1 s) : on ne garde pas un WAV de 44 octets
+            if (raw.length() < 1000L) {
+                raw.delete()
+                _lastRecording.value = null
+                refreshRecordings()
+                return
+            }
+            // Nom par défaut : date + heure de début - heure de fin (ex: 20260809_1435-1530)
+            val defaultName = buildDefaultName(raw)
+            val renamed = File(raw.parentFile, "$defaultName.wav")
+            if (!renamed.exists() && raw.renameTo(renamed)) {
+                _lastRecording.value = renamed
+            }
+            val finalFile = _lastRecording.value ?: raw
+
             // .txt auto à côté du WAV — rien ne se perd, même sans transcription différée
             if (_liveText.value.isNotBlank()) {
-                writeTranscriptFile(raw, _liveText.value, _elapsedSec.value * 1000)
+                writeTranscriptFile(finalFile, _liveText.value, _elapsedSec.value * 1000)
             }
             // Chiffrement optionnel du WAV
-            if (settings.encryptWav && raw.exists() && raw.extension == "wav") {
-                val enc = File(raw.parentFile, raw.nameWithoutExtension + ".wav.enc")
-                if (CryptoManager.encryptFile(raw, enc)) {
-                    raw.delete()
+            if (settings.encryptWav && finalFile.exists() && finalFile.extension == "wav") {
+                val enc = File(finalFile.parentFile, finalFile.nameWithoutExtension + ".wav.enc")
+                if (CryptoManager.encryptFile(finalFile, enc)) {
+                    finalFile.delete()
                     _lastRecording.value = enc
                 } else {
                     _lastError.value = "Chiffrement impossible — WAV conservé en clair"
                 }
             }
+            // Proposer de donner un nom (le défaut date-début-fin est déjà appliqué)
+            _pendingName.value = _lastRecording.value
+            _pendingNameDefault.value = defaultName
         }
+        refreshRecordings()
+    }
+
+    /** Nom par défaut : 20260809_1435-1530 (date, heure début, heure fin). */
+    private fun buildDefaultName(file: File): String {
+        val start = Date(activeStartTime)
+        val end = Date()
+        return "${REC_START_END_FORMAT.format(start)}-${REC_START_END_FORMAT.format(end)}"
+    }
+
+    fun confirmPendingName(newName: String) {
+        val f = _pendingName.value ?: return
+        // Nettoyage : on retire les caractères interdits dans un nom de fichier
+        val name = newName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "").trim()
+        _pendingName.value = null
+        if (name.isEmpty() || name == f.nameWithoutExtension) {
+            refreshRecordings()
+            return
+        }
+        val dest = File(f.parentFile, "$name.${f.extension}")
+        if (dest.exists()) {
+            _lastError.value = "Un enregistrement porte déjà ce nom"
+            refreshRecordings()
+            return
+        }
+        if (f.renameTo(dest)) {
+            val oldTxt = File(f.parentFile, f.nameWithoutExtension + ".txt")
+            if (oldTxt.exists()) oldTxt.renameTo(File(dest.parentFile, dest.nameWithoutExtension + ".txt"))
+            if (_lastRecording.value == f) _lastRecording.value = dest
+        }
+        refreshRecordings()
+    }
+
+    fun dismissPendingName() {
+        _pendingName.value = null
         refreshRecordings()
     }
 

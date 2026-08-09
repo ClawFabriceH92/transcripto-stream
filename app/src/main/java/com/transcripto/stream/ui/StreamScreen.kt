@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -34,8 +35,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material.icons.Icons
@@ -84,6 +87,8 @@ fun StreamScreen() {
     val screen by vm.screen.collectAsStateWithLifecycle()
     val locked by vm.locked.collectAsStateWithLifecycle()
     val pinError by vm.pinError.collectAsStateWithLifecycle()
+    val pendingName by vm.pendingName.collectAsStateWithLifecycle()
+    val pendingNameDefault by vm.pendingNameDefault.collectAsStateWithLifecycle()
 
     // Thème (réglage système/clair/sombre)
     val darkTheme = when (vm.settings.theme) {
@@ -135,9 +140,59 @@ fun StreamScreen() {
                         )
                     }
                 }
+
+                // Proposition de nommage à l'arrêt d'un enregistrement
+                if (pendingName != null) {
+                    NameRecordingDialog(
+                        defaultName = pendingNameDefault,
+                        onConfirm = { vm.confirmPendingName(it) },
+                        onDismiss = { vm.dismissPendingName() },
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun NameRecordingDialog(
+    defaultName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(defaultName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Enregistrement terminé") },
+        text = {
+            Column {
+                Text(
+                    "Donne un nom à cet enregistrement (ex: client, dossier, réunion) :",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    label = { Text("Nom") },
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Par défaut : date + heure de début et de fin (20260809_1435-1530).",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name) }) { Text("OK") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Annuler") }
+        },
+    )
 }
 
 @Composable
