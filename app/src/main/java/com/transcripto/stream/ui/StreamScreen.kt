@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -59,6 +61,11 @@ fun StreamScreen() {
     val loadMessage by vm.loadMessage.collectAsStateWithLifecycle()
     val extractionProgress by vm.extractionProgress.collectAsStateWithLifecycle()
     val modelLoadMs by vm.modelLoadMs.collectAsStateWithLifecycle()
+    val transcriptionCount by vm.transcriptionCount.collectAsStateWithLifecycle()
+    val lastWindowText by vm.lastWindowText.collectAsStateWithLifecycle()
+    val lastRecording by vm.lastRecording.collectAsStateWithLifecycle()
+    val isTranscribingFile by vm.isTranscribingFile.collectAsStateWithLifecycle()
+    val fileTranscript by vm.fileTranscript.collectAsStateWithLifecycle()
 
     var hasMicPermission by remember {
         mutableStateOf(
@@ -125,6 +132,14 @@ fun StreamScreen() {
                             fontSize = 12.sp,
                         )
                     }
+                    if (transcriptionCount > 0) {
+                        Text(
+                            "$transcriptionCount transcription${if (transcriptionCount > 1) "s" else ""} · dernière : « ${lastWindowText.take(40)} »",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
 
                     Spacer(Modifier.height(12.dp))
 
@@ -151,6 +166,49 @@ fun StreamScreen() {
                     }
                     LaunchedEffect(liveText) {
                         scrollState.animateScrollTo(scrollState.maxValue)
+                    }
+
+                    // ---- Audio conservé + transcription différée ----
+                    val recording = lastRecording
+                    if (recording != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Audio conservé : ${recording.name}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Button(
+                            onClick = { vm.transcribeLastRecording() },
+                            enabled = !isTranscribingFile,
+                        ) {
+                            Text(if (isTranscribingFile) "Transcription du fichier…" else "Transcrire l'audio enregistré")
+                        }
+                        if (isTranscribingFile) {
+                            Spacer(Modifier.height(6.dp))
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        if (fileTranscript.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(140.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.secondaryContainer,
+                                        MaterialTheme.shapes.medium,
+                                    )
+                                    .padding(12.dp),
+                            ) {
+                                Text(
+                                    text = fileTranscript,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState()),
+                                )
+                            }
+                        }
                     }
 
                     Spacer(Modifier.height(16.dp))

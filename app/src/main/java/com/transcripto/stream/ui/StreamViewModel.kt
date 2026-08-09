@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.transcripto.stream.audio.PcmAudioRecorder
+import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,6 +19,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 sealed interface ModelState {
     data object Loading : ModelState
@@ -26,10 +30,9 @@ sealed interface ModelState {
 }
 
 /**
- * Transcription en temps réel : capture PCM 16 kHz continue, fenêtre glissante de 4 s,
- * transcription toutes les 1,5 s, déduplication du chevauchement à l'affichage.
- *
- * Tous les états sont exposés en [StateFlow] pour que Compose se recompose.
+ * Transcription en temps réel : capture PCM 16 kHz continue, fenêtre glissante avec
+ * avance réelle (on transcrit tout le nouvel audio, chevauchement 1 s), conservation
+ * de l'audio en WAV, et transcription différée du fichier enregistré.
  */
 class StreamViewModel(
     private val appContext: Context,
@@ -39,15 +42,18 @@ class StreamViewModel(
         private const val TAG = "StreamVM"
         private const val SAMPLE_RATE = 16000
         private const val WINDOW_SECONDS = 4
-        private const val TICK_MS = 1500L
+        private const val OVERLAP_SECONDS = 1
+        private const val TICK_MS = 1000L
         private const val MODEL_ASSET = "models/ggml-base.bin"
+        private const val MIN_NEW_MS = 500L // minimum de nouvel audio pour transcrire
+        private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
     }
 
     // ---- État exposé à l'UI (observable par Compose) ----
     private val _modelState = MutableStateFlow<ModelState>(ModelState.Loading)
     val modelState: StateFlow<ModelState> = _modelState.asStateFlow()
 
-    private val _extractionProgress = MutableStateFlow<Float?>(null) // 0..1 pendant l'extraction
+    private val _extractionProgress = MutableStateFlow<Float?>(null)
     val extractionProgress: StateFlow<Float?> = _extractionProgress.asStateFlow()
 
     private val _loadMessage = MutableStateFlow("Chargement du modèle Whisper…")
@@ -65,15 +71,36 @@ class StreamViewModel(
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
+    // Debug / feedback : combien de transcriptions, et le dernier texte de fenêtre brut
+    private val _transcriptionCount = MutableStateFlow(0)
+    val transcriptionCount: StateFlow<Int> = _transcriptionCount.asStateFlow()
+
+    private val _lastWindowText = MutableStateFlow("")
+    val lastWindowText: StateFlow<String> = _lastWindowText.asStateFlow()
+
+    // Dernier enregistrement conservé
+    private val _lastRecording = MutableStateFlow<File?>(null)
+    val lastRecording: StateFlow<File?> = _lastRecording.asStateFlow()
+
+    private val _isTranscribingFile = MutableStateFlow(false)
+    val isTranscribingFile: StateFlow<Boolean> = _isTranscribingFile.asStateFlow()
+
+    private val _fileTranscript = MutableStateFlow("")
+    val fileTranscript: StateFlow<String> = _fileTranscript.asStateFlow()
+
     // ---- Internes ----
     private val engine = WhisperStreamEngine()
     private var recorder: PcmAudioRecorder? = null
+    private var wavWriter: WavFileWriter? = null
+    private var activeRecordingFile: File? = null
     private var streamJob: Job? = null
 
-    // Ring buffer 4 s (16 kHz * 4 s = 64 000 shorts)
-    private val ring = ShortArray(SAMPLE_RATE * WINDOW_SECONDS)
+    // Ring buffer (WINDOW_SECONDS + marge) — on garde un peu plus pour le chevauchement
+    private val ringSize = SAMPLE_RATE * (WINDOW_SECONDS + OVERLAP_SECONDS)
+    private val ring = ShortArray(ringSize)
     private var writePos = 0
     private var filled = false
+    private var windowStart = 0          // position du premier échantillon non encore transcrit
     private var validatedText = ""
 
     init {
@@ -115,13 +142,35 @@ class StreamViewModel(
         if (_modelState.value !is ModelState.Ready || _isStreaming.value) return
         validatedText = ""
         _liveText.value = ""
+        _fileTranscript.value = ""
         _lastError.value = null
+        _transcriptionCount.value = 0
+        _lastWindowText.value = ""
         writePos = 0
         filled = false
+        windowStart = 0
 
-        val rec = PcmAudioRecorder(SAMPLE_RATE) { buf, n -> appendSamples(buf, n) }
+        // Fichier WAV pour conserver l'audio
+        val recDir = File(appContext.filesDir, "recordings").apply { mkdirs() }
+        val recFile = File(recDir, "rec_${REC_DATE_FORMAT.format(Date())}.wav")
+        val writer = try {
+            WavFileWriter(recFile)
+        } catch (e: Exception) {
+            _lastError.value = "Impossible de créer le fichier audio : ${e.message}"
+            return
+        }
+        wavWriter = writer
+        activeRecordingFile = recFile
+        _lastRecording.value = recFile
+
+        val rec = PcmAudioRecorder(SAMPLE_RATE) { buf, n ->
+            appendSamples(buf, n)
+            writer.write(buf, n)
+        }
         if (!rec.start()) {
             _lastError.value = "Impossible de démarrer l'enregistrement (micro ?)"
+            try { writer.close() } catch (_: Exception) {}
+            wavWriter = null
             return
         }
         recorder = rec
@@ -131,14 +180,19 @@ class StreamViewModel(
             while (isActive) {
                 delay(TICK_MS)
                 if (transcribing) continue
+                val (pcm, newMs) = snapshotNewAudio()
+                if (newMs < MIN_NEW_MS) continue
                 transcribing = true
-                val pcm = snapshotWindow()
                 val res = engine.transcribeBuffer(pcm, "fr")
                 transcribing = false
                 if (res.error != null) {
                     _lastError.value = res.error
-                } else if (res.fullText.isNotBlank()) {
-                    mergeLive(res.fullText)
+                } else {
+                    _transcriptionCount.value++
+                    _lastWindowText.value = res.fullText.trim()
+                    if (res.fullText.isNotBlank()) {
+                        mergeLive(res.fullText)
+                    }
                 }
             }
         }
@@ -153,6 +207,58 @@ class StreamViewModel(
         streamJob = null
         recorder?.stop()
         recorder = null
+        try {
+            wavWriter?.close()
+        } catch (_: Exception) {}
+        wavWriter = null
+        _lastRecording.value = activeRecordingFile
+    }
+
+    /**
+     * Transcription différée du dernier fichier WAV enregistré.
+     */
+    fun transcribeLastRecording() {
+        val file = _lastRecording.value ?: return
+        if (_isTranscribingFile.value) return
+        val engineRef = (modelState.value as? ModelState.Ready)?.engine ?: return
+        viewModelScope.launch {
+            _isTranscribingFile.value = true
+            _fileTranscript.value = ""
+            val pcm = withContext(Dispatchers.IO) { readWavPcm(file) }
+            if (pcm == null) {
+                _lastError.value = "Fichier audio illisible"
+            } else {
+                val res = engineRef.transcribeBuffer(pcm, "fr")
+                if (res.error != null) {
+                    _lastError.value = res.error
+                } else {
+                    _fileTranscript.value = res.fullText.trim()
+                }
+            }
+            _isTranscribingFile.value = false
+        }
+    }
+
+    private fun readWavPcm(file: File): ByteArray? {
+        return try {
+            val bytes = file.readBytes()
+            // Cherche le chunk "data"
+            var idx = 12
+            while (idx + 8 <= bytes.size) {
+                val id = String(bytes, idx, 4)
+                val size = (bytes[idx + 4].toInt() and 0xFF) or
+                    ((bytes[idx + 5].toInt() and 0xFF) shl 8) or
+                    ((bytes[idx + 6].toInt() and 0xFF) shl 16) or
+                    ((bytes[idx + 7].toInt() and 0xFF) shl 24)
+                if (id == "data") {
+                    return bytes.copyOfRange(idx + 8, minOf(idx + 8 + size, bytes.size))
+                }
+                idx += 8 + size
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
     }
 
     // ---- Ring buffer ----
@@ -168,20 +274,39 @@ class StreamViewModel(
         }
     }
 
-    private fun snapshotWindow(): ByteArray {
+    /**
+     * Copie le nouvel audio depuis [windowStart] jusqu'à [writePos].
+     * Retourne (pcmBytes, durée en ms). Après transcription, windowStart avance
+     * avec un chevauchement de OVERLAP_SECONDS pour la continuité.
+     */
+    private fun snapshotNewAudio(): Pair<ByteArray, Long> {
         synchronized(ring) {
-            val out = ShortArray(ring.size)
-            val start = if (filled) writePos else 0
-            for (i in ring.indices) {
+            val end = writePos
+            var start = windowStart
+            // Longueur en échantillons (gère le wrap)
+            var len = (end - start + ring.size) % ring.size
+            if (len == 0 && filled) len = ring.size // buffer plein : tout est nouveau
+            if (len == 0) return ByteArray(0) to 0L // rien de nouveau
+
+            val out = ShortArray(len)
+            for (i in 0 until len) {
                 out[i] = ring[(start + i) % ring.size]
             }
-            val bytes = ByteArray(out.size * 2)
-            for (i in out.indices) {
+            val bytes = ByteArray(len * 2)
+            for (i in 0 until len) {
                 val v = out[i].toInt()
                 bytes[2 * i] = (v and 0xFF).toByte()
                 bytes[2 * i + 1] = ((v shr 8) and 0xFF).toByte()
             }
-            return bytes
+            // Avance la fenêtre : tout le transcrit moins le chevauchement
+            val overlap = SAMPLE_RATE * OVERLAP_SECONDS
+            windowStart = if (!filled) {
+                maxOf(0, end - overlap)
+            } else {
+                (end - overlap + ring.size) % ring.size
+            }
+            val newMs = (len * 1000L) / SAMPLE_RATE
+            return bytes to newMs
         }
     }
 
@@ -190,7 +315,8 @@ class StreamViewModel(
         val cleaned = full.trim()
         val words = validatedText.split(" ").filter { it.isNotBlank() }
         var matched = 0
-        for (n in minOf(3, words.size) downTo 1) {
+        val maxMatch = minOf(words.size, 8)
+        for (n in maxMatch downTo 1) {
             val suffix = words.takeLast(n).joinToString(" ")
             if (suffix.isNotBlank() && cleaned.startsWith(suffix)) {
                 matched = suffix.length
@@ -200,8 +326,8 @@ class StreamViewModel(
         val extra = if (matched > 0) cleaned.substring(matched).trim() else cleaned
         if (extra.isNotEmpty()) {
             validatedText = (validatedText.trim() + " " + extra).trim()
+            _liveText.value = validatedText
         }
-        _liveText.value = validatedText
     }
 
     // ---- Modèle ----

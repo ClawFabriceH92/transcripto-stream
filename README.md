@@ -7,9 +7,11 @@ Application Android **minimale** de transcription vocale **en temps réel**, 100
 ## Fonctionnement
 
 - Capture audio continue **PCM 16 kHz mono** (AudioRecord)
-- **Fenêtre glissante de 4 s** transcrite toutes les ~1,5 s par whisper.cpp (modèle Base embarqué)
+- **Fenêtre glissante avec avance réelle** : on transcrit tout le nouvel audio (chevauchement 1 s), pas une fenêtre fixe — le texte avance même avec un modèle lent
+- **Conservation audio** : chaque enregistrement est écrit en WAV (`filesDir/recordings/`) et reste disponible après l'arrêt
+- **Transcription différée** : bouton « Transcrire l'audio enregistré » → whisper traite le fichier complet (meilleure qualité que le live)
 - **Déduplication** du chevauchement entre fenêtres → le texte s'accumule sans doublons
-- Délai d'affichage : ~4 s (le temps de la fenêtre) — évolution prévue vers un vrai streaming VAD
+- Compteur de transcriptions + dernière fenêtre brute affichés (debug)
 
 ## Architecture
 
@@ -21,8 +23,9 @@ app/src/main/
 └── java/com/transcripto/stream/
     ├── MainActivity.kt
     ├── audio/PcmAudioRecorder.kt   # AudioRecord → ring buffer
+    ├── audio/WavFileWriter.kt      # PCM → WAV conservé
     ├── stt/WhisperStreamEngine.kt  # Pont JNI
-    └── ui/StreamViewModel.kt       # Boucle glissante + dédup
+    └── ui/StreamViewModel.kt       # Fenêtre glissante + dédup + transcription différée
         StreamScreen.kt             # Écran unique Compose
 ```
 
