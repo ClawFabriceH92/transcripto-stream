@@ -317,12 +317,16 @@ private fun MainScreen(vm: StreamViewModel) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = if (selectedEngine == "google") {
-                        "Audio envoyé au cloud — Whisper = 100% local"
+                        "Google (cloud) : bonne qualité, mais PAS de sauvegarde audio"
                     } else {
-                        "100% local : l'audio ne quitte pas l'appareil"
+                        "Whisper (local) : audio sauvegardé + transcrit en direct"
                     },
                     fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (selectedEngine == "google") {
+                        Color(0xFFB26A00)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
 
                 Spacer(Modifier.height(8.dp))
@@ -401,21 +405,21 @@ private fun MainScreen(vm: StreamViewModel) {
                             enabled = !isTranscribingFile,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(if (isPlaying) "■ Arrêter" else "▶ Écouter")
+                            Text(if (isPlaying) "■ Arrêter" else "▶ Écouter", fontSize = 12.sp)
                         }
                         Button(
                             onClick = { vm.transcribeLastRecording() },
                             enabled = !isTranscribingFile,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(if (isTranscribingFile) "…" else "Transcrire")
+                            Text(if (isTranscribingFile) "…" else "Transcrire", fontSize = 12.sp)
                         }
                         OutlinedButton(
                             onClick = { vm.deleteLastRecording() },
                             enabled = !isTranscribingFile && !isPlaying,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("Supprimer")
+                            Text("Supprimer", fontSize = 12.sp)
                         }
                     }
                     Spacer(Modifier.height(4.dp))

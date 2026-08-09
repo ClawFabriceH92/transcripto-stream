@@ -6,6 +6,9 @@ import java.io.RandomAccessFile
 /**
  * Écrit un flux PCM 16 kHz mono int16 dans un fichier WAV pendant l'enregistrement.
  * Le header WAV (44 octets) est écrit à la fermeture avec la taille réelle des données.
+ *
+ * ⚠️ Les champs de taille WAV sont en LITTLE-ENDIAN — RandomAccessFile.writeInt()
+ * écrit en big-endian, ce qui corrompait le header (lecture MediaPlayer impossible).
  */
 class WavFileWriter(file: File) {
 
@@ -44,17 +47,31 @@ class WavFileWriter(file: File) {
 
     private fun writeHeader(dataSize: Long) {
         raf.writeBytes("RIFF")
-        raf.writeInt(((36 + dataSize).toInt()).toInt())
+        writeIntLE((36 + dataSize).toInt())
         raf.writeBytes("WAVE")
         raf.writeBytes("fmt ")
-        raf.writeInt(16)              // taille du chunk fmt
-        raf.writeShort(1)             // PCM
-        raf.writeShort(1)             // mono
-        raf.writeInt(16000)           // sample rate
-        raf.writeInt(32000)           // byte rate
-        raf.writeShort(2)             // block align
-        raf.writeShort(16)            // bits par échantillon
+        writeIntLE(16)              // taille du chunk fmt
+        writeShortLE(1)             // PCM
+        writeShortLE(1)             // mono
+        writeIntLE(16000)           // sample rate
+        writeIntLE(32000)           // byte rate
+        writeShortLE(2)             // block align
+        writeShortLE(16)            // bits par échantillon
         raf.writeBytes("data")
-        raf.writeInt(dataSize.toInt())
+        writeIntLE(dataSize.toInt())
+    }
+
+    /** Écrit un int en little-endian (WAV). */
+    private fun writeIntLE(v: Int) {
+        raf.write(v and 0xFF)
+        raf.write((v shr 8) and 0xFF)
+        raf.write((v shr 16) and 0xFF)
+        raf.write((v shr 24) and 0xFF)
+    }
+
+    /** Écrit un short en little-endian (WAV). */
+    private fun writeShortLE(v: Int) {
+        raf.write(v and 0xFF)
+        raf.write((v shr 8) and 0xFF)
     }
 }

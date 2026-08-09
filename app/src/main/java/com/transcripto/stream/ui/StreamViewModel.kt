@@ -76,7 +76,7 @@ class StreamViewModel(
         private const val TICK_MS = 1000L
         private const val MODEL_ASSET = "models/ggml-base.bin"
         private const val MIN_NEW_MS = 500L // minimum de nouvel audio pour transcrire
-        private const val VAD_THRESHOLD = 300.0 // RMS int16 : silence ~<50, parole >500
+        private const val VAD_THRESHOLD = 120.0 // RMS int16 : silence ~<50, parole >300 — seuil volontairement bas pour ne rien perdre
         private const val REC_DIR = "recordings"
         private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         private val REC_START_END_FORMAT = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
@@ -116,8 +116,10 @@ class StreamViewModel(
 
     private val _elapsedSec = MutableStateFlow(0L)
     val elapsedSec: StateFlow<Long> = _elapsedSec.asStateFlow()
-
-    private val _selectedEngine = MutableStateFlow("google")
+    // Moteur sélectionné : "google" (qualité Android, cloud, PAS de sauvegarde audio)
+    // ou "whisper" (100% local, audio sauvegardé + transcrit) — Whisper est le défaut car
+    // le SpeechRecognizer Google ne peut PAS cohabiter avec l'AudioRecord (conflit micro).
+    private val _selectedEngine = MutableStateFlow("whisper")
     val selectedEngine: StateFlow<String> = _selectedEngine.asStateFlow()
 
     private val _liveText = MutableStateFlow("")
@@ -362,13 +364,16 @@ class StreamViewModel(
         startChrono()
         RecordingService.start(appContext)
 
-        // Le WAV est conservé dans les DEUX modes (Google et Whisper)
-        if (!startAudioCapture()) {
-            RecordingService.stop(appContext)
-            RecordingState.isActive = false
-            chronoJob?.cancel()
-            chronoJob = null
-            return
+        // Le WAV est conservé SEULEMENT en mode Whisper : le SpeechRecognizer Google
+        // ne peut pas partager le micro avec l'AudioRecord (conflit → aucun texte).
+        if (_selectedEngine.value == "whisper") {
+            if (!startAudioCapture()) {
+                RecordingService.stop(appContext)
+                RecordingState.isActive = false
+                chronoJob?.cancel()
+                chronoJob = null
+                return
+            }
         }
         _isStreaming.value = true
 
@@ -1038,7 +1043,8 @@ class StreamViewModel(
                 }
                 idx += 8 + size
             }
-            null
+            // Filet de sécurité : pas de chunk "data" trouvé → PCM brut après un header de 44 octets
+            if (bytes.size > 44) bytes.copyOfRange(44, bytes.size) else null
         } catch (e: Exception) {
             null
         }
