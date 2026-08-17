@@ -24,3 +24,6 @@ app/build/
 build/
 .kotlin/
 third_party/
+
+# Signature locale (ne jamais committer)
+keystore.properties

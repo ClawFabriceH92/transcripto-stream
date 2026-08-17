@@ -1,3 +1,7 @@
+import java.io.File
+import java.util.Base64
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,17 +16,44 @@ android {
         applicationId = "com.transcripto.stream"
         minSdk = 29
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.2.4"
+        versionCode = 13
+        versionName = "0.2.5"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // 1) keystore.properties local (build hors CI : fichier gitignoré à la racine du projet)
+            val props = File(rootProject.rootDir, "keystore.properties")
+            if (props.exists()) {
+                val p = Properties().apply { load(props.inputStream()) }
+                storeFile = File(p.getProperty("storeFile"))
+                storePassword = p.getProperty("storePassword")
+                keyAlias = p.getProperty("keyAlias")
+                keyPassword = p.getProperty("keyPassword")
+            }
+            // 2) env vars CI (secrets GitHub)
+            val b64 = System.getenv("TRANSCRIPTO_STREAM_KEYSTORE_B64")
+            if (storeFile == null && !b64.isNullOrBlank()) {
+                val tmp = System.getenv("RUNNER_TEMP") ?: System.getProperty("java.io.tmpdir") ?: "/tmp"
+                val ks = File(tmp, "transcripto-stream-release.keystore")
+                ks.writeBytes(Base64.getDecoder().decode(b64))
+                storeFile = ks
+                storePassword = System.getenv("TRANSCRIPTO_STREAM_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("TRANSCRIPTO_STREAM_KEY_ALIAS")
+                keyPassword = System.getenv("TRANSCRIPTO_STREAM_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (System.getenv("TRANSCRIPTO_STREAM_KEYSTORE_B64").isNullOrBlank()) null
+                else signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
@@ -64,4 +95,6 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

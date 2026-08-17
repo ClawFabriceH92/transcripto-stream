@@ -1,4 +1,5 @@
 package com.transcripto.stream
+import com.transcripto.stream.update.UpdateManager
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -11,6 +12,7 @@ import com.transcripto.stream.ui.StreamScreen
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        UpdateManager.start(this)
         enableEdgeToEdge()
         setContent {
             MaterialTheme {
