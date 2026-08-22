@@ -16,6 +16,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -51,11 +52,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -671,26 +670,43 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
+                            // contentPadding compact : 3 boutons par rangée en français —
+                            // les marges Material par défaut coupent les libellés en plein mot
                             Button(
                                 onClick = { vm.togglePlayback() },
                                 enabled = !isTranscribingFile,
                                 modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Text(if (isPlaying) "■ Arrêter" else "▶ Écouter", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    if (isPlaying) "■ Arrêter" else "▶ Écouter",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
                             }
                             Button(
                                 onClick = { vm.transcribeLastRecording() },
                                 enabled = !isTranscribingFile,
                                 modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Text(if (isTranscribingFile) "…" else "Transcrire", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    if (isTranscribingFile) "…" else "Transcrire",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
                             }
                             OutlinedButton(
                                 onClick = { confirmDeleteLast = true },
                                 enabled = !isTranscribingFile && !isPlaying,
                                 modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Text("Supprimer", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    "Supprimer",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
                             }
                         }
                         Spacer(Modifier.height(4.dp))
@@ -709,8 +725,9 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                                 }
                             },
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                         ) {
-                            Text("Copier")
+                            Text("Copier", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
                         OutlinedButton(
                             onClick = {
@@ -726,26 +743,16 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                                 }
                             },
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                         ) {
-                            Icon(
-                                Icons.Filled.Share,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.size(4.dp))
-                            Text("Partager")
+                            Text("Partager", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
                         OutlinedButton(
                             onClick = { editTranscript = true },
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                         ) {
-                            Icon(
-                                Icons.Filled.Edit,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.size(4.dp))
-                            Text("Corriger")
+                            Text("Corriger", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
                     }
                     if (hasAudio) {
@@ -755,10 +762,16 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text("Vitesse :", style = MaterialTheme.typography.labelMedium)
+                            // miroir local : les prefs ne sont pas observables, sans lui
+                            // la chip sélectionnée ne bouge pas visuellement au tap
+                            var playbackSpeed by remember { mutableStateOf(vm.settings.playbackSpeed) }
                             listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { s ->
                                 FilterChip(
-                                    selected = vm.settings.playbackSpeed == s,
-                                    onClick = { vm.setPlaybackSpeed(s) },
+                                    selected = playbackSpeed == s,
+                                    onClick = {
+                                        playbackSpeed = s
+                                        vm.setPlaybackSpeed(s)
+                                    },
                                     label = { Text(if (s == 1.0f) "1x" else "${s}x", style = MaterialTheme.typography.labelSmall) },
                                 )
                             }

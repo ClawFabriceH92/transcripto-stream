@@ -1,8 +1,15 @@
-# Transcripto Stream v0.5.2
+# Transcripto Stream v0.5.3
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
-> Venant de la v0.2.5 : installez cet APK manuellement (même signature, mise à jour directe, données conservées). Les versions suivantes s'installeront automatiquement si l'option « Mise à jour automatique » est active.
+> Venant de la v0.2.5 ou v0.5.2 : installez cet APK manuellement (même signature, mise à jour directe, données conservées). Les versions suivantes s'installeront automatiquement si l'option « Mise à jour automatique » est active.
+
+## Corrections v0.5.3
+
+- **Fix du crash de l'écran Réglages** (permission `REQUEST_INSTALL_PACKAGES` manquante pour la vérification d'installation des mises à jour).
+- **Écoute silencieuse** (Réglages, activée par défaut) : coupe les bips du système de reconnaissance Google pendant l'écoute ; le volume est rétabli à l'arrêt.
+- **Boutons sans retour à la ligne** : « Transcrire », « Partager », « Corriger »… ne se coupent plus en plein mot.
+- **Réglages réactifs** : chips, interrupteurs et curseur de gain reflètent immédiatement le choix.
 
 ## Nouveautés depuis la v0.2.5
 

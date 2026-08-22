@@ -149,22 +149,32 @@ fun SettingsScreen(vm: StreamViewModel) {
         )
         Spacer(Modifier.height(12.dp))
 
+        // Miroirs locaux : les SharedPreferences ne sont pas observables par Compose —
+        // sans eux, chips/curseurs/interrupteurs ne bougent pas visuellement au tap.
+        var language by remember { mutableStateOf(settings.language) }
         Text("Langue", fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("fr" to "Français", "en" to "Anglais", "auto" to "Auto").forEach { (code, label) ->
                 FilterChip(
-                    selected = settings.language == code,
-                    onClick = { vm.setLanguage(code) },
+                    selected = language == code,
+                    onClick = {
+                        language = code
+                        vm.setLanguage(code)
+                    },
                     label = { Text(label) },
                 )
             }
         }
         Spacer(Modifier.height(12.dp))
 
-        Text("Gain du micro : ${"%.1f".format(settings.micGain)}x", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        var micGain by remember { mutableStateOf(settings.micGain) }
+        Text("Gain du micro : ${"%.1f".format(micGain)}x", fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Slider(
-            value = settings.micGain,
-            onValueChange = { vm.setMicGain(it) },
+            value = micGain,
+            onValueChange = {
+                micGain = it
+                vm.setMicGain(it)
+            },
             valueRange = 0.5f..4.0f,
         )
         Text("Augmente si la voix est trop faible (bout de table, salle de réunion).", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -183,11 +193,26 @@ fun SettingsScreen(vm: StreamViewModel) {
         }
         Spacer(Modifier.height(8.dp))
 
+        var useTimestamps by remember { mutableStateOf(settings.useTimestamps) }
         SwitchRow(
             title = "Horodatage [mm:ss] par segment",
             subtitle = "Dans la transcription différée et le .txt",
-            checked = settings.useTimestamps,
-            onChange = { vm.setUseTimestamps(it) },
+            checked = useTimestamps,
+            onChange = {
+                useTimestamps = it
+                vm.setUseTimestamps(it)
+            },
+        )
+
+        var muteListening by remember { mutableStateOf(settings.muteWhileListening) }
+        SwitchRow(
+            title = "Écoute silencieuse (moteur Google)",
+            subtitle = "Coupe les bips du système de reconnaissance pendant l'écoute ; le volume est rétabli à l'arrêt.",
+            checked = muteListening,
+            onChange = {
+                muteListening = it
+                vm.setMuteWhileListening(it)
+            },
         )
 
         SectionTitle("Gestion des enregistrements")
@@ -200,12 +225,16 @@ fun SettingsScreen(vm: StreamViewModel) {
         )
         Spacer(Modifier.height(12.dp))
 
+        var retentionDays by remember { mutableStateOf(settings.retentionDays) }
         Text("Rétention automatique (RGPD)", fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(0 to "Jamais", 30 to "30 j", 60 to "60 j", 90 to "90 j").forEach { (days, label) ->
                 FilterChip(
-                    selected = settings.retentionDays == days,
-                    onClick = { vm.setRetentionDays(days) },
+                    selected = retentionDays == days,
+                    onClick = {
+                        retentionDays = days
+                        vm.setRetentionDays(days)
+                    },
                     label = { Text(label) },
                 )
             }
@@ -213,11 +242,15 @@ fun SettingsScreen(vm: StreamViewModel) {
         Text("Les enregistrements plus vieux que cette durée sont supprimés automatiquement.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(12.dp))
 
+        var encryptWav by remember { mutableStateOf(settings.encryptWav) }
         SwitchRow(
             title = "Chiffrer les WAV (AES-256)",
             subtitle = "Clé dans le stockage sécurisé Android. Lecture/écoute/email déchiffrent à la volée.",
-            checked = settings.encryptWav,
-            onChange = { vm.setEncryptWav(it) },
+            checked = encryptWav,
+            onChange = {
+                encryptWav = it
+                vm.setEncryptWav(it)
+            },
         )
 
         SectionTitle("Sécurité")
@@ -279,11 +312,15 @@ fun SettingsScreen(vm: StreamViewModel) {
 
         SectionTitle("Apparence")
 
+        var theme by remember { mutableStateOf(settings.theme) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("system" to "Système", "light" to "Clair", "dark" to "Sombre").forEach { (code, label) ->
                 FilterChip(
-                    selected = settings.theme == code,
-                    onClick = { vm.setTheme(code) },
+                    selected = theme == code,
+                    onClick = {
+                        theme = code
+                        vm.setTheme(code)
+                    },
                     label = { Text(label) },
                 )
             }

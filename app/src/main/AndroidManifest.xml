@@ -4,6 +4,9 @@
     <!-- Téléchargement des modèles Whisper + vérification des mises à jour GitHub.
          L'audio, lui, ne quitte jamais l'appareil en mode Whisper. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Auto-update : sans cette déclaration, canRequestPackageInstalls() jette une
+         SecurityException (crash de l'écran Réglages) et l'installation est refusée. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

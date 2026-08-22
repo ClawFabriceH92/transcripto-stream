@@ -55,6 +55,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getFloat("playback_speed", 1.0f)
         set(v) = prefs.edit().putFloat("playback_speed", v).apply()
 
+    // ---- Écoute silencieuse : couper les bips système pendant l'écoute Google ----
+    var muteWhileListening: Boolean
+        get() = prefs.getBoolean("mute_while_listening", true)
+        set(v) = prefs.edit().putBoolean("mute_while_listening", v).apply()
+
     // ---- Modèle Whisper actif ("base" = embarqué, sinon id du catalogue) ----
     var modelId: String
         get() = prefs.getString("model_id", "base") ?: "base"

@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.PlaybackParams
 import android.net.Uri
@@ -440,6 +441,10 @@ class StreamViewModel(
         settings.useTimestamps = enabled
     }
 
+    fun setMuteWhileListening(enabled: Boolean) {
+        settings.muteWhileListening = enabled
+    }
+
     fun setPlaybackSpeed(speed: Float) {
         settings.playbackSpeed = speed
         try {
@@ -544,10 +549,53 @@ class StreamViewModel(
         _isStreaming.value = true
 
         if (_selectedEngine.value == "google") {
-            if (!startGoogleStreaming()) stopStreaming()
+            if (!startGoogleStreaming()) {
+                stopStreaming()
+            } else if (settings.muteWhileListening) {
+                // Le SpeechRecognizer système émet des bips à chaque cycle d'écoute :
+                // on coupe les flux sonores concernés le temps de la session.
+                muteSystemSounds()
+            }
         } else {
             startWhisperStreaming()
         }
+    }
+
+    // ---- Écoute silencieuse : coupe les bips du SpeechRecognizer Google ----
+    // On mémorise les flux réellement coupés pour ne rétablir que ceux-là.
+    private val mutedStreams = mutableListOf<Int>()
+
+    private fun muteSystemSounds() {
+        if (mutedStreams.isNotEmpty()) return
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        for (stream in intArrayOf(
+            AudioManager.STREAM_MUSIC,
+            AudioManager.STREAM_NOTIFICATION,
+            AudioManager.STREAM_SYSTEM,
+        )) {
+            try {
+                am.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0)
+                mutedStreams.add(stream)
+            } catch (e: Exception) {
+                // NOTIFICATION/SYSTEM peuvent exiger l'accès « Ne pas déranger » :
+                // on coupe ce qu'on peut, sans planter
+            }
+        }
+    }
+
+    private fun unmuteSystemSounds() {
+        if (mutedStreams.isEmpty()) return
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (am != null) {
+            for (stream in mutedStreams) {
+                try {
+                    am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
+                } catch (e: Exception) {
+                    Log.e(TAG, "unmute stream $stream : ${e.message}")
+                }
+            }
+        }
+        mutedStreams.clear()
     }
 
     /** Crée le fichier WAV + le recorder (commun aux deux moteurs). */
@@ -683,6 +731,7 @@ class StreamViewModel(
         _isPaused.value = false
         RecordingState.isActive = false
         RecordingState.isPaused = false
+        unmuteSystemSounds()
         RecordingService.stop(appContext)
         streamJob?.cancel()
         streamJob = null

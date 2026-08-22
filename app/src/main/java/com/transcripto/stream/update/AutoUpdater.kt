@@ -27,8 +27,13 @@ object AutoUpdater {
     fun lastDownloadId(context: Context): Long =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_DOWNLOAD_ID, -1L)
 
-    fun canRequestInstalls(context: Context): Boolean =
+    fun canRequestInstalls(context: Context): Boolean = try {
         context.packageManager.canRequestPackageInstalls()
+    } catch (_: Exception) {
+        // SecurityException si REQUEST_INSTALL_PACKAGES manque (ou OEM restrictif) :
+        // répondre « non autorisé » plutôt que de faire planter l'appelant.
+        false
+    }
 
     /** Ouvre l'écran système qui autorise l'installation par cette app. */
     fun openInstallSettings(context: Context) {
