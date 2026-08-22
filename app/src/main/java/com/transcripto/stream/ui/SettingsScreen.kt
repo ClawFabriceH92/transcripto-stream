@@ -52,6 +52,9 @@ fun SettingsScreen(vm: StreamViewModel) {
     val activeModelId by vm.activeModelId.collectAsStateWithLifecycle()
     val downloadedModels by vm.downloadedModels.collectAsStateWithLifecycle()
     val modelDownloads by vm.modelDownloads.collectAsStateWithLifecycle()
+    val modelStorageBytes by vm.modelStorageBytes.collectAsStateWithLifecycle()
+    val modelState by vm.modelState.collectAsStateWithLifecycle()
+    val modelBusy = modelState is ModelState.Loading
     var vocab by remember { mutableStateOf(settings.vocabulary) }
     var pinDialog by remember { mutableStateOf(false) }
 
@@ -107,11 +110,17 @@ fun SettingsScreen(vm: StreamViewModel) {
                     }
                     isActive -> Unit
                     isDownloaded -> {
-                        TextButton(onClick = { vm.selectModel(model.id) }) {
+                        TextButton(
+                            onClick = { vm.selectModel(model.id) },
+                            enabled = !modelBusy,
+                        ) {
                             Text("Activer", fontSize = 12.sp)
                         }
                         if (model.url != null) {
-                            IconButton(onClick = { vm.deleteModel(model.id) }) {
+                            IconButton(
+                                onClick = { vm.deleteModel(model.id) },
+                                enabled = !modelBusy,
+                            ) {
                                 Icon(
                                     Icons.Filled.Delete,
                                     contentDescription = "Supprimer le modèle ${model.label}",
@@ -180,7 +189,8 @@ fun SettingsScreen(vm: StreamViewModel) {
         SectionTitle("Gestion des enregistrements")
 
         Text(
-            "Espace utilisé : ${"%.1f".format(storageBytes / (1024f * 1024f))} Mo (~100 Mo par heure de WAV)",
+            "Espace utilisé : ${"%.1f".format(storageBytes / (1024f * 1024f))} Mo d'enregistrements (~100 Mo par heure de WAV) · " +
+                "${"%.0f".format(modelStorageBytes / (1024f * 1024f))} Mo de modèles Whisper",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

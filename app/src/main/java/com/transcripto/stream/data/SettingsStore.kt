@@ -61,13 +61,23 @@ class SettingsStore(context: Context) {
         set(v) = prefs.edit().putString("model_id", v).apply()
 
     // ---- Téléchargement de modèle en cours (reprise après redémarrage) ----
-    var modelDownloadId: Long
+    val modelDownloadId: Long
         get() = prefs.getLong("model_download_id", -1L)
-        set(v) = prefs.edit().putLong("model_download_id", v).apply()
 
-    var modelDownloadModel: String
+    val modelDownloadModel: String
         get() = prefs.getString("model_download_model", "") ?: ""
-        set(v) = prefs.edit().putString("model_download_model", v).apply()
+
+    /**
+     * Les deux clés s'écrivent en UNE transaction : une mort du process entre deux
+     * commits laisserait un id sans modèle → reprise impossible et téléchargements
+     * refusés à jamais (« déjà en cours »).
+     */
+    fun setModelDownload(id: Long, model: String) {
+        prefs.edit()
+            .putLong("model_download_id", id)
+            .putString("model_download_model", model)
+            .apply()
+    }
 
     val vocabularyList: List<String>
         get() = vocabulary.split(',', '\n', ';')
