@@ -55,6 +55,20 @@ class SettingsStore(context: Context) {
         get() = prefs.getFloat("playback_speed", 1.0f)
         set(v) = prefs.edit().putFloat("playback_speed", v).apply()
 
+    // ---- Modèle Whisper actif ("base" = embarqué, sinon id du catalogue) ----
+    var modelId: String
+        get() = prefs.getString("model_id", "base") ?: "base"
+        set(v) = prefs.edit().putString("model_id", v).apply()
+
+    // ---- Téléchargement de modèle en cours (reprise après redémarrage) ----
+    var modelDownloadId: Long
+        get() = prefs.getLong("model_download_id", -1L)
+        set(v) = prefs.edit().putLong("model_download_id", v).apply()
+
+    var modelDownloadModel: String
+        get() = prefs.getString("model_download_model", "") ?: ""
+        set(v) = prefs.edit().putString("model_download_model", v).apply()
+
     val vocabularyList: List<String>
         get() = vocabulary.split(',', '\n', ';')
             .map { it.trim() }

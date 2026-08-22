@@ -11,8 +11,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -33,6 +38,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.stt.ModelCatalog
 
 /**
  * Réglages : langue, gain micro, vocabulaire personnalisé, horodatage,
@@ -43,6 +49,9 @@ fun SettingsScreen(vm: StreamViewModel) {
     val settings = vm.settings
     val context = LocalContext.current
     val storageBytes by vm.storageBytes.collectAsStateWithLifecycle()
+    val activeModelId by vm.activeModelId.collectAsStateWithLifecycle()
+    val downloadedModels by vm.downloadedModels.collectAsStateWithLifecycle()
+    val modelDownloads by vm.modelDownloads.collectAsStateWithLifecycle()
     var vocab by remember { mutableStateOf(settings.vocabulary) }
     var pinDialog by remember { mutableStateOf(false) }
 
@@ -55,6 +64,77 @@ fun SettingsScreen(vm: StreamViewModel) {
         Spacer(Modifier.height(8.dp))
 
         SectionTitle("Qualité de transcription")
+
+        Text("Modèle Whisper (transcription locale)", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(4.dp))
+        ModelCatalog.MODELS.forEach { model ->
+            val isActive = model.id == activeModelId
+            val isDownloaded = model.url == null || model.id in downloadedModels
+            val progress = modelDownloads[model.id]
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (isActive) "${model.label} — actif" else model.label,
+                        fontSize = 13.sp,
+                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isActive) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                    Text(
+                        model.description,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (progress != null) {
+                        Spacer(Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                when {
+                    progress != null -> {
+                        TextButton(onClick = { vm.cancelModelDownload() }) {
+                            Text("${(progress * 100).toInt()} % · Annuler", fontSize = 12.sp)
+                        }
+                    }
+                    isActive -> Unit
+                    isDownloaded -> {
+                        TextButton(onClick = { vm.selectModel(model.id) }) {
+                            Text("Activer", fontSize = 12.sp)
+                        }
+                        if (model.url != null) {
+                            IconButton(onClick = { vm.deleteModel(model.id) }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "Supprimer le modèle ${model.label}",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.height(18.dp),
+                                )
+                            }
+                        }
+                    }
+                    else -> {
+                        TextButton(onClick = { vm.downloadModel(model.id) }) {
+                            Text("Télécharger (${model.approxMb} Mo)", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+        Text(
+            "La transcription différée (« Transcrire ») utilise le modèle actif : active un meilleur modèle puis relance « Transcrire » sur un enregistrement pour améliorer son compte rendu.",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
 
         Text("Langue", fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

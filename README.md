@@ -6,7 +6,8 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 
 - **Deux moteurs de transcription temps réel** :
   - **Google (qualité)** — SpeechRecognizer système, la même qualité que Gboard/assistant Android. Audio envoyé au service du fournisseur (cloud) sauf pack hors-ligne téléchargé. La transcription est **sauvegardée en entrée « texte seul »** (pas l'audio).
-  - **Whisper (100% local)** — whisper.cpp Base embarqué, l'audio ne quitte jamais l'appareil. Qualité inférieure (surtout en français), mais confidentiel. Utilisable dès que le modèle est chargé ; **Google est disponible immédiatement**, même si le modèle Whisper charge encore ou est en erreur.
+  - **Whisper (100% local)** — whisper.cpp embarqué, l'audio ne quitte jamais l'appareil. **Google est disponible immédiatement**, même si le modèle Whisper charge encore ou est en erreur.
+- **Catalogue de modèles Whisper** (Réglages) : Base embarqué + modèles téléchargeables à la demande depuis le dépôt ggml officiel — Small quantisé (~190 Mo, recommandé, nettement meilleur en français), Small, Medium quantisé, Large-v3 Turbo quantisé (~574 Mo, la meilleure qualité). Téléchargement en arrière-plan (DownloadManager, reprise après redémarrage), activation en un tap, repli automatique sur le modèle embarqué si un modèle téléchargé est illisible. **Re-transcription haute fidélité** : activer un meilleur modèle puis relancer « Transcrire » sur n'importe quel enregistrement ou import.
 - **Conservation audio** (mode Whisper) : chaque enregistrement est écrit en WAV (`filesDir/recordings/`), avec **empreinte SHA-256 du flux PCM** notée dans le `.txt` (valeur probante).
 - **Transcription différée** (mode Whisper) : bouton « Transcrire » → whisper traite le fichier complet et produit :
   - horodatage `[mm:ss]` par segment,
@@ -41,6 +42,7 @@ app/src/main/
     ├── data/SettingsStore.kt       # Réglages (SharedPreferences)
     ├── export/TranscriptExporter.kt # SRT + stats temps de parole (pur, testé)
     ├── stt/WhisperStreamEngine.kt  # Pont JNI
+    ├── stt/ModelCatalog.kt         # Modèles Whisper embarqué/téléchargeables
     ├── stt/GoogleSpeechEngine.kt   # SpeechRecognizer système
     └── ui/StreamViewModel.kt       # Fenêtre glissante + dédup + diarisation + exports
         StreamScreen.kt             # Écran principal Compose (Scaffold + Snackbar)
@@ -85,8 +87,8 @@ GitHub Actions (`.github/workflows/ci.yml`) compile l'APK debug et lance les tes
 - [x] Marqueurs pendant l'enregistrement, édition du transcript, tuile + raccourci
 - [x] Import d'audio externe (WhatsApp, dictaphone) vers la transcription différée
 - [x] Export des audios (WAV) vers l'emplacement choisi (SAF)
+- [x] Catalogue de modèles téléchargeables (small/medium/large-v3-turbo quantisés) + re-transcription haute fidélité
 - [ ] VAD Silero (endpointing par phrases) pour un vrai temps réel
-- [ ] Catalogue de modèles téléchargeables (small/distil quantisés) + re-transcription haute fidélité
 - [ ] Base Room + FTS (segments horodatés persistés, recherche instantanée, tap sur un mot → lecture audio)
 - [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)
 - [ ] Sauvegarde chiffrée exportable (migration d'appareil — la clé AndroidKeyStore ne quitte pas le téléphone)

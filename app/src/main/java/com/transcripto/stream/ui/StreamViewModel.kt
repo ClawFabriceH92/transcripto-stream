@@ -1,5 +1,6 @@
 package com.transcripto.stream.ui
 
+import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -22,8 +23,10 @@ import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SettingsStore
 import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.GoogleSpeechEngine
+import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.stt.StreamResult
+import com.transcripto.stream.stt.WhisperModel
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -219,24 +222,52 @@ class StreamViewModel(
         loadWhisperModel()
         cleanupExpired()
         refreshRecordings()
+        refreshDownloadedModels()
+        // Reprise du suivi d'un téléchargement de modèle lancé avant un redémarrage
+        val pendingDl = settings.modelDownloadId
+        val pendingModel = settings.modelDownloadModel
+        if (pendingDl >= 0 && pendingModel.isNotEmpty()) {
+            _modelDownloads.value = mapOf(pendingModel to 0f)
+            trackModelDownload(pendingModel, pendingDl)
+        }
     }
 
-    /** Charge (ou recharge) le modèle Whisper. Le moteur Google reste utilisable pendant ce temps. */
+    /**
+     * Charge (ou recharge) le modèle Whisper actif — embarqué ou téléchargé.
+     * Le moteur Google reste utilisable pendant ce temps. En cas de modèle
+     * téléchargé absent ou illisible, repli automatique sur le modèle embarqué.
+     */
     private fun loadWhisperModel() {
         _modelState.value = ModelState.Loading
         viewModelScope.launch {
-            _loadMessage.value = "Extraction du modèle depuis l'APK…"
-            val extracted = ensureModelExtracted()
-            if (extracted.isFailure) {
-                _modelState.value = ModelState.Error(
-                    "Extraction : ${extracted.exceptionOrNull()?.message ?: "erreur inconnue"}"
-                )
-                return@launch
+            val model = ModelCatalog.byId(settings.modelId)
+            _activeModelId.value = model.id
+            val path: String
+            if (model.url == null) {
+                _loadMessage.value = "Extraction du modèle depuis l'APK…"
+                val extracted = ensureModelExtracted()
+                if (extracted.isFailure) {
+                    _modelState.value = ModelState.Error(
+                        "Extraction : ${extracted.exceptionOrNull()?.message ?: "erreur inconnue"}"
+                    )
+                    return@launch
+                }
+                path = extracted.getOrThrow()
+            } else {
+                val f = downloadedModelFile(model)
+                if (f == null || !f.exists()) {
+                    // Supprimé ou stockage indisponible → repli sur l'embarqué
+                    _uiMessage.value = "Modèle « ${model.label} » introuvable — retour au modèle embarqué"
+                    fallbackToEmbedded()
+                    return@launch
+                }
+                path = f.absolutePath
             }
-            _loadMessage.value = "Chargement du modèle Whisper (142 Mo)…"
+            _loadMessage.value = "Chargement du modèle ${model.label} (${model.approxMb} Mo)…"
             val t0 = System.currentTimeMillis()
+            engine.unloadModel() // libère l'éventuel modèle précédent (changement de modèle)
             val loaded = withTimeoutOrNull(120_000L) {
-                engine.loadModel(extracted.getOrThrow())
+                engine.loadModel(path)
             }
             if (loaded == null) {
                 _modelState.value = ModelState.Error(
@@ -245,13 +276,27 @@ class StreamViewModel(
                 return@launch
             }
             _modelLoadMs.value = System.currentTimeMillis() - t0
-            _modelState.value = if (loaded.isSuccess) {
+            if (loaded.isSuccess) {
                 _loadMessage.value = ""
-                ModelState.Ready(engine)
+                _modelState.value = ModelState.Ready(engine)
+            } else if (model.url != null) {
+                // Fichier corrompu ou mémoire insuffisante → repli sur l'embarqué
+                _uiMessage.value = "Échec du chargement de « ${model.label} » — retour au modèle " +
+                    "embarqué. Supprime-le puis retélécharge-le si ça persiste."
+                fallbackToEmbedded()
             } else {
-                ModelState.Error(loaded.exceptionOrNull()?.message ?: "Erreur de chargement")
+                _modelState.value = ModelState.Error(
+                    loaded.exceptionOrNull()?.message ?: "Erreur de chargement"
+                )
             }
         }
+    }
+
+    /** Repli borné : l'échec du modèle embarqué lui-même finit en ModelState.Error. */
+    private fun fallbackToEmbedded() {
+        settings.modelId = ModelCatalog.EMBEDDED_ID
+        _activeModelId.value = ModelCatalog.EMBEDDED_ID
+        loadWhisperModel()
     }
 
     /** Bouton « Réessayer » de la bannière d'erreur du modèle. */
@@ -264,6 +309,7 @@ class StreamViewModel(
     fun navigate(screenIndex: Int) {
         if (_screen.value == screenIndex) return
         if (screenIndex == 1) refreshRecordings()
+        if (screenIndex == 2) refreshDownloadedModels()
         _screen.value = screenIndex
     }
 
@@ -1193,6 +1239,188 @@ class StreamViewModel(
                 "Export impossible"
             }
         }
+    }
+
+    // ================= MODÈLES WHISPER TÉLÉCHARGEABLES =================
+
+    private val _activeModelId = MutableStateFlow(settings.modelId)
+    val activeModelId: StateFlow<String> = _activeModelId.asStateFlow()
+
+    private val _downloadedModels = MutableStateFlow<Set<String>>(emptySet())
+    val downloadedModels: StateFlow<Set<String>> = _downloadedModels.asStateFlow()
+
+    /** id du modèle en cours de téléchargement → progression 0..1. */
+    private val _modelDownloads = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val modelDownloads: StateFlow<Map<String, Float>> = _modelDownloads.asStateFlow()
+
+    private var modelDlJob: Job? = null
+
+    /** Dossier des modèles téléchargés (stockage externe applicatif, requis par DownloadManager). */
+    private fun downloadedModelFile(model: WhisperModel): File? {
+        val dir = appContext.getExternalFilesDir("models") ?: return null
+        return File(dir, model.fileName)
+    }
+
+    fun refreshDownloadedModels() {
+        viewModelScope.launch {
+            val set = withContext(Dispatchers.IO) {
+                val downloading = settings.modelDownloadModel
+                ModelCatalog.MODELS
+                    .filter { it.url != null && it.id != downloading }
+                    .filter { downloadedModelFile(it)?.exists() == true }
+                    .map { it.id }
+                    .toSet()
+            }
+            _downloadedModels.value = set
+        }
+    }
+
+    /** Lance le téléchargement d'un modèle du catalogue (un seul à la fois). */
+    fun downloadModel(id: String) {
+        val model = ModelCatalog.byId(id)
+        if (model.url == null) return
+        if (settings.modelDownloadId >= 0) {
+            _uiMessage.value = "Un téléchargement de modèle est déjà en cours"
+            return
+        }
+        if (id in _downloadedModels.value) return
+        val dest = downloadedModelFile(model)
+        if (dest == null) {
+            _uiMessage.value = "Stockage indisponible pour les modèles"
+            return
+        }
+        val usableMb = (dest.parentFile ?: appContext.filesDir).usableSpace / (1024L * 1024L)
+        if (usableMb < model.approxMb + 100) {
+            _uiMessage.value = "Espace insuffisant ($usableMb Mo libres, ${model.approxMb} Mo requis)"
+            return
+        }
+        val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+        if (dm == null) {
+            _uiMessage.value = "Téléchargement indisponible sur cet appareil"
+            return
+        }
+        dest.parentFile?.mkdirs()
+        dest.delete()
+        val request = DownloadManager.Request(Uri.parse(model.url))
+            .setTitle("Modèle Whisper — ${model.label}")
+            .setDescription("Téléchargement (${model.approxMb} Mo)…")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+            .setDestinationUri(Uri.fromFile(dest))
+            .setAllowedOverMetered(true)
+        val dlId = try {
+            dm.enqueue(request)
+        } catch (e: Exception) {
+            _uiMessage.value = "Téléchargement impossible : ${e.message}"
+            return
+        }
+        settings.modelDownloadId = dlId
+        settings.modelDownloadModel = id
+        _modelDownloads.value = mapOf(id to 0f)
+        trackModelDownload(id, dlId)
+    }
+
+    fun cancelModelDownload() {
+        if (settings.modelDownloadId < 0) return
+        modelDlJob?.cancel()
+        modelDlJob = null
+        (appContext.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager)
+            ?.remove(settings.modelDownloadId)
+        clearModelDownloadState(deletePartial = true)
+        _uiMessage.value = "Téléchargement annulé"
+    }
+
+    private fun clearModelDownloadState(deletePartial: Boolean) {
+        val id = settings.modelDownloadModel
+        if (deletePartial && id.isNotEmpty()) {
+            downloadedModelFile(ModelCatalog.byId(id))?.delete()
+        }
+        settings.modelDownloadId = -1L
+        settings.modelDownloadModel = ""
+        _modelDownloads.value = emptyMap()
+        refreshDownloadedModels()
+    }
+
+    /** Suit la progression DownloadManager jusqu'au succès ou à l'échec. */
+    private fun trackModelDownload(modelId: String, downloadId: Long) {
+        modelDlJob?.cancel()
+        modelDlJob = viewModelScope.launch {
+            val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+                ?: return@launch
+            while (isActive) {
+                var status = -1
+                var reason = -1
+                var progress = 0f
+                dm.query(DownloadManager.Query().setFilterById(downloadId))?.use { c ->
+                    if (c.moveToFirst()) {
+                        status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                        reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        val done = c.getLong(
+                            c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                        )
+                        val total = c.getLong(
+                            c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                        )
+                        if (total > 0) progress = (done.toFloat() / total).coerceIn(0f, 1f)
+                    } else {
+                        // Téléchargement disparu (annulé depuis la notification système)
+                        status = DownloadManager.STATUS_FAILED
+                    }
+                }
+                when (status) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        clearModelDownloadState(deletePartial = false)
+                        _uiMessage.value = "Modèle téléchargé — appuie sur « Activer » pour l'utiliser"
+                        break
+                    }
+                    DownloadManager.STATUS_FAILED -> {
+                        clearModelDownloadState(deletePartial = true)
+                        _uiMessage.value = "Téléchargement du modèle échoué (code $reason)"
+                        break
+                    }
+                    else -> {
+                        _modelDownloads.value = mapOf(modelId to progress)
+                    }
+                }
+                delay(750)
+            }
+        }
+    }
+
+    /** Change le modèle Whisper actif et le recharge. */
+    fun selectModel(id: String) {
+        if (id == _activeModelId.value && _modelState.value is ModelState.Ready) return
+        if (_isStreaming.value || _isTranscribingFile.value || _isImporting.value) {
+            _uiMessage.value = "Changement de modèle impossible pendant une opération en cours"
+            return
+        }
+        val model = ModelCatalog.byId(id)
+        if (model.url != null && downloadedModelFile(model)?.exists() != true) {
+            _uiMessage.value = "Télécharge d'abord ce modèle"
+            return
+        }
+        settings.modelId = model.id
+        _activeModelId.value = model.id
+        loadWhisperModel()
+    }
+
+    /** Supprime un modèle téléchargé (bascule sur l'embarqué s'il était actif). */
+    fun deleteModel(id: String) {
+        val model = ModelCatalog.byId(id)
+        if (model.url == null) return
+        if (_isStreaming.value || _isTranscribingFile.value) {
+            _uiMessage.value = "Suppression impossible pendant une opération en cours"
+            return
+        }
+        if (_activeModelId.value == id) {
+            settings.modelId = ModelCatalog.EMBEDDED_ID
+            _activeModelId.value = ModelCatalog.EMBEDDED_ID
+            loadWhisperModel()
+        }
+        // Suppression sûre même si le modèle vient d'être déchargé : sous Linux,
+        // l'inode d'un fichier encore mmappé survit jusqu'à sa fermeture.
+        downloadedModelFile(model)?.delete()
+        refreshDownloadedModels()
+        _uiMessage.value = "Modèle « ${model.label} » supprimé"
     }
 
     // ================= LISTE DES ENREGISTREMENTS =================
