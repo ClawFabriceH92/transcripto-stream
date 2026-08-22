@@ -73,6 +73,29 @@ object UpdateManager {
         checkOnce(context.applicationContext)
     }
 
+    /**
+     * Vérification manuelle avec retour utilisateur (bouton « Vérifier maintenant »
+     * des Réglages) : retourne le message à afficher en snackbar.
+     */
+    suspend fun checkNowAndReport(context: Context): String = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
+        val info = UpdateChecker.latestWithApk()
+            ?: return@withContext "Vérification impossible (réseau indisponible ?)"
+        val current = currentVersion(appContext)
+        when {
+            UpdateChecker.compareVersions(info.versionName, current) <= 0 ->
+                "Vous êtes à jour (v$current)"
+            AutoUpdater.canRequestInstalls(appContext) -> {
+                AutoUpdater.download(appContext, info.downloadUrl)
+                "v${info.versionName} disponible — téléchargement lancé, installation automatique à la fin"
+            }
+            else -> {
+                notifyPermissionNeeded(appContext, info)
+                "v${info.versionName} disponible — autorise d'abord l'installation d'apps inconnues"
+            }
+        }
+    }
+
     private fun checkOnce(context: Context) {
         scope.launch {
             val info = withContext(Dispatchers.IO) { UpdateChecker.latestWithApk() } ?: return@launch

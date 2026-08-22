@@ -181,6 +181,11 @@ class StreamViewModel(
         _uiMessage.value = null
     }
 
+    /** Affiche un message ponctuel (snackbar) depuis un écran (ex: résultat de « Vérifier maintenant »). */
+    fun showMessage(message: String) {
+        _uiMessage.value = message
+    }
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 

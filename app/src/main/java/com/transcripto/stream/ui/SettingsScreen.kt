@@ -29,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -39,6 +40,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.transcripto.stream.stt.ModelCatalog
+import com.transcripto.stream.update.AutoUpdater
+import com.transcripto.stream.update.UpdateManager
+import kotlinx.coroutines.launch
 
 /**
  * Réglages : langue, gain micro, vocabulaire personnalisé, horodatage,
@@ -230,6 +234,47 @@ fun SettingsScreen(vm: StreamViewModel) {
             OutlinedButton(onClick = { vm.lockNow() }, modifier = Modifier.padding(top = 4.dp)) {
                 Text("Verrouiller maintenant")
             }
+        }
+
+        SectionTitle("Mises à jour")
+
+        var autoUpdate by remember { mutableStateOf(UpdateManager.autoUpdateEnabled(context)) }
+        SwitchRow(
+            title = "Mise à jour automatique",
+            subtitle = "Vérifie GitHub au lancement et chaque jour à 14 h, puis télécharge et installe la nouvelle version.",
+            checked = autoUpdate,
+            onChange = {
+                autoUpdate = it
+                UpdateManager.setAutoUpdate(context, it)
+            },
+        )
+        var canInstall by remember { mutableStateOf(AutoUpdater.canRequestInstalls(context)) }
+        if (!canInstall) {
+            OutlinedButton(onClick = { AutoUpdater.openInstallSettings(context) }) {
+                Text("Autoriser l'installation automatique")
+            }
+            Text(
+                "Sans cette autorisation système, l'app peut télécharger une mise à jour mais pas l'installer.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        var checkingUpdate by remember { mutableStateOf(false) }
+        val updateScope = rememberCoroutineScope()
+        OutlinedButton(
+            onClick = {
+                checkingUpdate = true
+                updateScope.launch {
+                    val message = UpdateManager.checkNowAndReport(context)
+                    vm.showMessage(message)
+                    canInstall = AutoUpdater.canRequestInstalls(context)
+                    checkingUpdate = false
+                }
+            },
+            enabled = !checkingUpdate,
+            modifier = Modifier.padding(top = 4.dp),
+        ) {
+            Text(if (checkingUpdate) "Vérification…" else "Vérifier maintenant")
         }
 
         SectionTitle("Apparence")
