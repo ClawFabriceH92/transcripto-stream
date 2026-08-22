@@ -72,9 +72,10 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### CI
+### CI / Release
 
-GitHub Actions (`.github/workflows/ci.yml`) compile l'APK debug et lance les tests unitaires à chaque push. L'APK compile sans le modèle ni les `.so` (nécessaires seulement à l'exécution Whisper sur l'appareil).
+- `.github/workflows/ci.yml` : compile l'APK debug et lance les tests unitaires à chaque push (sans les binaires natifs — vérification de compilation).
+- `.github/workflows/release.yml` (tag `v*` ou lancement manuel) : construit l'**APK release signé complet** — les `.so` et le modèle `ggml-base.bin` sont extraits de la release v0.2.5 (inchangés depuis) — vérifie la signature (secrets `TRANSCRIPTO_STREAM_KEYSTORE_*`) et publie la release GitHub avec `RELEASE_NOTES.md`. C'est cette release que l'auto-updater de l'app télécharge.
 
 ## Binaires non versionnés
 
