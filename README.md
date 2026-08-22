@@ -1,17 +1,23 @@
 # Transcripto Stream
 
-Application Android **minimale** de transcription vocale **en temps réel**, 100 % locale (whisper.cpp embarqué, aucun réseau).
-
-> Repart de zéro depuis transcripto-local : un seul écran, un bouton micro, le texte arrive en direct pendant la parole.
+Application Android de transcription vocale **en temps réel**, pensée pour les réunions et entretiens professionnels (audit, CAC), avec un mode **100 % local** (whisper.cpp embarqué, aucun réseau).
 
 ## Fonctionnement
 
 - **Deux moteurs de transcription temps réel** :
-  - **Google (qualité)** — SpeechRecognizer système, la même qualité que Gboard/assistant Android. Audio envoyé au service du fournisseur (cloud) sauf pack hors-ligne téléchargé.
-  - **Whisper (100% local)** — whisper.cpp Base embarqué, l'audio ne quitte jamais l'appareil. Qualité inférieure (surtout en français), mais confidentiel.
-- **Conservation audio** (mode Whisper) : chaque enregistrement est écrit en WAV (`filesDir/recordings/`) et reste disponible après l'arrêt
-- **Transcription différée** (mode Whisper) : bouton « Transcrire l'audio enregistré » → whisper traite le fichier complet
-- **Fenêtre glissante avec avance réelle** (mode Whisper) : on transcrit tout le nouvel audio (chevauchement 1 s)
+  - **Google (qualité)** — SpeechRecognizer système, la même qualité que Gboard/assistant Android. Audio envoyé au service du fournisseur (cloud) sauf pack hors-ligne téléchargé. La transcription est **sauvegardée en entrée « texte seul »** (pas l'audio).
+  - **Whisper (100% local)** — whisper.cpp Base embarqué, l'audio ne quitte jamais l'appareil. Qualité inférieure (surtout en français), mais confidentiel. Utilisable dès que le modèle est chargé ; **Google est disponible immédiatement**, même si le modèle Whisper charge encore ou est en erreur.
+- **Conservation audio** (mode Whisper) : chaque enregistrement est écrit en WAV (`filesDir/recordings/`), avec **empreinte SHA-256 du flux PCM** notée dans le `.txt` (valeur probante).
+- **Transcription différée** (mode Whisper) : bouton « Transcrire » → whisper traite le fichier complet et produit :
+  - horodatage `[mm:ss]` par segment,
+  - attribution `[Intervenant 1/2]` (estimation par le pitch de la voix),
+  - **bloc « temps de parole » par intervenant** (durée + %),
+  - **sous-titres `.srt`** à côté du WAV.
+- **Marqueurs à chaud** : bouton ⚑ pendant l'enregistrement → insère `[⭐mm:ss]` dans le texte pour retrouver les moments clés.
+- **Correction manuelle** : bouton « Corriger » → édite la transcription, sauvegardée dans le `.txt`.
+- **Partage** : texte + `.txt` + WAV (déchiffré à la volée) + `.srt`, depuis l'écran principal **ou directement depuis la liste**.
+- **Démarrage en un geste** : tuile « Transcrire » dans les réglages rapides + App Shortcut (appui long sur l'icône).
+- **Sécurité/RGPD** : PIN (saisie masquée), chiffrement WAV AES-256 (clé AndroidKeyStore), rétention automatique 30/60/90 j, contrôle d'espace disque avant enregistrement.
 
 ## Architecture
 
@@ -21,12 +27,23 @@ app/src/main/
 ├── assets/models/ggml-base.bin  # Modèle Whisper Base (~142 Mo, gitignoré)
 ├── jniLibs/arm64-v8a/           # libwhisper.so + libggml*.so + libomp + libc++_shared (gitignorés)
 └── java/com/transcripto/stream/
-    ├── MainActivity.kt
+    ├── MainActivity.kt             # Point d'entrée + action RECORD (tuile/raccourci)
+    ├── RecordTileService.kt        # Tuile de réglages rapides « Transcrire »
+    ├── RecordingService.kt         # Foreground service (écran éteint)
     ├── audio/PcmAudioRecorder.kt   # AudioRecord → ring buffer
     ├── audio/WavFileWriter.kt      # PCM → WAV conservé
+    ├── data/RecordingNames.kt      # Conventions de nommage (.wav / .wav.enc / .txt / .srt)
+    ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore)
+    ├── data/SettingsStore.kt       # Réglages (SharedPreferences)
+    ├── export/TranscriptExporter.kt # SRT + stats temps de parole (pur, testé)
     ├── stt/WhisperStreamEngine.kt  # Pont JNI
-    └── ui/StreamViewModel.kt       # Fenêtre glissante + dédup + transcription différée
-        StreamScreen.kt             # Écran unique Compose
+    ├── stt/GoogleSpeechEngine.kt   # SpeechRecognizer système
+    └── ui/StreamViewModel.kt       # Fenêtre glissante + dédup + diarisation + exports
+        StreamScreen.kt             # Écran principal Compose (Scaffold + Snackbar)
+        RecordingListScreen.kt      # Liste/recherche/partage/renommage
+        SettingsScreen.kt           # Réglages
+        PinScreen.kt                # Verrouillage PIN
+        theme/Theme.kt              # Palette bleue clair/sombre unifiée
 ```
 
 ## Build
@@ -48,13 +65,25 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) compile l'APK debug et lance les tests unitaires à chaque push. L'APK compile sans le modèle ni les `.so` (nécessaires seulement à l'exécution Whisper sur l'appareil).
+
 ## Binaires non versionnés
 
-- Le modèle `ggml-tiny.bin` et les `.so` sont dans `.gitignore` : un clone frais ne peut pas builder l'APK directement (comme transcripto-local). Les releases GitHub contiennent l'APK complet.
+- Le modèle `ggml-base.bin` et les `.so` sont dans `.gitignore` : un clone frais ne peut pas produire un APK **fonctionnel en mode Whisper** directement. Les releases GitHub contiennent l'APK complet.
 
 ## Roadmap
 
 - [x] PoC : transcription en temps réel (fenêtre glissante)
-- [ ] VAD stream (silero) pour un vrai temps réel
-- [ ] Sauvegarde/export des transcriptions
-- [ ] Comptage de temps par intervenant (CAC/audit)
+- [x] Sauvegarde/export des transcriptions (.txt, .srt, partage)
+- [x] Comptage de temps par intervenant (CAC/audit) — v1 par pitch
+- [x] Marqueurs pendant l'enregistrement, édition du transcript, tuile + raccourci
+- [ ] VAD Silero (endpointing par phrases) pour un vrai temps réel
+- [ ] Catalogue de modèles téléchargeables (small/distil quantisés) + re-transcription haute fidélité
+- [ ] Base Room + FTS (segments horodatés persistés, recherche instantanée, tap sur un mot → lecture audio)
+- [ ] Import d'audio externe (WhatsApp, dictaphone) vers la transcription différée
+- [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)
+- [ ] Sauvegarde chiffrée exportable (migration d'appareil — la clé AndroidKeyStore ne quitte pas le téléphone)
+- [ ] Résilience audio : focus audio, appels entrants, préemption micro signalée dans l'UI
+- [ ] Diarisation v2 par embeddings de locuteurs (ONNX)

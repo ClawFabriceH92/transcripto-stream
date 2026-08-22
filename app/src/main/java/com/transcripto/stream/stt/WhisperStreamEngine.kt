@@ -49,6 +49,12 @@ class WhisperStreamEngine {
         }
         try {
             nativeHandle = nativeLoadModel(modelPath)
+            if (nativeHandle == 0L) {
+                isLoaded = false
+                return@withContext Result.failure(
+                    IllegalStateException("whisper_init a retourné un contexte nul (modèle corrompu ou mémoire insuffisante)")
+                )
+            }
             isLoaded = true
             Result.success(Unit)
         } catch (e: Throwable) {

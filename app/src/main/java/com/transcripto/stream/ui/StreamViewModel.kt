@@ -16,7 +16,9 @@ import com.transcripto.stream.RecordingState
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.CryptoManager
+import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SettingsStore
+import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.stt.StreamResult
@@ -29,10 +31,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -46,7 +51,7 @@ sealed interface ModelState {
     data class Error(val message: String) : ModelState
 }
 
-/** Un enregistrement listé (WAV ou .enc chiffré). */
+/** Un enregistrement listé : WAV, .enc chiffré, ou .txt seul (transcription Google). */
 data class RecordingItem(
     val file: File,
     val baseName: String,
@@ -54,6 +59,7 @@ data class RecordingItem(
     val durationMs: Long,
     val modifiedAt: Long,
     val encrypted: Boolean,
+    val hasAudio: Boolean,
     val transcript: String,
 )
 
@@ -81,6 +87,7 @@ class StreamViewModel(
         private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         private val REC_START_END_FORMAT = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
         private val TXT_DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        private val HASH_LINE = Regex("SHA-256 \\(PCM\\) : ([0-9a-f]{64})")
     }
 
     val settings = SettingsStore(appContext)
@@ -150,6 +157,10 @@ class StreamViewModel(
     private val _recordings = MutableStateFlow<List<RecordingItem>>(emptyList())
     val recordings: StateFlow<List<RecordingItem>> = _recordings.asStateFlow()
 
+    /** Espace total occupé par les enregistrements (WAV + .txt + .srt), pour les Réglages. */
+    private val _storageBytes = MutableStateFlow(0L)
+    val storageBytes: StateFlow<Long> = _storageBytes.asStateFlow()
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
@@ -160,10 +171,17 @@ class StreamViewModel(
     val pendingNameDefault: StateFlow<String> = _pendingNameDefault.asStateFlow()
 
     // ---- Internes ----
+    // Le contexte whisper.cpp n'est pas thread-safe : un seul transcribeBuffer à la fois
+    // (streaming ET transcription différée passent par ce verrou).
+    private val whisperLock = Mutex()
     private val engine = WhisperStreamEngine()
     private var googleEngine: GoogleSpeechEngine? = null
     private var recorder: PcmAudioRecorder? = null
     private var wavWriter: WavFileWriter? = null
+    // Empreinte SHA-256 du flux PCM, calculée au fil de l'eau sur le thread audio
+    // (valeur probante : l'empreinte est notée dans le .txt de l'enregistrement).
+    private var pcmDigest: MessageDigest? = null
+    private var digestScratch = ByteArray(0)
     private var activeRecordingFile: File? = null
     private var activeStartTime: Long = 0L
     private var streamJob: Job? = null
@@ -181,6 +199,14 @@ class StreamViewModel(
     private var validatedText = ""
 
     init {
+        loadWhisperModel()
+        cleanupExpired()
+        refreshRecordings()
+    }
+
+    /** Charge (ou recharge) le modèle Whisper. Le moteur Google reste utilisable pendant ce temps. */
+    private fun loadWhisperModel() {
+        _modelState.value = ModelState.Loading
         viewModelScope.launch {
             _loadMessage.value = "Extraction du modèle depuis l'APK…"
             val extracted = ensureModelExtracted()
@@ -209,8 +235,11 @@ class StreamViewModel(
                 ModelState.Error(loaded.exceptionOrNull()?.message ?: "Erreur de chargement")
             }
         }
-        cleanupExpired()
-        refreshRecordings()
+    }
+
+    /** Bouton « Réessayer » de la bannière d'erreur du modèle. */
+    fun retryModelLoad() {
+        if (_modelState.value is ModelState.Error) loadWhisperModel()
     }
 
     // ================= NAVIGATION =================
@@ -236,12 +265,23 @@ class StreamViewModel(
         _pinError.value = e
     }
 
+    /**
+     * .txt d'un enregistrement, avec repli sur l'ancienne convention v0.2.x
+     * (« base.wav.enc » accompagné d'un « base.wav.txt »).
+     */
+    private fun transcriptFileFor(audioFile: File): File {
+        val txt = RecordingNames.txtSibling(audioFile)
+        if (txt.exists()) return txt
+        val legacy = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".txt")
+        return if (legacy.exists()) legacy else txt
+    }
+
     /** Sélectionne un enregistrement de la liste pour l'écran principal. */
     fun selectRecording(item: RecordingItem) {
         _lastRecording.value = item.file
         activeRecordingFile = null
-        // Relit le .txt COMPLET (pas l'aperçu tronqué à 200 caractères de la liste)
-        val txt = File(item.file.parentFile, item.baseName + ".txt")
+        // Relit le .txt COMPLET (pas l'aperçu tronqué de la liste)
+        val txt = transcriptFileFor(item.file)
         _fileTranscript.value = if (txt.exists()) {
             txt.readText().substringAfter("----\n").trim()
         } else {
@@ -256,7 +296,8 @@ class StreamViewModel(
     fun enablePin(pin: String) {
         if (pin.length >= 4) {
             settings.setPin(pin)
-            _locked.value = true
+            // Pas de verrouillage immédiat : l'utilisateur est en train de régler l'app.
+            // « Verrouiller maintenant » reste l'action explicite pour verrouiller.
         }
     }
 
@@ -319,6 +360,20 @@ class StreamViewModel(
         }
     }
 
+    /**
+     * Marqueur pendant l'enregistrement : insère « [⭐ mm:ss] » dans le texte en direct
+     * pour retrouver un moment clé (décision, chiffre cité, point d'audit) à la relecture.
+     */
+    fun addMarker() {
+        if (!_isStreaming.value) return
+        val sec = _elapsedSec.value
+        // Un seul token (pas d'espace interne) : le recoupement de fenêtres Whisper
+        // filtre les mots contenant ⭐ — un espace couperait le marqueur en deux.
+        val marker = "[⭐%02d:%02d]".format(sec / 60, sec % 60)
+        validatedText = (validatedText.trim() + " " + marker).trim()
+        _liveText.value = validatedText
+    }
+
     fun togglePause() {
         if (!_isStreaming.value) return
         if (_isPaused.value) {
@@ -351,7 +406,10 @@ class StreamViewModel(
     }
 
     fun startStreaming() {
-        if (_modelState.value !is ModelState.Ready || _isStreaming.value) return
+        if (_isStreaming.value) return
+        // Seul Whisper a besoin du modèle : Google (moteur système) fonctionne
+        // dès le lancement, même pendant le chargement ou en cas d'erreur du modèle.
+        if (_selectedEngine.value == "whisper" && _modelState.value !is ModelState.Ready) return
         validatedText = ""
         _liveText.value = ""
         _fileTranscript.value = ""
@@ -361,6 +419,7 @@ class StreamViewModel(
         _isPaused.value = false
         RecordingState.isActive = true
         RecordingState.isPaused = false
+        activeStartTime = System.currentTimeMillis()
         startChrono()
         RecordingService.start(appContext)
 
@@ -392,6 +451,15 @@ class StreamViewModel(
         activeStartTime = System.currentTimeMillis()
 
         val recDir = recordingsDir()
+        // Contrôle d'espace : mieux vaut refuser avant la réunion qu'échouer en silence pendant
+        val usableMb = recDir.usableSpace / (1024L * 1024L)
+        if (usableMb < 10) {
+            _lastError.value = "Stockage plein ($usableMb Mo libres) — libère de l'espace avant d'enregistrer"
+            return false
+        }
+        if (usableMb in 10 until 200) {
+            _lastError.value = "Stockage presque plein ($usableMb Mo libres) — l'enregistrement peut s'interrompre"
+        }
         val recFile = File(recDir, "rec_${REC_DATE_FORMAT.format(Date())}.wav")
         val writer = try {
             WavFileWriter(recFile)
@@ -402,6 +470,11 @@ class StreamViewModel(
         wavWriter = writer
         activeRecordingFile = recFile
         _lastRecording.value = recFile
+        pcmDigest = try {
+            MessageDigest.getInstance("SHA-256")
+        } catch (e: Exception) {
+            null
+        }
 
         val rec = PcmAudioRecorder(SAMPLE_RATE) { buf, n ->
             if (!_isPaused.value) {
@@ -417,6 +490,7 @@ class StreamViewModel(
                     }
                 }
                 writer.write(buf, n)
+                updateDigest(buf, n)
                 // Le ring buffer ne sert qu'au moteur Whisper (transcription locale)
                 if (_selectedEngine.value == "whisper") appendSamples(buf, n)
             }
@@ -431,6 +505,18 @@ class StreamViewModel(
         }
         recorder = rec
         return true
+    }
+
+    /** Alimente l'empreinte SHA-256 du flux PCM (appelé depuis le thread audio). */
+    private fun updateDigest(buf: ShortArray, n: Int) {
+        val digest = pcmDigest ?: return
+        if (digestScratch.size < n * 2) digestScratch = ByteArray(n * 2)
+        for (i in 0 until n) {
+            val v = buf[i].toInt()
+            digestScratch[2 * i] = (v and 0xFF).toByte()
+            digestScratch[2 * i + 1] = ((v shr 8) and 0xFF).toByte()
+        }
+        digest.update(digestScratch, 0, n * 2)
     }
 
     private fun startGoogleStreaming(): Boolean {
@@ -465,7 +551,9 @@ class StreamViewModel(
                 // VAD : ignore les fenêtres de silence (coupe les blancs, moins d'hallucinations)
                 if (rmsOf(pcm) < VAD_THRESHOLD) continue
                 transcribing = true
-                val res = engine.transcribeBuffer(pcm, settings.language, prompt)
+                val res = whisperLock.withLock {
+                    engine.transcribeBuffer(pcm, settings.language, prompt)
+                }
                 transcribing = false
                 if (res.error != null) {
                     _lastError.value = res.error
@@ -522,9 +610,12 @@ class StreamViewModel(
             }
             val finalFile = _lastRecording.value ?: raw
 
+            // Empreinte SHA-256 du flux PCM, finalisée à l'arrêt (recorder déjà stoppé/join)
+            val pcmHash = pcmDigest?.digest()?.joinToString("") { "%02x".format(it) }
+            pcmDigest = null
             // .txt auto à côté du WAV — rien ne se perd, même sans transcription différée
-            if (_liveText.value.isNotBlank()) {
-                writeTranscriptFile(finalFile, _liveText.value, _elapsedSec.value * 1000)
+            if (_liveText.value.isNotBlank() || pcmHash != null) {
+                writeTranscriptFile(finalFile, _liveText.value, _elapsedSec.value * 1000, pcmHash)
             }
             // Chiffrement optionnel du WAV
             if (settings.encryptWav && finalFile.exists() && finalFile.extension == "wav") {
@@ -539,12 +630,30 @@ class StreamViewModel(
             // Proposer de donner un nom (le défaut date-début-fin est déjà appliqué)
             _pendingName.value = _lastRecording.value
             _pendingNameDefault.value = defaultName
+        } else if (_selectedEngine.value == "google" && _liveText.value.isNotBlank()) {
+            // Mode Google : pas de WAV (conflit micro), mais la transcription ne se perd
+            // plus — sauvegardée en entrée « texte seul », visible dans la liste.
+            var name = buildDefaultName(null)
+            var txtFile = File(recordingsDir(), "$name.txt")
+            var suffix = 2
+            while (txtFile.exists()) { // deux enregistrements dans la même minute
+                name = "${buildDefaultName(null)} ($suffix)"
+                txtFile = File(recordingsDir(), "$name.txt")
+                suffix++
+            }
+            writeTranscriptFile(txtFile, _liveText.value, _elapsedSec.value * 1000)
+            if (txtFile.exists()) {
+                _lastRecording.value = txtFile
+                _fileTranscript.value = _liveText.value
+                _pendingName.value = txtFile
+                _pendingNameDefault.value = name
+            }
         }
         refreshRecordings()
     }
 
     /** Nom par défaut : 20260809_1435-1530 (date, heure début, heure fin). */
-    private fun buildDefaultName(file: File): String {
+    private fun buildDefaultName(file: File?): String {
         val start = Date(activeStartTime)
         val end = Date()
         return "${REC_START_END_FORMAT.format(start)}-${REC_START_END_FORMAT.format(end)}"
@@ -552,25 +661,38 @@ class StreamViewModel(
 
     fun confirmPendingName(newName: String) {
         val f = _pendingName.value ?: return
-        // Nettoyage : on retire les caractères interdits dans un nom de fichier
-        val name = newName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "").trim()
         _pendingName.value = null
-        if (name.isEmpty() || name == f.nameWithoutExtension) {
-            refreshRecordings()
-            return
-        }
-        val dest = File(f.parentFile, "$name.${f.extension}")
-        if (dest.exists()) {
-            _lastError.value = "Un enregistrement porte déjà ce nom"
-            refreshRecordings()
-            return
-        }
-        if (f.renameTo(dest)) {
-            val oldTxt = File(f.parentFile, f.nameWithoutExtension + ".txt")
-            if (oldTxt.exists()) oldTxt.renameTo(File(dest.parentFile, dest.nameWithoutExtension + ".txt"))
-            if (_lastRecording.value == f) _lastRecording.value = dest
-        }
+        renameFile(f, newName)
         refreshRecordings()
+    }
+
+    /**
+     * Renommage commun (dialog de fin d'enregistrement + liste) : conserve le
+     * suffixe (.wav / .wav.enc / .txt) et renomme les fichiers frères .txt/.srt.
+     */
+    private fun renameFile(f: File, newName: String): Boolean {
+        val name = RecordingNames.sanitize(newName)
+        if (name.isEmpty() || name == RecordingNames.baseName(f.name)) return false
+        val dest = RecordingNames.renamed(f, name)
+        // Collision sur le nom de base, tous types confondus (.wav, .wav.enc, .txt seul) :
+        // un renameTo POSIX écraserait silencieusement la cible homonyme.
+        val clash = f.parentFile?.listFiles()?.any { other ->
+            other != f && RecordingNames.baseName(other.name) == name
+        } == true
+        if (clash || dest.exists()) {
+            _lastError.value = "Un enregistrement porte déjà ce nom"
+            return false
+        }
+        val oldTxt = RecordingNames.txtSibling(f)
+        val oldSrt = RecordingNames.srtSibling(f)
+        if (!f.renameTo(dest)) {
+            _lastError.value = "Renommage impossible"
+            return false
+        }
+        if (oldTxt.exists()) oldTxt.renameTo(RecordingNames.txtSibling(dest))
+        if (oldSrt.exists()) oldSrt.renameTo(RecordingNames.srtSibling(dest))
+        if (_lastRecording.value == f) _lastRecording.value = dest
+        return true
     }
 
     fun dismissPendingName() {
@@ -588,6 +710,7 @@ class StreamViewModel(
 
     fun togglePlayback() {
         val file = _lastRecording.value ?: return
+        if (!RecordingNames.isAudio(file.name)) return // entrée texte seul : rien à écouter
         if (_isPlaying.value) {
             stopPlayback()
         } else {
@@ -641,7 +764,12 @@ class StreamViewModel(
     fun transcribeLastRecording() {
         val file = _lastRecording.value ?: return
         if (_isTranscribingFile.value) return
-        val engineRef = (modelState.value as? ModelState.Ready)?.engine ?: return
+        if (!RecordingNames.isAudio(file.name)) return
+        val engineRef = (modelState.value as? ModelState.Ready)?.engine
+        if (engineRef == null) {
+            _lastError.value = "Modèle Whisper non chargé — transcription différée indisponible"
+            return
+        }
         viewModelScope.launch {
             _isTranscribingFile.value = true
             _fileTranscript.value = ""
@@ -653,28 +781,51 @@ class StreamViewModel(
             if (pcm == null) {
                 _lastError.value = "Fichier audio illisible"
             } else {
-                val res = engineRef.transcribeBuffer(pcm, settings.language, settings.vocabularyList.joinToString(", "))
+                val res = whisperLock.withLock {
+                    engineRef.transcribeBuffer(pcm, settings.language, settings.vocabularyList.joinToString(", "))
+                }
                 if (res.error != null) {
                     _lastError.value = res.error
                 } else {
-                    val text = withContext(Dispatchers.IO) {
-                        buildSpeakerMarkedTranscript(pcm, res)
+                    val (text, srt) = withContext(Dispatchers.IO) {
+                        buildSpeakerMarkedTranscript(pcm, res) to TranscriptExporter.buildSrt(res.segments)
                     }
                     _fileTranscript.value = text
-                    // Sauvegarde .txt auto à côté du fichier
-                    writeTranscriptFile(file, text, wavDurationMs(file))
+                    // Sauvegarde .txt auto + sous-titres .srt à côté du fichier
+                    val durationMs = pcm.size / 32L // 16 kHz × 2 octets = 32 octets/ms
+                    withContext(Dispatchers.IO) {
+                        writeTranscriptFile(file, text, durationMs)
+                        if (srt.isNotBlank()) {
+                            try {
+                                RecordingNames.srtSibling(file).writeText(srt)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "écriture SRT : ${e.message}")
+                            }
+                        }
+                    }
+                    refreshRecordings()
                 }
             }
             _isTranscribingFile.value = false
         }
     }
 
-    /** Durée en ms d'un WAV (clair) en lisant le header. */
-    private fun wavDurationMs(file: File): Long {
-        val clear = resolvedAudioFile(file) ?: return 0L
-        val dur = readWavDuration(clear)
-        if (clear != file) clear.delete()
-        return dur
+    /**
+     * Durée en ms sans déchiffrement (la liste ne déchiffre plus chaque .enc à chaque
+     * rafraîchissement) : header WAV en clair ; taille moins l'overhead AES-GCM
+     * (IV 12 + tag 16) et le header WAV (44) pour les .enc ; en-tête « Durée : »
+     * du .txt pour les entrées texte seul.
+     */
+    private fun durationMsOf(file: File): Long = when {
+        file.name.endsWith(".enc") ->
+            ((file.length() - 12 - 16 - 44).coerceAtLeast(0) * 1000L) / 32000L
+        file.name.endsWith(".txt") ->
+            try {
+                TranscriptExporter.parseDurationMs(file.readText())
+            } catch (e: Exception) {
+                0L
+            }
+        else -> readWavDuration(file)
     }
 
     private fun readWavDuration(file: File): Long {
@@ -700,14 +851,23 @@ class StreamViewModel(
     /**
      * Écrit (ou écrase) le .txt d'un enregistrement : métadonnées + transcription.
      */
-    fun writeTranscriptFile(audioFile: File, text: String, durationMs: Long) {
+    fun writeTranscriptFile(audioFile: File, text: String, durationMs: Long, sha256: String? = null) {
         try {
-            val txt = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".txt")
+            val txt = RecordingNames.txtSibling(audioFile)
+            // L'empreinte PCM n'est calculée qu'à l'enregistrement : on la préserve
+            // quand le .txt est réécrit (transcription différée, édition manuelle).
+            val hash = sha256 ?: if (txt.exists()) {
+                HASH_LINE.find(txt.readText())?.groupValues?.get(1)
+            } else {
+                null
+            }
+            val date = if (audioFile.exists()) audioFile.lastModified() else System.currentTimeMillis()
             val sb = StringBuilder()
             sb.append("Transcripto Stream\n")
-            sb.append("Date : ").append(TXT_DATE_FORMAT.format(Date(audioFile.lastModified()))).append("\n")
+            sb.append("Date : ").append(TXT_DATE_FORMAT.format(Date(date))).append("\n")
             sb.append("Durée : ").append(formatHms(durationMs)).append("\n")
             if (audioFile.extension == "enc") sb.append("Chiffré : oui\n")
+            if (hash != null) sb.append("SHA-256 (PCM) : ").append(hash).append("\n")
             sb.append("----\n\n")
             sb.append(text)
             txt.writeText(sb.toString())
@@ -716,49 +876,83 @@ class StreamViewModel(
         }
     }
 
-    fun formatHms(ms: Long): String {
-        val totalSec = ms / 1000
-        val h = totalSec / 3600
-        val m = (totalSec % 3600) / 60
-        val s = totalSec % 60
-        return if (h > 0) "%02d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+    fun formatHms(ms: Long): String = TranscriptExporter.formatHms(ms)
+
+    /** Sauvegarde une transcription corrigée à la main dans le .txt de l'enregistrement. */
+    fun saveEditedTranscript(newText: String) {
+        val file = _lastRecording.value ?: return
+        _fileTranscript.value = newText
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                writeTranscriptFile(file, newText, durationMsOf(file))
+            }
+            refreshRecordings()
+        }
     }
 
     /**
-     * Reconstruction avec horodatage [mm:ss] + changements d'interlocuteur :
-     * pause > 1,2 s → [pause Xs] ; variation de pitch F0 > 20 % → [changement d'interlocuteur].
+     * Reconstruction avec horodatage [mm:ss], attribution [Intervenant N]
+     * (variation de pitch F0 > 20 %), pauses > 1,2 s, et bloc « temps de parole »
+     * par intervenant en fin de transcription (réunions, entretiens d'audit).
      */
     private fun buildSpeakerMarkedTranscript(pcm: ByteArray, res: StreamResult): String {
         val segments = res.segments
         if (segments.isEmpty()) return res.fullText.trim()
         val shorts = byteArrayToShorts(pcm)
+        val speakerIds = detectSpeakers(shorts, segments)
         val sb = StringBuilder()
-        var prevF0: Double? = null
+        var currentSpeaker = 0
         for ((i, seg) in segments.withIndex()) {
             if (seg.text.isBlank()) continue
             if (i > 0) {
-                val prev = segments[i - 1]
-                val gap = seg.startMs - prev.endMs
+                val gap = seg.startMs - segments[i - 1].endMs
                 if (gap > 1200) {
                     sb.append(" [pause ${gap / 1000}s] ")
                 }
             }
+            if (speakerIds[i] != currentSpeaker) {
+                currentSpeaker = speakerIds[i]
+                if (sb.isNotEmpty()) sb.append('\n')
+                sb.append("[Intervenant $currentSpeaker] ")
+            }
             if (settings.useTimestamps) {
                 sb.append("[").append(formatClock(seg.startMs)).append("] ")
             }
+            sb.append(seg.text.trim()).append(" ")
+        }
+        // Stats sur les seuls segments affichés (les blancs sautés plus haut fausseraient les %)
+        val kept = segments.indices.filter { segments[it].text.isNotBlank() }
+        val stats = TranscriptExporter.buildSpeakingStats(
+            kept.map { segments[it] },
+            kept.map { speakerIds[it] },
+        )
+        if (stats.isNotBlank()) {
+            sb.append("\n\n").append(stats)
+        }
+        return sb.toString().trim()
+    }
+
+    /**
+     * Attribue un intervenant (1 ou 2, alternance) à chaque segment via le pitch
+     * médian F0 — estimation adaptée aux entretiens à deux voix.
+     */
+    private fun detectSpeakers(shorts: ShortArray, segments: List<SegmentData>): List<Int> {
+        if (shorts.isEmpty()) return List(segments.size) { 1 }
+        val ids = ArrayList<Int>(segments.size)
+        var current = 1
+        var prevF0: Double? = null
+        for (seg in segments) {
             val s0 = ((seg.startMs * SAMPLE_RATE) / 1000L).toInt().coerceIn(0, shorts.size - 1)
             val s1 = ((seg.endMs * SAMPLE_RATE) / 1000L).toInt().coerceIn(s0 + 1, shorts.size)
             val f0 = averagePitch(shorts, s0, s1)
             if (prevF0 != null && f0 != null) {
                 val ratio = abs(f0 - prevF0) / min(f0, prevF0)
-                if (ratio > 0.20) {
-                    sb.append(" [changement d'interlocuteur] ")
-                }
+                if (ratio > 0.20) current = if (current == 1) 2 else 1
             }
             prevF0 = f0 ?: prevF0
-            sb.append(seg.text.trim()).append(" ")
+            ids.add(current)
         }
-        return sb.toString().trim()
+        return ids
     }
 
     private fun formatClock(ms: Long): String {
@@ -777,37 +971,65 @@ class StreamViewModel(
         return true
     }
 
-    /** Construit l'intent email avec le .txt export + le WAV (déchiffré si besoin). */
+    /** Intent de partage pour le dernier enregistrement : texte + .txt + audio + .srt. */
     suspend fun buildEmailIntent(): Intent? = withContext(Dispatchers.IO) {
         val file = _lastRecording.value ?: return@withContext null
-        try {
-            val text = _fileTranscript.value.ifBlank { _liveText.value }
+        buildShareIntent(file, _fileTranscript.value.ifBlank { _liveText.value })
+    }
+
+    /** Partage direct d'un élément de la liste, sans passer par l'écran principal. */
+    suspend fun buildShareIntentFor(item: RecordingItem): Intent? = withContext(Dispatchers.IO) {
+        val txt = transcriptFileFor(item.file)
+        val text = if (txt.exists()) {
+            txt.readText().substringAfter("----\n").trim()
+        } else {
+            item.transcript
+        }
+        buildShareIntent(item.file, text)
+    }
+
+    /**
+     * Construit l'intent de partage : transcription en corps de message, .txt joint,
+     * audio (déchiffré à la volée) si l'entrée en a, sous-titres .srt s'ils existent.
+     */
+    private fun buildShareIntent(file: File, transcriptText: String): Intent? {
+        return try {
+            val base = RecordingNames.baseName(file.name)
             val exportDir = File(appContext.cacheDir, "exports").apply { mkdirs() }
-            val txt = File(exportDir, file.nameWithoutExtension + ".txt")
+            val txt = File(exportDir, "$base.txt")
             txt.writeText(
-                if (text.isBlank()) "Transcripto Stream — enregistrement sans transcription\n" else text
+                if (transcriptText.isBlank()) "Transcripto Stream — enregistrement sans transcription\n" else transcriptText
             )
 
             val attachments = arrayListOf<Uri>()
-            val txtUri = FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", txt)
-            attachments.add(txtUri)
-
-            val clear = resolvedAudioFile(file)
-            if (clear != null) {
-                val audioUri = FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", clear)
-                attachments.add(audioUri)
+            attachments.add(
+                FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", txt)
+            )
+            if (RecordingNames.isAudio(file.name)) {
+                val clear = resolvedAudioFile(file)
+                if (clear != null) {
+                    attachments.add(
+                        FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", clear)
+                    )
+                }
+            }
+            val srt = RecordingNames.srtSibling(file)
+            if (srt.exists()) {
+                attachments.add(
+                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", srt)
+                )
             }
 
             Intent(Intent.ACTION_SEND_MULTIPLE).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_EMAIL, arrayOf(""))
-                putExtra(Intent.EXTRA_SUBJECT, "Transcription ${file.nameWithoutExtension}")
-                putExtra(Intent.EXTRA_TEXT, text)
+                putExtra(Intent.EXTRA_SUBJECT, "Transcription $base")
+                putExtra(Intent.EXTRA_TEXT, transcriptText)
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, attachments)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "buildEmailIntent: ${e.message}")
+            Log.e(TAG, "buildShareIntent: ${e.message}")
             null
         }
     }
@@ -816,51 +1038,57 @@ class StreamViewModel(
 
     fun refreshRecordings() {
         viewModelScope.launch {
-            val items = withContext(Dispatchers.IO) {
-                val dir = recordingsDir()
-                dir.listFiles()
-                    ?.filter { it.extension == "wav" || it.extension == "enc" }
-                    ?.map { f ->
-                        val txt = File(dir, f.nameWithoutExtension + ".txt")
-                        val transcript = if (txt.exists()) txt.readText().take(200) else ""
-                        RecordingItem(
-                            file = f,
-                            baseName = f.nameWithoutExtension,
-                            sizeBytes = f.length(),
-                            durationMs = wavDurationMs(f),
-                            modifiedAt = f.lastModified(),
-                            encrypted = f.extension == "enc",
-                            transcript = transcript,
-                        )
-                    }
-                    ?.sortedByDescending { it.modifiedAt }
-                    ?: emptyList()
+            val (items, totalBytes) = withContext(Dispatchers.IO) {
+                val files = recordingsDir().listFiles()?.toList() ?: emptyList()
+                val audio = files.filter { RecordingNames.isAudio(it.name) }
+                val audioBases = audio.map { RecordingNames.baseName(it.name) }.toSet()
+                // .txt hérités v0.2.x (« base.wav.txt » à côté de « base.wav.enc »)
+                val legacyTxtNames = audio.map { it.nameWithoutExtension + ".txt" }.toSet()
+                // Entrées « texte seul » : .txt sans audio associé (transcriptions Google)
+                val textOnly = files.filter {
+                    RecordingNames.isTextOnly(it.name) &&
+                        RecordingNames.baseName(it.name) !in audioBases &&
+                        it.name !in legacyTxtNames
+                }
+                val list = (audio + textOnly).map { f ->
+                    val txt = transcriptFileFor(f)
+                    val transcript = if (txt.exists()) {
+                        txt.readText().substringAfter("----\n").trim().take(200)
+                    } else ""
+                    RecordingItem(
+                        file = f,
+                        baseName = RecordingNames.baseName(f.name),
+                        sizeBytes = f.length(),
+                        durationMs = durationMsOf(f),
+                        modifiedAt = f.lastModified(),
+                        encrypted = f.name.endsWith(".enc"),
+                        hasAudio = RecordingNames.isAudio(f.name),
+                        transcript = transcript,
+                    )
+                }.sortedByDescending { it.modifiedAt }
+                list to files.sumOf { it.length() }
             }
             _recordings.value = items
+            _storageBytes.value = totalBytes
         }
     }
 
     fun renameRecording(old: RecordingItem, newBaseName: String) {
-        val name = newBaseName.trim()
-        if (name.isEmpty() || name == old.baseName) return
-        val dir = old.file.parentFile ?: return
-        val newFile = File(dir, name + old.file.extension)
-        if (newFile.exists()) {
-            _lastError.value = "Un enregistrement porte déjà ce nom"
-            return
-        }
-        val ok = old.file.renameTo(newFile)
-        if (ok) {
-            val oldTxt = File(dir, old.baseName + ".txt")
-            if (oldTxt.exists()) oldTxt.renameTo(File(dir, name + ".txt"))
-            if (_lastRecording.value == old.file) _lastRecording.value = newFile
-        }
+        renameFile(old.file, newBaseName)
         refreshRecordings()
     }
 
+    /** Supprime un enregistrement et ses fichiers frères (.txt, .srt + .txt hérité v0.2.x). */
+    private fun deleteWithSiblings(f: File) {
+        f.delete()
+        RecordingNames.txtSibling(f).delete()
+        RecordingNames.srtSibling(f).delete()
+        // Ancienne convention (v0.2.x) : « base.wav.enc » avait parfois « base.wav.txt »
+        File(f.parentFile, f.nameWithoutExtension + ".txt").delete()
+    }
+
     fun deleteRecording(item: RecordingItem) {
-        item.file.delete()
-        File(item.file.parentFile, item.baseName + ".txt").delete()
+        deleteWithSiblings(item.file)
         if (_lastRecording.value == item.file) {
             _lastRecording.value = null
             _fileTranscript.value = ""
@@ -872,11 +1100,11 @@ class StreamViewModel(
     fun deleteLastRecording() {
         if (_isStreaming.value) return
         val f = _lastRecording.value ?: return
-        f.delete()
-        File(f.parentFile, f.nameWithoutExtension + ".txt").delete()
+        deleteWithSiblings(f)
         _lastRecording.value = null
         activeRecordingFile = null
         _fileTranscript.value = ""
+        refreshRecordings()
     }
 
     /** Rétention RGPD : supprime les enregistrements plus vieux que N jours (0 = désactivé). */
@@ -886,13 +1114,22 @@ class StreamViewModel(
         val cutoff = System.currentTimeMillis() - days * 86_400_000L
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                val dir = recordingsDir()
-                dir.listFiles()?.forEach { f ->
-                    if (f.extension == "wav" || f.extension == "enc") {
-                        if (f.lastModified() < cutoff) {
-                            f.delete()
-                            File(dir, f.nameWithoutExtension + ".txt").delete()
-                        }
+                val files = recordingsDir().listFiles()?.toList() ?: emptyList()
+                val audioBases = files.filter { RecordingNames.isAudio(it.name) }
+                    .map { RecordingNames.baseName(it.name) }
+                    .toSet()
+                files.forEach { f ->
+                    val expired = f.lastModified() < cutoff
+                    if (!expired) return@forEach
+                    if (RecordingNames.isAudio(f.name)) {
+                        deleteWithSiblings(f)
+                    } else if (
+                        RecordingNames.isTextOnly(f.name) &&
+                        RecordingNames.baseName(f.name) !in audioBases
+                    ) {
+                        // Entrée texte seul (Google) : soumise à la même rétention
+                        f.delete()
+                        RecordingNames.srtSibling(f).delete()
                     }
                 }
             }
@@ -961,7 +1198,9 @@ class StreamViewModel(
 
     private fun mergeLive(full: String) {
         val cleaned = full.trim()
-        val words = validatedText.split(" ").filter { it.isNotBlank() }
+        // Les marqueurs [⭐ mm:ss] ne viennent pas de Whisper : on les exclut du
+        // suffixe de recoupement, sinon plus rien ne matche et le texte se duplique.
+        val words = validatedText.split(" ").filter { it.isNotBlank() && !it.contains("⭐") }
         var matched = 0
         val maxMatch = minOf(words.size, 8)
         for (n in maxMatch downTo 1) {

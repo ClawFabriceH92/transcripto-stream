@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
@@ -25,9 +26,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
  * Réglages : langue, gain micro, vocabulaire personnalisé, horodatage,
@@ -36,6 +41,8 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun SettingsScreen(vm: StreamViewModel) {
     val settings = vm.settings
+    val context = LocalContext.current
+    val storageBytes by vm.storageBytes.collectAsStateWithLifecycle()
     var vocab by remember { mutableStateOf(settings.vocabulary) }
     var pinDialog by remember { mutableStateOf(false) }
 
@@ -92,6 +99,13 @@ fun SettingsScreen(vm: StreamViewModel) {
 
         SectionTitle("Gestion des enregistrements")
 
+        Text(
+            "Espace utilisé : ${"%.1f".format(storageBytes / (1024f * 1024f))} Mo (~100 Mo par heure de WAV)",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+
         Text("Rétention automatique (RGPD)", fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(0 to "Jamais", 30 to "30 j", 60 to "60 j", 90 to "90 j").forEach { (days, label) ->
@@ -143,6 +157,19 @@ fun SettingsScreen(vm: StreamViewModel) {
 
         Text(
             "Indicateur local/cloud : visible sur l'écran principal. Google = audio au fournisseur ; Whisper = 100% local.",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        val versionName = remember {
+            try {
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+            } catch (e: Exception) {
+                "?"
+            }
+        }
+        Text(
+            "Version $versionName · Astuce : tuile « Transcrire » dans les réglages rapides + raccourci sur l'icône de l'app.",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -206,6 +233,8 @@ private fun PinSetupDialog(
                     onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) pin1 = it },
                     label = { Text("Nouveau PIN") },
                     singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -213,6 +242,8 @@ private fun PinSetupDialog(
                     onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) pin2 = it },
                     label = { Text("Confirmer le PIN") },
                     singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                 )
                 if (error != null) {
                     Spacer(Modifier.height(8.dp))

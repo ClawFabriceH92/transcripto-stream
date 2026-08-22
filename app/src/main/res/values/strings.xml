@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Transcripto Stream</string>
+    <string name="shortcut_record_short">Enregistrer</string>
+    <string name="shortcut_record_long">Nouvel enregistrement</string>
+    <string name="tile_record">Transcrire</string>
+</resources>
