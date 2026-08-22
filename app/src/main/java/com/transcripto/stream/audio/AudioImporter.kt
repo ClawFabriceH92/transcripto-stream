@@ -77,10 +77,13 @@ object AudioImporter {
             var inputDone = false
             var outputDone = false
             var wroteSamples = false
+            var dryRuns = 0
             while (!outputDone) {
+                var progressed = false
                 if (!inputDone) {
                     val inIdx = codec.dequeueInputBuffer(TIMEOUT_US)
                     if (inIdx >= 0) {
+                        progressed = true
                         val buf = codec.getInputBuffer(inIdx)
                         if (buf == null) {
                             error = "Décodeur indisponible"
@@ -106,15 +109,28 @@ object AudioImporter {
                 val outIdx = codec.dequeueOutputBuffer(info, TIMEOUT_US)
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        progressed = true
                         val of = codec.outputFormat
-                        srcRate = of.getIntegerOr(MediaFormat.KEY_SAMPLE_RATE, srcRate)
+                        val newRate = of.getIntegerOr(MediaFormat.KEY_SAMPLE_RATE, srcRate)
                         channels = of.getIntegerOr(MediaFormat.KEY_CHANNEL_COUNT, channels)
                         pcmEncoding = of.getIntegerOr(
                             MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT
                         )
-                        resampler = LinearResampler(srcRate, TARGET_RATE)
+                        if (pcmEncoding != AudioFormat.ENCODING_PCM_16BIT &&
+                            pcmEncoding != AudioFormat.ENCODING_PCM_FLOAT
+                        ) {
+                            error = "Format PCM non géré ($pcmEncoding)"
+                            break
+                        }
+                        // Ne recréer le rééchantillonneur que si le taux change : le
+                        // recréer à taux constant perdrait l'état entre deux blocs
+                        if (resampler == null || newRate != srcRate) {
+                            resampler = LinearResampler(newRate, TARGET_RATE)
+                        }
+                        srcRate = newRate
                     }
                     outIdx >= 0 -> {
+                        progressed = true
                         if (info.size > 0) {
                             val ob = codec.getOutputBuffer(outIdx)
                             if (ob != null) {
@@ -150,6 +166,14 @@ object AudioImporter {
                             outputDone = true
                         }
                     }
+                }
+                // Garde-fou : un codec qui ne progresse plus (fichier tronqué, décodeur
+                // OEM défaillant) ne doit pas bloquer l'import — ni l'app — pour toujours.
+                if (progressed) {
+                    dryRuns = 0
+                } else if (++dryRuns > 500) { // ~10 s sans progrès
+                    error = "Décodage interrompu (fichier tronqué ?)"
+                    break
                 }
             }
             if (error == null && !wroteSamples) {

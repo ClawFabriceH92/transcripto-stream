@@ -1068,9 +1068,16 @@ class StreamViewModel(
      * selon le réglage, puis sélection pour transcription différée.
      */
     fun importAudio(uri: Uri) {
-        if (_isImporting.value) return
+        if (_isImporting.value) {
+            _uiMessage.value = "Un import est déjà en cours"
+            return
+        }
         if (_isStreaming.value) {
             _uiMessage.value = "Import impossible pendant un enregistrement"
+            return
+        }
+        if (_isTranscribingFile.value) {
+            _uiMessage.value = "Transcription en cours — réessaie quand elle est terminée"
             return
         }
         viewModelScope.launch {
@@ -1078,11 +1085,36 @@ class StreamViewModel(
             _importProgress.value = 0f
             val (err, file) = withContext(Dispatchers.IO) {
                 val base = importBaseName(uri)
-                val dest = File(recordingsDir(), "$base.wav")
-                val e = AudioImporter.importToWav(appContext, uri, dest) { p ->
-                    _importProgress.value = p
+                // Décodage vers un temporaire du cache : pas de WAV partiel (et en clair)
+                // dans recordings/ si le process meurt en plein import
+                val tmp = File(appContext.cacheDir, "import_${System.currentTimeMillis()}.wav")
+                var lastPct = -1
+                val e = AudioImporter.importToWav(appContext, uri, tmp) { p ->
+                    val pct = (p * 100).toInt()
+                    if (pct != lastPct) { // limite les recompositions à 1 par % affiché
+                        lastPct = pct
+                        _importProgress.value = pct / 100f
+                    }
                 }
-                if (e != null) e to null else null to maybeEncrypt(dest)
+                if (e != null) {
+                    tmp.delete()
+                    e to null
+                } else {
+                    val dest = File(recordingsDir(), "$base.wav")
+                    val moved = tmp.renameTo(dest) || try {
+                        tmp.copyTo(dest, overwrite = true)
+                        tmp.delete()
+                        true
+                    } catch (ex: Exception) {
+                        false
+                    }
+                    if (!moved) {
+                        tmp.delete()
+                        "Impossible d'enregistrer le fichier importé" to null
+                    } else {
+                        null to maybeEncrypt(dest)
+                    }
+                }
             }
             if (err != null || file == null) {
                 _uiMessage.value = err ?: "Import impossible"
@@ -1122,13 +1154,28 @@ class StreamViewModel(
     }
 
     /** Copie l'audio (déchiffré à la volée) vers l'emplacement choisi via SAF. */
-    fun exportAudio(item: RecordingItem, destUri: Uri) {
+    fun exportAudio(file: File, destUri: Uri) {
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) {
-                val clear = resolvedAudioFile(item.file) ?: return@withContext false
+                // Temp de déchiffrement propre à l'export : ne pas réutiliser le temp
+                // « _dec » que le partage peut encore servir via FileProvider
+                val clear = if (file.extension == "enc") {
+                    CryptoManager.decryptToTemp(
+                        file, appContext.cacheDir, "_exp_${System.currentTimeMillis()}"
+                    )
+                } else {
+                    file
+                }
+                if (clear == null || !clear.exists()) return@withContext false
                 try {
-                    val out = appContext.contentResolver.openOutputStream(destUri)
-                        ?: return@withContext false
+                    // « wt » tronque un document existant ; le mode par défaut « w » des
+                    // DocumentsProviders ne tronque pas — remplacer un WAV plus long
+                    // laisserait des octets résiduels après le flux copié
+                    val out = try {
+                        appContext.contentResolver.openOutputStream(destUri, "wt")
+                    } catch (e: Exception) {
+                        appContext.contentResolver.openOutputStream(destUri)
+                    } ?: return@withContext false
                     out.use { o ->
                         clear.inputStream().use { it.copyTo(o, 64 * 1024) }
                     }
@@ -1137,11 +1184,11 @@ class StreamViewModel(
                     Log.e(TAG, "exportAudio: ${e.message}")
                     false
                 } finally {
-                    if (clear != item.file) clear.delete()
+                    if (clear != file) clear.delete()
                 }
             }
             _uiMessage.value = if (ok) {
-                "Audio « ${item.baseName} » exporté"
+                "Audio « ${RecordingNames.baseName(file.name)} » exporté"
             } else {
                 "Export impossible"
             }

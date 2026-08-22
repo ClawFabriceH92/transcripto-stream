@@ -66,8 +66,10 @@ object CryptoManager {
     /**
      * Déchiffre vers un fichier temporaire (cacheDir). Le fichier temp est supprimé
      * à la sortie du process — usage lecture/écoute/email uniquement.
+     * [suffix] distingue les usages simultanés (lecture/partage vs export) pour
+     * qu'une suppression n'invalide pas le temp d'un autre flux.
      */
-    fun decryptToTemp(encFile: File, cacheDir: File): File? {
+    fun decryptToTemp(encFile: File, cacheDir: File, suffix: String = "_dec"): File? {
         return try {
             val key = getOrCreateKey()
             val bytes = encFile.readBytes()
@@ -75,7 +77,7 @@ object CryptoManager {
             val iv = bytes.copyOfRange(0, IV_LEN)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
-            val out = File(cacheDir, encFile.nameWithoutExtension + "_dec.wav")
+            val out = File(cacheDir, encFile.nameWithoutExtension + suffix + ".wav")
             FileOutputStream(out).use { fos ->
                 CipherInputStream(bytes.inputStream().buffered().apply { skip(IV_LEN.toLong()) }, cipher).use { cin ->
                     cin.copyTo(fos, 64 * 1024)

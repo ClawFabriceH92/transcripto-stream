@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.LocalDate
@@ -69,15 +71,17 @@ fun RecordingListScreen(
     val query by vm.searchQuery.collectAsStateWithLifecycle()
     var renameTarget by remember { mutableStateOf<RecordingItem?>(null) }
     var deleteTarget by remember { mutableStateOf<RecordingItem?>(null) }
-    var exportTarget by remember { mutableStateOf<RecordingItem?>(null) }
+    // rememberSaveable : le picker SAF peut tuer le process ; au retour, le callback
+    // doit encore savoir quel fichier exporter (sinon document créé vide en silence)
+    var exportPath by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Export SAF : l'utilisateur choisit l'emplacement (Téléchargements, Drive…)
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("audio/wav")
     ) { uri ->
-        val target = exportTarget
-        exportTarget = null
-        if (uri != null && target != null) vm.exportAudio(target, uri)
+        val path = exportPath
+        exportPath = null
+        if (uri != null && path != null) vm.exportAudio(File(path), uri)
     }
 
     val filtered = if (query.isBlank()) {
@@ -89,9 +93,10 @@ fun RecordingListScreen(
         }
     }
 
-    // Groupes par jour (la liste est déjà triée par date décroissante)
-    val grouped = remember(filtered) {
-        val today = LocalDate.now()
+    // Groupes par jour (la liste est déjà triée par date décroissante).
+    // `today` participe à la clé : les libellés restent justes après minuit.
+    val today = LocalDate.now()
+    val grouped = remember(filtered, today) {
         filtered.groupBy { dayLabel(it.modifiedAt, today) }
     }
 
@@ -154,7 +159,7 @@ fun RecordingListScreen(
                                 }
                             },
                             onExport = {
-                                exportTarget = rec
+                                exportPath = rec.file.absolutePath
                                 exportLauncher.launch("${rec.baseName}.wav")
                             },
                         )
