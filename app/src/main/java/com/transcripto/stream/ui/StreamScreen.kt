@@ -29,6 +29,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -36,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
@@ -45,7 +48,9 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
@@ -93,6 +98,7 @@ private fun formatTime(sec: Long): String {
     return "%02d:%02d".format(mm, ss)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StreamScreen() {
     val context = LocalContext.current
@@ -135,8 +141,56 @@ fun StreamScreen() {
                 BackHandler(enabled = screen != 0) { vm.navigate(0) }
 
                 val snackbarHostState = remember { SnackbarHostState() }
+
+                // Sélecteur de fichier pour l'import d'audio externe (FAB de la liste)
+                val importLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.GetContent()
+                ) { uri -> if (uri != null) vm.importAudio(uri) }
+
+                // Audio partagé vers l'app (WhatsApp, Fichiers…) — consommé une fois déverrouillé
+                val importRequested by MainActivity.importRequest.collectAsStateWithLifecycle()
+                LaunchedEffect(importRequested) {
+                    val uri = importRequested
+                    if (uri != null) {
+                        MainActivity.importRequest.value = null
+                        vm.importAudio(uri)
+                    }
+                }
+
+                // Messages ponctuels du ViewModel (résultat d'import/export)
+                val uiMessage by vm.uiMessage.collectAsStateWithLifecycle()
+                LaunchedEffect(uiMessage) {
+                    val message = uiMessage
+                    if (message != null) {
+                        snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+                        vm.clearUiMessage()
+                    }
+                }
+
                 Scaffold(
                     snackbarHost = { SnackbarHost(snackbarHostState) },
+                    topBar = {
+                        TopAppBar(
+                            title = {
+                                Text(
+                                    when (screen) {
+                                        1 -> "Enregistrements"
+                                        2 -> "Réglages"
+                                        else -> "Transcripto Stream"
+                                    }
+                                )
+                            },
+                        )
+                    },
+                    floatingActionButton = {
+                        if (screen == 1) {
+                            ExtendedFloatingActionButton(
+                                onClick = { importLauncher.launch("audio/*") },
+                                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                                text = { Text("Importer") },
+                            )
+                        }
+                    },
                     bottomBar = {
                         NavigationBar {
                             NavigationBarItem(
@@ -311,6 +365,8 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
     val isTranscribingFile by vm.isTranscribingFile.collectAsStateWithLifecycle()
     val fileTranscript by vm.fileTranscript.collectAsStateWithLifecycle()
     val isPlaying by vm.isPlaying.collectAsStateWithLifecycle()
+    val isImporting by vm.isImporting.collectAsStateWithLifecycle()
+    val importProgress by vm.importProgress.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var confirmDeleteLast by remember { mutableStateOf(false) }
@@ -432,13 +488,23 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
             .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            text = "Transcripto Stream",
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-
-        Spacer(Modifier.height(10.dp))
+        // ---- Import d'audio externe en cours ----
+        if (isImporting) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                val progress = importProgress
+                Text(
+                    text = "Import de l'audio…" +
+                        if (progress != null) " ${(progress * 100).toInt()} %" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
 
         // ---- Bannière d'état du modèle Whisper : n'empêche plus d'utiliser Google ----
         val state = modelState
@@ -586,136 +652,143 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
         if (recording != null && !isStreaming) {
             val hasAudio = RecordingNames.isAudio(recording.name)
             Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "${RecordingNames.baseName(recording.name)}${if (recording.name.endsWith(".enc")) " 🔒" else ""}${if (!hasAudio) " (texte seul)" else ""}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            if (hasAudio) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Button(
-                        onClick = { vm.togglePlayback() },
-                        enabled = !isTranscribingFile,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(if (isPlaying) "■ Arrêter" else "▶ Écouter", style = MaterialTheme.typography.labelMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${RecordingNames.baseName(recording.name)}${if (recording.name.endsWith(".enc")) " 🔒" else ""}${if (!hasAudio) " (texte seul)" else ""}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
                     }
-                    Button(
-                        onClick = { vm.transcribeLastRecording() },
-                        enabled = !isTranscribingFile,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(if (isTranscribingFile) "…" else "Transcrire", style = MaterialTheme.typography.labelMedium)
-                    }
-                    OutlinedButton(
-                        onClick = { confirmDeleteLast = true },
-                        enabled = !isTranscribingFile && !isPlaying,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Supprimer", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedButton(
-                    onClick = {
-                        val text = fileTranscript.ifBlank { liveText }
-                        if (vm.copyText(text)) {
-                            toast("✓ Texte copié")
-                        } else {
-                            toast("Rien à copier pour l'instant")
-                        }
-                    },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Copier")
-                }
-                OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            val intent = vm.buildEmailIntent()
-                            if (intent != null) {
-                                context.startActivity(
-                                    Intent.createChooser(intent, "Partager la transcription")
-                                )
-                            } else {
-                                toast("Rien à envoyer pour l'instant")
+                    Spacer(Modifier.height(4.dp))
+                    if (hasAudio) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Button(
+                                onClick = { vm.togglePlayback() },
+                                enabled = !isTranscribingFile,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(if (isPlaying) "■ Arrêter" else "▶ Écouter", style = MaterialTheme.typography.labelMedium)
+                            }
+                            Button(
+                                onClick = { vm.transcribeLastRecording() },
+                                enabled = !isTranscribingFile,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(if (isTranscribingFile) "…" else "Transcrire", style = MaterialTheme.typography.labelMedium)
+                            }
+                            OutlinedButton(
+                                onClick = { confirmDeleteLast = true },
+                                enabled = !isTranscribingFile && !isPlaying,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Supprimer", style = MaterialTheme.typography.labelMedium)
                             }
                         }
-                    },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(
-                        Icons.Filled.Share,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.size(4.dp))
-                    Text("Partager")
-                }
-                OutlinedButton(
-                    onClick = { editTranscript = true },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(
-                        Icons.Filled.Edit,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.size(4.dp))
-                    Text("Corriger")
-                }
-            }
-            if (hasAudio) {
-                Spacer(Modifier.height(2.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Vitesse :", style = MaterialTheme.typography.labelMedium)
-                    listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { s ->
-                        FilterChip(
-                            selected = vm.settings.playbackSpeed == s,
-                            onClick = { vm.setPlaybackSpeed(s) },
-                            label = { Text(if (s == 1.0f) "1x" else "${s}x", style = MaterialTheme.typography.labelSmall) },
-                        )
+                        Spacer(Modifier.height(4.dp))
                     }
-                }
-            }
-            if (isTranscribingFile) {
-                Spacer(Modifier.height(4.dp))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-            if (fileTranscript.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(110.dp)
-                        .background(
-                            MaterialTheme.colorScheme.secondaryContainer,
-                            MaterialTheme.shapes.medium,
-                        )
-                        .padding(10.dp),
-                ) {
-                    Text(
-                        text = fileTranscript,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState()),
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val text = fileTranscript.ifBlank { liveText }
+                                if (vm.copyText(text)) {
+                                    toast("✓ Texte copié")
+                                } else {
+                                    toast("Rien à copier pour l'instant")
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Copier")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    val intent = vm.buildEmailIntent()
+                                    if (intent != null) {
+                                        context.startActivity(
+                                            Intent.createChooser(intent, "Partager la transcription")
+                                        )
+                                    } else {
+                                        toast("Rien à envoyer pour l'instant")
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(
+                                Icons.Filled.Share,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.size(4.dp))
+                            Text("Partager")
+                        }
+                        OutlinedButton(
+                            onClick = { editTranscript = true },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(
+                                Icons.Filled.Edit,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.size(4.dp))
+                            Text("Corriger")
+                        }
+                    }
+                    if (hasAudio) {
+                        Spacer(Modifier.height(2.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Vitesse :", style = MaterialTheme.typography.labelMedium)
+                            listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { s ->
+                                FilterChip(
+                                    selected = vm.settings.playbackSpeed == s,
+                                    onClick = { vm.setPlaybackSpeed(s) },
+                                    label = { Text(if (s == 1.0f) "1x" else "${s}x", style = MaterialTheme.typography.labelSmall) },
+                                )
+                            }
+                        }
+                    }
+                    if (isTranscribingFile) {
+                        Spacer(Modifier.height(4.dp))
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                    if (fileTranscript.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(110.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.secondaryContainer,
+                                    MaterialTheme.shapes.medium,
+                                )
+                                .padding(10.dp),
+                        ) {
+                            Text(
+                                text = fileTranscript,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState()),
+                            )
+                        }
+                    }
                 }
             }
         }

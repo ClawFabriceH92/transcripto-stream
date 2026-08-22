@@ -169,7 +169,8 @@ fun SettingsScreen(vm: StreamViewModel) {
             }
         }
         Text(
-            "Version $versionName · Astuce : tuile « Transcrire » dans les réglages rapides + raccourci sur l'icône de l'app.",
+            "Version $versionName · Astuces : tuile « Transcrire » dans les réglages rapides, raccourci sur l'icône de l'app, " +
+                "« Partager vers Transcripto » depuis n'importe quelle app pour transcrire un audio reçu.",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

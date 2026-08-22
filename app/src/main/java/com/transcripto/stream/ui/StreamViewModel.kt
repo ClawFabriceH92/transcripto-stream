@@ -7,12 +7,14 @@ import android.content.Intent
 import android.media.MediaPlayer
 import android.media.PlaybackParams
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.transcripto.stream.RecordingService
 import com.transcripto.stream.RecordingState
+import com.transcripto.stream.audio.AudioImporter
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.CryptoManager
@@ -160,6 +162,21 @@ class StreamViewModel(
     /** Espace total occupé par les enregistrements (WAV + .txt + .srt), pour les Réglages. */
     private val _storageBytes = MutableStateFlow(0L)
     val storageBytes: StateFlow<Long> = _storageBytes.asStateFlow()
+
+    // ---- Import / export audio ----
+    private val _isImporting = MutableStateFlow(false)
+    val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
+
+    private val _importProgress = MutableStateFlow<Float?>(null)
+    val importProgress: StateFlow<Float?> = _importProgress.asStateFlow()
+
+    /** Message ponctuel (snackbar) : résultat d'import/export, consommé puis effacé par l'UI. */
+    private val _uiMessage = MutableStateFlow<String?>(null)
+    val uiMessage: StateFlow<String?> = _uiMessage.asStateFlow()
+
+    fun clearUiMessage() {
+        _uiMessage.value = null
+    }
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -407,6 +424,10 @@ class StreamViewModel(
 
     fun startStreaming() {
         if (_isStreaming.value) return
+        if (_isImporting.value) {
+            _lastError.value = "Import audio en cours — réessaie dans un instant"
+            return
+        }
         // Seul Whisper a besoin du modèle : Google (moteur système) fonctionne
         // dès le lancement, même pendant le chargement ou en cas d'erreur du modèle.
         if (_selectedEngine.value == "whisper" && _modelState.value !is ModelState.Ready) return
@@ -618,15 +639,7 @@ class StreamViewModel(
                 writeTranscriptFile(finalFile, _liveText.value, _elapsedSec.value * 1000, pcmHash)
             }
             // Chiffrement optionnel du WAV
-            if (settings.encryptWav && finalFile.exists() && finalFile.extension == "wav") {
-                val enc = File(finalFile.parentFile, finalFile.nameWithoutExtension + ".wav.enc")
-                if (CryptoManager.encryptFile(finalFile, enc)) {
-                    finalFile.delete()
-                    _lastRecording.value = enc
-                } else {
-                    _lastError.value = "Chiffrement impossible — WAV conservé en clair"
-                }
-            }
+            _lastRecording.value = maybeEncrypt(finalFile)
             // Proposer de donner un nom (le défaut date-début-fin est déjà appliqué)
             _pendingName.value = _lastRecording.value
             _pendingNameDefault.value = defaultName
@@ -650,6 +663,19 @@ class StreamViewModel(
             }
         }
         refreshRecordings()
+    }
+
+    /** Chiffre un WAV si le réglage est actif ; retourne le fichier final (.wav ou .wav.enc). */
+    private fun maybeEncrypt(file: File): File {
+        if (!settings.encryptWav || !file.exists() || file.extension != "wav") return file
+        val enc = File(file.parentFile, file.nameWithoutExtension + ".wav.enc")
+        return if (CryptoManager.encryptFile(file, enc)) {
+            file.delete()
+            enc
+        } else {
+            _lastError.value = "Chiffrement impossible — WAV conservé en clair"
+            file
+        }
     }
 
     /** Nom par défaut : 20260809_1435-1530 (date, heure début, heure fin). */
@@ -1031,6 +1057,94 @@ class StreamViewModel(
         } catch (e: Exception) {
             Log.e(TAG, "buildShareIntent: ${e.message}")
             null
+        }
+    }
+
+    // ================= IMPORT / EXPORT AUDIO =================
+
+    /**
+     * Importe un audio externe (partagé depuis WhatsApp, un dictaphone, le
+     * gestionnaire de fichiers…) : décodage vers WAV 16 kHz mono, chiffrement
+     * selon le réglage, puis sélection pour transcription différée.
+     */
+    fun importAudio(uri: Uri) {
+        if (_isImporting.value) return
+        if (_isStreaming.value) {
+            _uiMessage.value = "Import impossible pendant un enregistrement"
+            return
+        }
+        viewModelScope.launch {
+            _isImporting.value = true
+            _importProgress.value = 0f
+            val (err, file) = withContext(Dispatchers.IO) {
+                val base = importBaseName(uri)
+                val dest = File(recordingsDir(), "$base.wav")
+                val e = AudioImporter.importToWav(appContext, uri, dest) { p ->
+                    _importProgress.value = p
+                }
+                if (e != null) e to null else null to maybeEncrypt(dest)
+            }
+            if (err != null || file == null) {
+                _uiMessage.value = err ?: "Import impossible"
+            } else {
+                _lastRecording.value = file
+                activeRecordingFile = null
+                _fileTranscript.value = ""
+                _liveText.value = ""
+                _uiMessage.value =
+                    "« ${RecordingNames.baseName(file.name)} » importé — appuie sur Transcrire"
+                refreshRecordings()
+                navigate(0)
+            }
+            _importProgress.value = null
+            _isImporting.value = false
+        }
+    }
+
+    /** Nom de base unique pour un import, dérivé du nom d'origine du fichier. */
+    private fun importBaseName(uri: Uri): String {
+        val display = try {
+            appContext.contentResolver.query(
+                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+            )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        } catch (e: Exception) {
+            null
+        }
+        var base = RecordingNames.sanitize(display?.substringBeforeLast('.') ?: "")
+        if (base.isEmpty()) base = "import_${REC_DATE_FORMAT.format(Date())}"
+        val taken = recordingsDir().listFiles()
+            ?.map { RecordingNames.baseName(it.name) }
+            ?.toSet() ?: emptySet()
+        if (base !in taken) return base
+        var i = 2
+        while ("$base ($i)" in taken) i++
+        return "$base ($i)"
+    }
+
+    /** Copie l'audio (déchiffré à la volée) vers l'emplacement choisi via SAF. */
+    fun exportAudio(item: RecordingItem, destUri: Uri) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                val clear = resolvedAudioFile(item.file) ?: return@withContext false
+                try {
+                    val out = appContext.contentResolver.openOutputStream(destUri)
+                        ?: return@withContext false
+                    out.use { o ->
+                        clear.inputStream().use { it.copyTo(o, 64 * 1024) }
+                    }
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "exportAudio: ${e.message}")
+                    false
+                } finally {
+                    if (clear != item.file) clear.delete()
+                }
+            }
+            _uiMessage.value = if (ok) {
+                "Audio « ${item.baseName} » exporté"
+            } else {
+                "Export impossible"
+            }
         }
     }
 

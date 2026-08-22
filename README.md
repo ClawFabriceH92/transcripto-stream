@@ -17,6 +17,8 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Correction manuelle** : bouton « Corriger » → édite la transcription, sauvegardée dans le `.txt`.
 - **Partage** : texte + `.txt` + WAV (déchiffré à la volée) + `.srt`, depuis l'écran principal **ou directement depuis la liste**.
 - **Démarrage en un geste** : tuile « Transcrire » dans les réglages rapides + App Shortcut (appui long sur l'icône).
+- **Import d'audio externe** : bouton « Importer » dans la liste, ou « Partager vers Transcripto » depuis WhatsApp/Fichiers/dictaphone — décodage local (m4a, mp3, ogg, amr, flac, wav) vers WAV 16 kHz mono, puis transcription différée comme un enregistrement natif.
+- **Export des audios** : « Exporter l'audio (WAV) » vers l'emplacement de ton choix (Téléchargements, Drive, clé USB…), déchiffré à la volée.
 - **Sécurité/RGPD** : PIN (saisie masquée), chiffrement WAV AES-256 (clé AndroidKeyStore), rétention automatique 30/60/90 j, contrôle d'espace disque avant enregistrement.
 
 ## Architecture
@@ -27,11 +29,13 @@ app/src/main/
 ├── assets/models/ggml-base.bin  # Modèle Whisper Base (~142 Mo, gitignoré)
 ├── jniLibs/arm64-v8a/           # libwhisper.so + libggml*.so + libomp + libc++_shared (gitignorés)
 └── java/com/transcripto/stream/
-    ├── MainActivity.kt             # Point d'entrée + action RECORD (tuile/raccourci)
+    ├── MainActivity.kt             # Point d'entrée + actions RECORD (tuile/raccourci) et SEND/VIEW (import)
     ├── RecordTileService.kt        # Tuile de réglages rapides « Transcrire »
     ├── RecordingService.kt         # Foreground service (écran éteint)
     ├── audio/PcmAudioRecorder.kt   # AudioRecord → ring buffer
     ├── audio/WavFileWriter.kt      # PCM → WAV conservé
+    ├── audio/AudioImporter.kt      # Import externe : MediaCodec → WAV 16 kHz mono
+    ├── audio/PcmResampler.kt       # Downmix + rééchantillonnage linéaire (pur, testé)
     ├── data/RecordingNames.kt      # Conventions de nommage (.wav / .wav.enc / .txt / .srt)
     ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore)
     ├── data/SettingsStore.kt       # Réglages (SharedPreferences)
@@ -79,10 +83,11 @@ GitHub Actions (`.github/workflows/ci.yml`) compile l'APK debug et lance les tes
 - [x] Sauvegarde/export des transcriptions (.txt, .srt, partage)
 - [x] Comptage de temps par intervenant (CAC/audit) — v1 par pitch
 - [x] Marqueurs pendant l'enregistrement, édition du transcript, tuile + raccourci
+- [x] Import d'audio externe (WhatsApp, dictaphone) vers la transcription différée
+- [x] Export des audios (WAV) vers l'emplacement choisi (SAF)
 - [ ] VAD Silero (endpointing par phrases) pour un vrai temps réel
 - [ ] Catalogue de modèles téléchargeables (small/distil quantisés) + re-transcription haute fidélité
 - [ ] Base Room + FTS (segments horodatés persistés, recherche instantanée, tap sur un mot → lecture audio)
-- [ ] Import d'audio externe (WhatsApp, dictaphone) vers la transcription différée
 - [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)
 - [ ] Sauvegarde chiffrée exportable (migration d'appareil — la clé AndroidKeyStore ne quitte pas le téléphone)
 - [ ] Résilience audio : focus audio, appels entrants, préemption micro signalée dans l'UI
