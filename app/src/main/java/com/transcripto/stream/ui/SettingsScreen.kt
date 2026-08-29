@@ -2,6 +2,7 @@ package com.transcripto.stream.ui
 
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -296,15 +297,19 @@ fun SettingsScreen(vm: StreamViewModel) {
             OutlinedButton(
                 enabled = !backupBusy,
                 onClick = {
-                    val stamp = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
-                    backupExportLauncher.launch("transcripto-sauvegarde-$stamp.tsbk")
+                    // Garde AVANT d'ouvrir le sélecteur : sinon SAF crée un document
+                    // que exportBackup refuserait ensuite (fichier fantôme de 0 octet)
+                    if (!vm.backupBlocked()) {
+                        val stamp = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+                        backupExportLauncher.launch("transcripto-sauvegarde-$stamp.tsbk")
+                    }
                 },
             ) {
                 Text(if (backupBusy) "Sauvegarde…" else "Exporter une sauvegarde…")
             }
             OutlinedButton(
                 enabled = !backupBusy,
-                onClick = { backupRestoreLauncher.launch("*/*") },
+                onClick = { if (!vm.backupBlocked()) backupRestoreLauncher.launch("*/*") },
             ) {
                 Text("Restaurer…")
             }
@@ -330,12 +335,20 @@ fun SettingsScreen(vm: StreamViewModel) {
                     }
                 },
                 onDismiss = {
-                    // Export annulé : le sélecteur SAF a déjà créé un document vide —
-                    // on le supprime pour ne pas laisser un fichier fantôme de 0 octet.
+                    // Export annulé : ne supprimer le document créé par le sélecteur SAF
+                    // que s'il est VIDE. « Remplacer » un .tsbk existant renvoie l'URI du
+                    // fichier INTACT — le supprimer détruirait la sauvegarde précédente.
                     if (mode == "export") {
                         backupUri?.let { uri ->
                             try {
-                                DocumentsContract.deleteDocument(context.contentResolver, uri)
+                                val size = context.contentResolver.query(
+                                    uri, arrayOf(OpenableColumns.SIZE), null, null, null
+                                )?.use { c ->
+                                    if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else -1L
+                                } ?: -1L
+                                if (size == 0L) {
+                                    DocumentsContract.deleteDocument(context.contentResolver, uri)
+                                }
                             } catch (_: Exception) {
                             }
                         }

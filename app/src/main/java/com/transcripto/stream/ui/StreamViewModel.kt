@@ -35,6 +35,7 @@ import com.transcripto.stream.stt.WhisperModel
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -384,6 +385,7 @@ class StreamViewModel(
     fun openDetail(item: RecordingItem) {
         selectRecording(item)
         _detailItem.value = item
+        _lastError.value = null // pas d'erreur périmée d'un autre contexte sur la fiche
         navigate(3)
     }
 
@@ -562,6 +564,10 @@ class StreamViewModel(
         if (_isStreaming.value) return
         if (_isImporting.value) {
             _lastError.value = "Import audio en cours — réessaie dans un instant"
+            return
+        }
+        if (_backupBusy.value) {
+            _lastError.value = "Sauvegarde en cours — réessaie quand elle est terminée"
             return
         }
         // Seul Whisper a besoin du modèle : Google (moteur système) fonctionne
@@ -893,6 +899,10 @@ class StreamViewModel(
             if (_liveText.value.isNotBlank() || pcmHash != null) {
                 writeTranscriptFile(finalFile, _liveText.value, _elapsedSec.value * 1000, pcmHash)
             }
+            // L'encart transcription doit refléter CE fichier : consulter le détail d'un
+            // autre enregistrement pendant la captation laissait ici son texte —
+            // « Corriger » aurait alors écrasé le .txt tout juste écrit avec ce texte-là.
+            _fileTranscript.value = _liveText.value
             // Chiffrement optionnel du WAV
             _lastRecording.value = maybeEncrypt(finalFile)
             // Proposer de donner un nom (le défaut date-début-fin est déjà appliqué)
@@ -1030,10 +1040,17 @@ class StreamViewModel(
     }
 
     private fun startPlayback(file: File, startMs: Long) {
+        // Pendant un enregistrement, le haut-parleur serait recapté par le micro
+        // (couvre aussi le tap sur un segment de l'écran détail)
+        if (_isStreaming.value) return
         stopPlayback()
         playbackStartJob = viewModelScope.launch {
-            // Déchiffrement hors du thread UI : un .enc de réunion fait des dizaines de Mo
-            val clear = withContext(Dispatchers.IO) { resolvedAudioFile(file, "_pb") }
+            // Déchiffrement hors du thread UI : un .enc de réunion fait des dizaines de Mo.
+            // NonCancellable : une annulation pendant l'IO rendrait sinon le résultat
+            // impossible à récupérer — le temp ne serait jamais supprimé.
+            val clear = withContext(Dispatchers.IO + NonCancellable) {
+                resolvedAudioFile(file, "_pb")
+            }
             if (clear == null) {
                 _lastError.value = "Déchiffrement impossible"
                 return@launch
@@ -1042,26 +1059,26 @@ class StreamViewModel(
                 if (clear != file) clear.delete()
                 return@launch
             }
+            val mp = MediaPlayer()
             try {
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(clear.absolutePath)
-                    setOnCompletionListener {
-                        finishPlayback(clear != file, clear)
-                    }
-                    setOnErrorListener { _, _, _ ->
-                        finishPlayback(clear != file, clear)
-                        true
-                    }
-                    prepare()
-                    playbackParams = PlaybackParams().setSpeed(settings.playbackSpeed)
-                    if (startMs > 0) seekTo(startMs.toInt())
-                    start()
+                mp.setDataSource(clear.absolutePath)
+                mp.setOnCompletionListener {
+                    finishPlayback(clear != file, clear)
                 }
+                mp.setOnErrorListener { _, _, _ ->
+                    finishPlayback(clear != file, clear)
+                    true
+                }
+                mp.prepare()
+                mp.playbackParams = PlaybackParams().setSpeed(settings.playbackSpeed)
+                if (startMs > 0) mp.seekTo(startMs.toInt())
+                mp.start()
+                mediaPlayer = mp
                 playbackFile = clear
                 playbackIsTemp = clear != file
                 _playingFile.value = file
                 _playbackDurationMs.value = try {
-                    mediaPlayer?.duration?.toLong() ?: 0L
+                    mp.duration.toLong()
                 } catch (e: Exception) {
                     0L
                 }
@@ -1069,6 +1086,11 @@ class StreamViewModel(
                 _isPlaying.value = true
                 startPositionTicker()
             } catch (e: Exception) {
+                if (mediaPlayer === mp) mediaPlayer = null
+                try {
+                    mp.release() // pas de player natif fuité à chaque échec
+                } catch (_: Exception) {
+                }
                 if (clear != file) clear.delete()
                 _lastError.value = "Lecture impossible : ${e.message}"
             }
@@ -1133,6 +1155,12 @@ class StreamViewModel(
         if (_isTranscribingFile.value) return
         if (_isStreaming.value) {
             _lastError.value = "Transcription impossible pendant un enregistrement"
+            return
+        }
+        if (_backupBusy.value) {
+            // La transcription réécrit .txt/.srt/.json — pendant que le zip de
+            // sauvegarde copie peut-être ces mêmes fichiers (entrée tronquée).
+            _lastError.value = "Sauvegarde en cours — réessaie quand elle est terminée"
             return
         }
         if (!RecordingNames.isAudio(file.name)) return
@@ -1434,6 +1462,10 @@ class StreamViewModel(
         }
         if (_isTranscribingFile.value) {
             _uiMessage.value = "Transcription en cours — réessaie quand elle est terminée"
+            return
+        }
+        if (_backupBusy.value) {
+            _uiMessage.value = "Sauvegarde en cours — réessaie quand elle est terminée"
             return
         }
         viewModelScope.launch {
@@ -1754,6 +1786,17 @@ class StreamViewModel(
      * (format .tsbk : zip AES-256-GCM, clé PBKDF2) — restaurable sur un autre
      * appareil, contrairement aux WAV chiffrés avec la clé AndroidKeyStore.
      */
+    /**
+     * Garde UI appelée AVANT d'ouvrir le sélecteur SAF d'export/restauration :
+     * évite de créer un document qui serait refusé juste après (fichier fantôme).
+     */
+    fun backupBlocked(): Boolean {
+        val blocked = _backupBusy.value || _isStreaming.value ||
+            _isImporting.value || _isTranscribingFile.value
+        if (blocked) _uiMessage.value = "Sauvegarde impossible pendant une opération en cours"
+        return blocked
+    }
+
     fun exportBackup(destUri: Uri, passphrase: String) {
         if (_backupBusy.value) return
         // Un WAV en cours d'écriture (enregistrement) ou en cours de création
@@ -1838,7 +1881,10 @@ class StreamViewModel(
                     var count = 0
                     val renames = HashMap<String, String>() // base d'origine → base locale
                     val dir = recordingsDir()
-                    BackupCrypto.decryptingStream(inp, passphrase.toCharArray()).use { dec ->
+                    // inp.use englobe tout : un en-tête invalide (exception AVANT la
+                    // création du flux déchiffrant) ferme quand même le flux SAF
+                    inp.use { rawIn ->
+                    BackupCrypto.decryptingStream(rawIn, passphrase.toCharArray()).use { dec ->
                         ZipInputStream(dec).use { zip ->
                             var entry = zip.nextEntry
                             while (entry != null) {
@@ -1867,6 +1913,7 @@ class StreamViewModel(
                             }
                         }
                     }
+                    } // inp.use
                     refreshRecordings()
                     "Restauration terminée : $count fichiers"
                 } catch (e: BackupCrypto.InvalidBackupException) {
