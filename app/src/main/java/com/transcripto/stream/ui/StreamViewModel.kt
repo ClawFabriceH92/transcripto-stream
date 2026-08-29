@@ -170,7 +170,7 @@ class StreamViewModel(
     private val _recordings = MutableStateFlow<List<RecordingItem>>(emptyList())
     val recordings: StateFlow<List<RecordingItem>> = _recordings.asStateFlow()
 
-    /** Espace total occupé par les enregistrements (WAV + .txt + .srt), pour les Réglages. */
+    /** Espace total occupé par les enregistrements (WAV + .txt/.srt/.json), pour les Réglages. */
     private val _storageBytes = MutableStateFlow(0L)
     val storageBytes: StateFlow<Long> = _storageBytes.asStateFlow()
 
@@ -1723,7 +1723,9 @@ class StreamViewModel(
                         appContext.contentResolver.openOutputStream(destUri)
                     } ?: return@withContext "Impossible d'écrire la sauvegarde"
                     var count = 0
-                    BackupCrypto.encryptingStream(out, passphrase.toCharArray()).use { enc ->
+                    // out.use englobe tout : même un échec avant le flux chiffrant ferme le SAF
+                    out.use { rawOut ->
+                    BackupCrypto.encryptingStream(rawOut, passphrase.toCharArray()).use { enc ->
                         ZipOutputStream(enc).use { zip ->
                             val files = recordingsDir().listFiles()?.sortedBy { it.name }
                                 ?: emptyList()
@@ -1753,6 +1755,7 @@ class StreamViewModel(
                             }
                         }
                     }
+                    } // out.use
                     "Sauvegarde exportée ($count fichiers) — garde précieusement la phrase de passe"
                 } catch (e: Exception) {
                     Log.e(TAG, "exportBackup", e)
