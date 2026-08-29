@@ -74,7 +74,7 @@ class PcmAudioRecorder(
                 val n = try {
                     record.read(buf, 0, buf.size, AudioRecord.READ_BLOCKING)
                 } catch (e: Exception) {
-                    0
+                    -1 // capture morte : sortir de la boucle (0 tournerait à vide en boucle chaude)
                 }
                 if (n > 0) {
                     onSamples(buf, n)

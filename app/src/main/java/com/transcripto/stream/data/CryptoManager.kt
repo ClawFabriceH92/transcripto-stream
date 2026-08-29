@@ -59,6 +59,7 @@ object CryptoManager {
             true
         } catch (e: Exception) {
             Log.e(TAG, "encryptFile: ${e.message}")
+            dest.delete() // pas de .enc partiel : il serait illisible (tag GCM absent)
             false
         }
     }

@@ -74,6 +74,8 @@ fun DetailScreen(vm: StreamViewModel) {
     val durationMs by vm.playbackDurationMs.collectAsStateWithLifecycle()
     val fileTranscript by vm.fileTranscript.collectAsStateWithLifecycle()
     val isTranscribing by vm.isTranscribingFile.collectAsStateWithLifecycle()
+    val isStreaming by vm.isStreaming.collectAsStateWithLifecycle()
+    val lastError by vm.lastError.collectAsStateWithLifecycle()
 
     var segments by remember { mutableStateOf<List<StoredSegment>>(emptyList()) }
     LaunchedEffect(current.file.absolutePath, isTranscribing) {
@@ -120,6 +122,7 @@ fun DetailScreen(vm: StreamViewModel) {
             ) {
                 Button(
                     onClick = { vm.togglePlaybackFor(current.file) },
+                    enabled = !isStreaming,
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                 ) {
                     Text(if (playingThis) "■" else "▶")
@@ -130,8 +133,8 @@ fun DetailScreen(vm: StreamViewModel) {
                     style = MaterialTheme.typography.labelMedium,
                 )
                 OutlinedButton(
-                    onClick = { vm.transcribeLastRecording() },
-                    enabled = !isTranscribing,
+                    onClick = { vm.transcribeFile(current.file) },
+                    enabled = !isTranscribing && !isStreaming,
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                 ) {
                     Text(
@@ -173,6 +176,14 @@ fun DetailScreen(vm: StreamViewModel) {
         if (isTranscribing) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
+        }
+        lastError?.let { err ->
+            Text(
+                err,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(vertical = 2.dp),
+            )
         }
 
         if (segments.isNotEmpty()) {

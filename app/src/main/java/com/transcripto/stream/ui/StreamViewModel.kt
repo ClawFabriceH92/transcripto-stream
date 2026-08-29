@@ -240,6 +240,7 @@ class StreamViewModel(
     private var playbackFile: File? = null // temp décrypté en cours de lecture
     private var playbackIsTemp = false
     private var positionJob: Job? = null
+    private var playbackStartJob: Job? = null
 
     // Ring buffer (WINDOW_SECONDS + marge)
     private val ringSize = SAMPLE_RATE * (WINDOW_SECONDS + OVERLAP_SECONDS)
@@ -414,8 +415,13 @@ class StreamViewModel(
 
     /** Sélectionne un enregistrement de la liste pour l'écran principal. */
     fun selectRecording(item: RecordingItem) {
-        _lastRecording.value = item.file
-        activeRecordingFile = null
+        // Pendant un enregistrement, on ne touche pas au fichier actif : l'arrêt doit
+        // finaliser le WAV en cours (renommage, .txt, chiffrement), sinon le transcript
+        // live serait perdu. La consultation du détail reste possible.
+        if (!_isStreaming.value) {
+            _lastRecording.value = item.file
+            activeRecordingFile = null
+        }
         // Relit le .txt COMPLET (pas l'aperçu tronqué de la liste)
         val txt = transcriptFileFor(item.file)
         _fileTranscript.value = if (txt.exists()) {
@@ -515,11 +521,14 @@ class StreamViewModel(
         // filtre les mots contenant ⭐ — un espace couperait le marqueur en deux.
         val marker = "[⭐%02d:%02d]".format(sec / 60, sec % 60)
         validatedText = (validatedText.trim() + " " + marker).trim()
-        _liveText.value = validatedText
+        _liveText.value = displayText()
     }
 
     fun togglePause() {
         if (!_isStreaming.value) return
+        // Pause/reprise MANUELLE : annule toute reprise automatique en attente
+        // (le listener de focus repose le drapeau juste après son togglePause()).
+        pausedByFocusLoss = false
         if (_isPaused.value) {
             _isPaused.value = false
             RecordingState.isPaused = false
@@ -570,7 +579,6 @@ class StreamViewModel(
         activeStartTime = System.currentTimeMillis()
         startChrono()
         RecordingService.start(appContext)
-        requestAudioFocus()
 
         // Le WAV est conservé SEULEMENT en mode Whisper : le SpeechRecognizer Google
         // ne peut pas partager le micro avec l'AudioRecord (conflit → aucun texte).
@@ -582,6 +590,10 @@ class StreamViewModel(
                 chronoJob = null
                 return
             }
+            // Focus audio en mode Whisper seulement : c'est notre AudioRecord qui capte.
+            // En mode Google, le SpeechRecognizer gère lui-même le micro — demander le
+            // focus en plus déclenche des boucles pause/reprise sur certains OEM.
+            requestAudioFocus()
         }
         _isStreaming.value = true
 
@@ -605,15 +617,23 @@ class StreamViewModel(
 
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
-            AudioManager.AUDIOFOCUS_LOSS,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // Perte DÉFINITIVE : aucun AUDIOFOCUS_GAIN ne suivra — on ne promet
+                // pas une reprise automatique qui n'arrivera jamais.
                 if (_isStreaming.value && !_isPaused.value) {
-                    pausedByFocusLoss = true
                     togglePause()
+                    _lastError.value = "Micro interrompu — enregistrement en pause, appuie sur Reprendre"
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (_isStreaming.value && !_isPaused.value) {
+                    togglePause() // remet pausedByFocusLoss à false : le drapeau se pose après
+                    pausedByFocusLoss = true
                     _lastError.value = "Micro interrompu (appel en cours ?) — reprise automatique à la fin"
                 }
             }
+            // CAN_DUCK (bip de notification…) : les autres apps baissent le volume,
+            // le micro n'est pas préempté — on continue d'enregistrer sans coupure.
             AudioManager.AUDIOFOCUS_GAIN -> {
                 if (_isStreaming.value && _isPaused.value && pausedByFocusLoss) {
                     pausedByFocusLoss = false
@@ -777,14 +797,13 @@ class StreamViewModel(
         val g = GoogleSpeechEngine(
             appContext,
             onPartial = { partial ->
-                _liveText.value = (validatedText + " " + partial).trim()
+                _liveText.value = displayText((validatedText + " " + partial).trim())
             },
             onFinal = { final ->
-                val shaped = if (settings.dictationMode) VoiceCommands.apply(final) else final
-                if (shaped.isNotEmpty() && shaped != validatedText) {
-                    validatedText = (validatedText + " " + shaped).trim()
+                if (final.isNotEmpty() && final != validatedText) {
+                    validatedText = (validatedText + " " + final).trim()
                 }
-                _liveText.value = validatedText
+                _liveText.value = displayText()
             },
             onError = { msg -> _lastError.value = msg },
             language = settings.language,
@@ -966,10 +985,14 @@ class StreamViewModel(
 
     // ================= LECTURE + VITESSE =================
 
-    /** Retourne le fichier WAV en clair (déchiffre .enc vers un temp si besoin). */
-    private fun resolvedAudioFile(file: File): File? {
+    /**
+     * Retourne le fichier WAV en clair (déchiffre .enc vers un temp si besoin).
+     * [suffix] distingue les usages simultanés (lecture "_pb", transcription "_tr",
+     * partage "_dec") : la suppression du temp d'un flux n'invalide pas les autres.
+     */
+    private fun resolvedAudioFile(file: File, suffix: String = "_dec"): File? {
         if (file.extension != "enc") return file
-        return CryptoManager.decryptToTemp(file, appContext.cacheDir)
+        return CryptoManager.decryptToTemp(file, appContext.cacheDir, suffix)
     }
 
     fun togglePlayback() {
@@ -1008,38 +1031,47 @@ class StreamViewModel(
 
     private fun startPlayback(file: File, startMs: Long) {
         stopPlayback()
-        val clear = resolvedAudioFile(file) ?: run {
-            _lastError.value = "Déchiffrement impossible"
-            return
-        }
-        try {
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(clear.absolutePath)
-                setOnCompletionListener {
-                    finishPlayback(clear != file, clear)
-                }
-                setOnErrorListener { _, _, _ ->
-                    finishPlayback(clear != file, clear)
-                    true
-                }
-                prepare()
-                playbackParams = PlaybackParams().setSpeed(settings.playbackSpeed)
-                if (startMs > 0) seekTo(startMs.toInt())
-                start()
+        playbackStartJob = viewModelScope.launch {
+            // Déchiffrement hors du thread UI : un .enc de réunion fait des dizaines de Mo
+            val clear = withContext(Dispatchers.IO) { resolvedAudioFile(file, "_pb") }
+            if (clear == null) {
+                _lastError.value = "Déchiffrement impossible"
+                return@launch
             }
-            playbackFile = clear
-            playbackIsTemp = clear != file
-            _playingFile.value = file
-            _playbackDurationMs.value = try {
-                mediaPlayer?.duration?.toLong() ?: 0L
+            if (!isActive) { // lecture annulée pendant le déchiffrement
+                if (clear != file) clear.delete()
+                return@launch
+            }
+            try {
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(clear.absolutePath)
+                    setOnCompletionListener {
+                        finishPlayback(clear != file, clear)
+                    }
+                    setOnErrorListener { _, _, _ ->
+                        finishPlayback(clear != file, clear)
+                        true
+                    }
+                    prepare()
+                    playbackParams = PlaybackParams().setSpeed(settings.playbackSpeed)
+                    if (startMs > 0) seekTo(startMs.toInt())
+                    start()
+                }
+                playbackFile = clear
+                playbackIsTemp = clear != file
+                _playingFile.value = file
+                _playbackDurationMs.value = try {
+                    mediaPlayer?.duration?.toLong() ?: 0L
+                } catch (e: Exception) {
+                    0L
+                }
+                _playbackPositionMs.value = startMs
+                _isPlaying.value = true
+                startPositionTicker()
             } catch (e: Exception) {
-                0L
+                if (clear != file) clear.delete()
+                _lastError.value = "Lecture impossible : ${e.message}"
             }
-            _playbackPositionMs.value = startMs
-            _isPlaying.value = true
-            startPositionTicker()
-        } catch (e: Exception) {
-            _lastError.value = "Lecture impossible : ${e.message}"
         }
     }
 
@@ -1072,6 +1104,8 @@ class StreamViewModel(
     }
 
     private fun stopPlayback() {
+        playbackStartJob?.cancel()
+        playbackStartJob = null
         positionJob?.cancel()
         positionJob = null
         try {
@@ -1091,7 +1125,16 @@ class StreamViewModel(
 
     fun transcribeLastRecording() {
         val file = _lastRecording.value ?: return
+        transcribeFile(file)
+    }
+
+    /** Transcription différée d'un fichier précis (écran détail, liste). */
+    fun transcribeFile(file: File) {
         if (_isTranscribingFile.value) return
+        if (_isStreaming.value) {
+            _lastError.value = "Transcription impossible pendant un enregistrement"
+            return
+        }
         if (!RecordingNames.isAudio(file.name)) return
         val engineRef = (modelState.value as? ModelState.Ready)?.engine
         if (engineRef == null) {
@@ -1101,7 +1144,7 @@ class StreamViewModel(
         viewModelScope.launch {
             _isTranscribingFile.value = true
             _fileTranscript.value = ""
-            val clear = resolvedAudioFile(file)
+            val clear = withContext(Dispatchers.IO) { resolvedAudioFile(file, "_tr") }
             val pcm = if (clear != null) {
                 withContext(Dispatchers.IO) { readWavPcm(clear) }
             } else null
@@ -1713,6 +1756,12 @@ class StreamViewModel(
      */
     fun exportBackup(destUri: Uri, passphrase: String) {
         if (_backupBusy.value) return
+        // Un WAV en cours d'écriture (enregistrement) ou en cours de création
+        // (import/transcription) partirait tronqué dans l'archive.
+        if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value) {
+            _uiMessage.value = "Sauvegarde impossible pendant une opération en cours"
+            return
+        }
         viewModelScope.launch {
             _backupBusy.value = true
             val message = withContext(Dispatchers.IO) {
@@ -1729,24 +1778,28 @@ class StreamViewModel(
                         ZipOutputStream(enc).use { zip ->
                             val files = recordingsDir().listFiles()?.sortedBy { it.name }
                                 ?: emptyList()
+                            // « a.wav » et « a.wav.enc » donneraient la même entrée
+                            // « a.wav » — un doublon ferait planter tout l'export (ZipException)
+                            val usedNames = HashSet<String>()
                             for (f in files) {
                                 if (!f.isFile) continue
                                 if (f.name.endsWith(".enc")) {
+                                    val entryName = RecordingNames.baseName(f.name) + ".wav"
+                                    if (!usedNames.add(entryName)) continue
                                     // Ré-encodé en clair DANS l'archive (elle-même chiffrée
                                     // par la phrase de passe) : la clé KeyStore ne voyage pas
                                     val clear = CryptoManager.decryptToTemp(
                                         f, appContext.cacheDir, "_bak_${System.currentTimeMillis()}"
                                     ) ?: continue
                                     try {
-                                        zip.putNextEntry(
-                                            ZipEntry(RecordingNames.baseName(f.name) + ".wav")
-                                        )
+                                        zip.putNextEntry(ZipEntry(entryName))
                                         clear.inputStream().use { it.copyTo(zip, 64 * 1024) }
                                         zip.closeEntry()
                                     } finally {
                                         clear.delete()
                                     }
                                 } else {
+                                    if (!usedNames.add(f.name)) continue
                                     zip.putNextEntry(ZipEntry(f.name))
                                     f.inputStream().use { it.copyTo(zip, 64 * 1024) }
                                     zip.closeEntry()
@@ -2018,13 +2071,17 @@ class StreamViewModel(
         }
         val extra = if (matched > 0) cleaned.substring(matched).trim() else cleaned
         if (extra.isNotEmpty()) {
-            val shaped = if (settings.dictationMode) VoiceCommands.apply(extra) else extra
-            if (shaped.isNotEmpty()) {
-                validatedText = (validatedText.trim() + " " + shaped).trim()
-                _liveText.value = validatedText
-            }
+            // validatedText reste BRUT : le recoupement ci-dessus compare aux mots
+            // exacts sortis de Whisper — stocker du texte transformé par la dictée
+            // casserait le suffixe et dupliquerait le texte à chaque fenêtre.
+            validatedText = (validatedText.trim() + " " + extra).trim()
+            _liveText.value = displayText()
         }
     }
+
+    /** Texte affiché/sauvegardé : les commandes de dictée ne s'appliquent qu'en sortie. */
+    private fun displayText(raw: String = validatedText): String =
+        if (settings.dictationMode) VoiceCommands.apply(raw) else raw
 
     // ================= PITCH (diarisation approximative) =================
 

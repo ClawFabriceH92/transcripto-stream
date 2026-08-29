@@ -52,6 +52,31 @@ class BackupCryptoTest {
     }
 
     @Test
+    fun multiFrame_largePayload_roundTrips() {
+        // > 2 trames de 1 Mo : vérifie le découpage/réassemblage et l'IV par compteur
+        val payload = ByteArray((1 shl 21) + 12345) { (it * 31 + 7).toByte() }
+        val blob = encrypt("phrase multi-trames", payload)
+        val back = BackupCrypto.decryptingStream(
+            ByteArrayInputStream(blob), "phrase multi-trames".toCharArray()
+        ).use { it.readBytes() }
+        assertArrayEquals(payload, back)
+    }
+
+    @Test
+    fun truncatedArchive_throwsInvalidBackup() {
+        val blob = encrypt("pass", ByteArray(300_000) { it.toByte() })
+        // Coupée avant la trame de fin : la lecture doit échouer explicitement,
+        // jamais rendre un contenu partiel comme s'il était complet.
+        val truncated = blob.copyOf(blob.size - 30)
+        val result = runCatching {
+            BackupCrypto.decryptingStream(
+                ByteArrayInputStream(truncated), "pass".toCharArray()
+            ).use { it.readBytes() }
+        }
+        assertTrue(result.exceptionOrNull() is BackupCrypto.InvalidBackupException)
+    }
+
+    @Test
     fun zipInsideEncryption_roundTrips() {
         // Le format réel : un zip à l'intérieur du flux chiffré
         val out = ByteArrayOutputStream()

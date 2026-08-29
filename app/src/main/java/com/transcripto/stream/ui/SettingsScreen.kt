@@ -1,6 +1,7 @@
 package com.transcripto.stream.ui
 
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -329,6 +330,16 @@ fun SettingsScreen(vm: StreamViewModel) {
                     }
                 },
                 onDismiss = {
+                    // Export annulé : le sélecteur SAF a déjà créé un document vide —
+                    // on le supprime pour ne pas laisser un fichier fantôme de 0 octet.
+                    if (mode == "export") {
+                        backupUri?.let { uri ->
+                            try {
+                                DocumentsContract.deleteDocument(context.contentResolver, uri)
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
                     backupMode = null
                     backupUri = null
                 },
