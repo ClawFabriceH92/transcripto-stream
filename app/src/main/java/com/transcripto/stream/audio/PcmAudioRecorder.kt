@@ -14,6 +14,8 @@ import kotlin.concurrent.thread
  */
 class PcmAudioRecorder(
     val sampleRate: Int = 16000,
+    /** Appelé si la capture meurt sans stop() (micro préempté, erreur de lecture). */
+    private val onStopped: (() -> Unit)? = null,
     private val onSamples: (buffer: ShortArray, count: Int) -> Unit,
 ) {
 
@@ -63,6 +65,9 @@ class PcmAudioRecorder(
                 record.startRecording()
             } catch (e: IllegalStateException) {
                 isRecording = false
+                record.release()
+                if (audioRecord === record) audioRecord = null
+                onStopped?.invoke()
                 return@thread
             }
             while (isRecording) {
@@ -77,12 +82,16 @@ class PcmAudioRecorder(
                     break
                 }
             }
+            // stop() n'a pas été appelé → la capture est morte toute seule
+            val unexpected = isRecording
+            isRecording = false
             try {
                 record.stop()
             } catch (_: IllegalStateException) {
             }
             record.release()
             if (audioRecord === record) audioRecord = null
+            if (unexpected) onStopped?.invoke()
         }
         return true
     }

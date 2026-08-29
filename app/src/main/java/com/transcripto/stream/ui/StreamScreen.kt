@@ -136,8 +136,10 @@ fun StreamScreen() {
                     onClearError = { vm.setPinError(null) },
                 )
             } else {
-                // Bouton retour système : revient à l'onglet Enregistrer au lieu de quitter
-                BackHandler(enabled = screen != 0) { vm.navigate(0) }
+                // Bouton retour système : détail → liste, sinon retour à l'onglet Enregistrer
+                BackHandler(enabled = screen != 0) {
+                    vm.navigate(if (screen == 3) 1 else 0)
+                }
 
                 val snackbarHostState = remember { SnackbarHostState() }
 
@@ -175,6 +177,7 @@ fun StreamScreen() {
                                     when (screen) {
                                         1 -> "Enregistrements"
                                         2 -> "Réglages"
+                                        3 -> "Enregistrement"
                                         else -> "Transcripto Stream"
                                     }
                                 )
@@ -204,7 +207,7 @@ fun StreamScreen() {
                                 label = { Text("Enregistrer") },
                             )
                             NavigationBarItem(
-                                selected = screen == 1,
+                                selected = screen == 1 || screen == 3,
                                 onClick = { vm.navigate(1) },
                                 icon = { Icon(Icons.Filled.List, contentDescription = "Enregistrements") },
                                 label = { Text("Liste") },
@@ -221,10 +224,10 @@ fun StreamScreen() {
                     Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
                         when (screen) {
                             1 -> RecordingListScreen(vm, onSelect = { item ->
-                                vm.selectRecording(item)
-                                vm.navigate(0)
+                                vm.openDetail(item)
                             })
                             2 -> SettingsScreen(vm)
+                            3 -> DetailScreen(vm)
                             else -> MainScreen(vm, snackbarHostState)
                         }
                     }

@@ -1,10 +1,17 @@
-# Transcripto Stream v0.5.3
+# Transcripto Stream v0.6.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
-> Venant de la v0.2.5 ou v0.5.2 : installez cet APK manuellement (même signature, mise à jour directe, données conservées). Les versions suivantes s'installeront automatiquement si l'option « Mise à jour automatique » est active.
+> Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Corrections v0.5.3
+## Nouveautés v0.6.0
+
+- **Sauvegarde chiffrée exportable** (Réglages → Sauvegarde) : tous les enregistrements et transcriptions dans une archive protégée par phrase de passe, **restaurable sur un autre appareil** — jusqu'ici, un téléphone perdu = fichiers chiffrés irrécupérables (la clé AndroidKeyStore ne quitte pas l'appareil). Restauration jamais destructive (doublons suffixés).
+- **Écran détail avec lecture synchronisée** : toucher un enregistrement dans la liste ouvre sa fiche — **toucher un passage cale l'audio dessus**, le passage en cours de lecture est surligné et suivi, curseur de position, re-transcription et partage sur place. (Les segments interactifs sont générés par « Transcrire » ; re-transcrivez vos anciens enregistrements pour en profiter.)
+- **Résilience audio** : un appel entrant ou une app qui prend le micro **met l'enregistrement en pause automatiquement**, avec reprise à la fin ; si la capture meurt, l'enregistrement est arrêté proprement et sauvegardé au lieu d'un chrono qui tourne dans le vide.
+- **Mode dictée** (Réglages, désactivé par défaut) : « point », « virgule », « à la ligne », « nouveau paragraphe »… dits à la voix sont convertis en ponctuation.
+
+## v0.5.3
 
 - **Fix du crash de l'écran Réglages** (permission `REQUEST_INSTALL_PACKAGES` manquante pour la vérification d'installation des mises à jour).
 - **Écoute silencieuse** (Réglages, activée par défaut) : coupe les bips du système de reconnaissance Google pendant l'écoute ; le volume est rétabli à l'arrêt.

@@ -1,5 +1,8 @@
 package com.transcripto.stream.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -43,6 +46,9 @@ import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.update.AutoUpdater
 import com.transcripto.stream.update.UpdateManager
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Réglages : langue, gain micro, vocabulaire personnalisé, horodatage,
@@ -215,6 +221,17 @@ fun SettingsScreen(vm: StreamViewModel) {
             },
         )
 
+        var dictation by remember { mutableStateOf(settings.dictationMode) }
+        SwitchRow(
+            title = "Mode dictée (ponctuation à la voix)",
+            subtitle = "« point », « virgule », « à la ligne », « nouveau paragraphe »… sont convertis en ponctuation. Pensé pour la dictée de notes, pas pour les réunions.",
+            checked = dictation,
+            onChange = {
+                dictation = it
+                vm.setDictationMode(it)
+            },
+        )
+
         SectionTitle("Gestion des enregistrements")
 
         Text(
@@ -252,6 +269,71 @@ fun SettingsScreen(vm: StreamViewModel) {
                 vm.setEncryptWav(it)
             },
         )
+
+        SectionTitle("Sauvegarde")
+
+        val backupBusy by vm.backupBusy.collectAsStateWithLifecycle()
+        var backupMode by remember { mutableStateOf<String?>(null) } // "export" | "restore"
+        var backupUri by remember { mutableStateOf<Uri?>(null) }
+        val backupExportLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("application/octet-stream")
+        ) { uri ->
+            if (uri != null) {
+                backupUri = uri
+                backupMode = "export"
+            }
+        }
+        val backupRestoreLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.GetContent()
+        ) { uri ->
+            if (uri != null) {
+                backupUri = uri
+                backupMode = "restore"
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                enabled = !backupBusy,
+                onClick = {
+                    val stamp = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+                    backupExportLauncher.launch("transcripto-sauvegarde-$stamp.tsbk")
+                },
+            ) {
+                Text(if (backupBusy) "Sauvegarde…" else "Exporter une sauvegarde…")
+            }
+            OutlinedButton(
+                enabled = !backupBusy,
+                onClick = { backupRestoreLauncher.launch("*/*") },
+            ) {
+                Text("Restaurer…")
+            }
+        }
+        Text(
+            "Archive chiffrée par une phrase de passe, restaurable sur un autre appareil " +
+                "(les WAV chiffrés y sont inclus). Sans la phrase de passe, la sauvegarde est illisible : " +
+                "notez-la précieusement.",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        backupMode?.let { mode ->
+            PassphraseDialog(
+                isExport = mode == "export",
+                onConfirm = { passphrase ->
+                    val uri = backupUri
+                    backupMode = null
+                    backupUri = null
+                    if (uri != null) {
+                        if (mode == "export") vm.exportBackup(uri, passphrase)
+                        else vm.restoreBackup(uri, passphrase)
+                    }
+                },
+                onDismiss = {
+                    backupMode = null
+                    backupUri = null
+                },
+            )
+        }
 
         SectionTitle("Sécurité")
 
@@ -385,6 +467,70 @@ private fun SwitchRow(
         }
         Switch(checked = checked, onCheckedChange = onChange)
     }
+}
+
+@Composable
+private fun PassphraseDialog(
+    isExport: Boolean,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var pass1 by remember { mutableStateOf("") }
+    var pass2 by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isExport) "Protéger la sauvegarde" else "Phrase de passe") },
+        text = {
+            Column {
+                if (isExport) {
+                    Text(
+                        "Au moins 8 caractères. Elle sera exigée à la restauration — sans elle, la sauvegarde est définitivement illisible.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                OutlinedTextField(
+                    value = pass1,
+                    onValueChange = { pass1 = it },
+                    label = { Text("Phrase de passe") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                if (isExport) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = pass2,
+                        onValueChange = { pass2 = it },
+                        label = { Text("Confirmer") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    )
+                }
+                error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                when {
+                    isExport && pass1.length < 8 -> error = "Au moins 8 caractères"
+                    isExport && pass1 != pass2 -> error = "Les deux saisies ne correspondent pas"
+                    !isExport && pass1.isEmpty() -> error = "Saisis la phrase de passe"
+                    else -> onConfirm(pass1)
+                }
+            }) { Text(if (isExport) "Exporter" else "Restaurer") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Annuler") }
+        },
+    )
 }
 
 @Composable

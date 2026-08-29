@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.PlaybackParams
@@ -19,14 +20,17 @@ import com.transcripto.stream.RecordingState
 import com.transcripto.stream.audio.AudioImporter
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.WavFileWriter
+import com.transcripto.stream.data.BackupCrypto
 import com.transcripto.stream.data.CryptoManager
 import com.transcripto.stream.data.RecordingNames
+import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SettingsStore
 import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.stt.StreamResult
+import com.transcripto.stream.stt.VoiceCommands
 import com.transcripto.stream.stt.WhisperModel
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +49,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
@@ -190,6 +197,23 @@ class StreamViewModel(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    // ---- Écran détail (écran 3) : enregistrement ouvert + lecture synchronisée ----
+    private val _detailItem = MutableStateFlow<RecordingItem?>(null)
+    val detailItem: StateFlow<RecordingItem?> = _detailItem.asStateFlow()
+
+    private val _playingFile = MutableStateFlow<File?>(null)
+    val playingFile: StateFlow<File?> = _playingFile.asStateFlow()
+
+    private val _playbackPositionMs = MutableStateFlow(0L)
+    val playbackPositionMs: StateFlow<Long> = _playbackPositionMs.asStateFlow()
+
+    private val _playbackDurationMs = MutableStateFlow(0L)
+    val playbackDurationMs: StateFlow<Long> = _playbackDurationMs.asStateFlow()
+
+    // ---- Sauvegarde / restauration chiffrée ----
+    private val _backupBusy = MutableStateFlow(false)
+    val backupBusy: StateFlow<Boolean> = _backupBusy.asStateFlow()
+
     // ---- Nommage proposé à l'arrêt de l'enregistrement ----
     private val _pendingName = MutableStateFlow<File?>(null)
     val pendingName: StateFlow<File?> = _pendingName.asStateFlow()
@@ -215,6 +239,7 @@ class StreamViewModel(
     private var mediaPlayer: MediaPlayer? = null
     private var playbackFile: File? = null // temp décrypté en cours de lecture
     private var playbackIsTemp = false
+    private var positionJob: Job? = null
 
     // Ring buffer (WINDOW_SECONDS + marge)
     private val ringSize = SAMPLE_RATE * (WINDOW_SECONDS + OVERLAP_SECONDS)
@@ -354,6 +379,13 @@ class StreamViewModel(
         _screen.value = screenIndex
     }
 
+    /** Ouvre l'écran détail d'un enregistrement (et le sélectionne pour les actions). */
+    fun openDetail(item: RecordingItem) {
+        selectRecording(item)
+        _detailItem.value = item
+        navigate(3)
+    }
+
     // ================= PIN =================
 
     fun unlock(pin: String) {
@@ -445,6 +477,10 @@ class StreamViewModel(
         settings.muteWhileListening = enabled
     }
 
+    fun setDictationMode(enabled: Boolean) {
+        settings.dictationMode = enabled
+    }
+
     fun setPlaybackSpeed(speed: Float) {
         settings.playbackSpeed = speed
         try {
@@ -534,6 +570,7 @@ class StreamViewModel(
         activeStartTime = System.currentTimeMillis()
         startChrono()
         RecordingService.start(appContext)
+        requestAudioFocus()
 
         // Le WAV est conservé SEULEMENT en mode Whisper : le SpeechRecognizer Google
         // ne peut pas partager le micro avec l'AudioRecord (conflit → aucun texte).
@@ -558,6 +595,57 @@ class StreamViewModel(
             }
         } else {
             startWhisperStreaming()
+        }
+    }
+
+    // ---- Résilience audio : pause automatique quand le micro est interrompu ----
+    // (appel entrant, autre app qui prend le focus), reprise à la fin.
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var pausedByFocusLoss = false
+
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                if (_isStreaming.value && !_isPaused.value) {
+                    pausedByFocusLoss = true
+                    togglePause()
+                    _lastError.value = "Micro interrompu (appel en cours ?) — reprise automatique à la fin"
+                }
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (_isStreaming.value && _isPaused.value && pausedByFocusLoss) {
+                    pausedByFocusLoss = false
+                    togglePause()
+                    _lastError.value = null
+                }
+            }
+        }
+    }
+
+    private fun requestAudioFocus() {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        try {
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setOnAudioFocusChangeListener(audioFocusListener)
+                .build()
+            am.requestAudioFocus(request)
+            audioFocusRequest = request
+        } catch (e: Exception) {
+            Log.e(TAG, "requestAudioFocus : ${e.message}")
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        val request = audioFocusRequest ?: return
+        audioFocusRequest = null
+        pausedByFocusLoss = false
+        try {
+            (appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                ?.abandonAudioFocusRequest(request)
+        } catch (e: Exception) {
+            Log.e(TAG, "abandonAudioFocus : ${e.message}")
         }
     }
 
@@ -631,7 +719,18 @@ class StreamViewModel(
             null
         }
 
-        val rec = PcmAudioRecorder(SAMPLE_RATE) { buf, n ->
+        val rec = PcmAudioRecorder(
+            SAMPLE_RATE,
+            onStopped = {
+                // La capture est morte sans stop() (micro préempté, erreur matérielle)
+                viewModelScope.launch {
+                    if (_isStreaming.value && _selectedEngine.value == "whisper") {
+                        _lastError.value = "Micro perdu — enregistrement arrêté et sauvegardé"
+                        stopStreaming()
+                    }
+                }
+            },
+        ) { buf, n ->
             if (!_isPaused.value) {
                 // Gain micro : amplification avant écriture + transcription
                 val gain = settings.micGain
@@ -681,8 +780,9 @@ class StreamViewModel(
                 _liveText.value = (validatedText + " " + partial).trim()
             },
             onFinal = { final ->
-                if (final != validatedText) {
-                    validatedText = (validatedText + " " + final).trim()
+                val shaped = if (settings.dictationMode) VoiceCommands.apply(final) else final
+                if (shaped.isNotEmpty() && shaped != validatedText) {
+                    validatedText = (validatedText + " " + shaped).trim()
                 }
                 _liveText.value = validatedText
             },
@@ -732,6 +832,7 @@ class StreamViewModel(
         RecordingState.isActive = false
         RecordingState.isPaused = false
         unmuteSystemSounds()
+        abandonAudioFocus()
         RecordingService.stop(appContext)
         streamJob?.cancel()
         streamJob = null
@@ -846,12 +947,14 @@ class StreamViewModel(
         }
         val oldTxt = RecordingNames.txtSibling(f)
         val oldSrt = RecordingNames.srtSibling(f)
+        val oldJson = RecordingNames.jsonSibling(f)
         if (!f.renameTo(dest)) {
             _lastError.value = "Renommage impossible"
             return false
         }
         if (oldTxt.exists()) oldTxt.renameTo(RecordingNames.txtSibling(dest))
         if (oldSrt.exists()) oldSrt.renameTo(RecordingNames.srtSibling(dest))
+        if (oldJson.exists()) oldJson.renameTo(RecordingNames.jsonSibling(dest))
         if (_lastRecording.value == f) _lastRecording.value = dest
         return true
     }
@@ -871,44 +974,106 @@ class StreamViewModel(
 
     fun togglePlayback() {
         val file = _lastRecording.value ?: return
+        togglePlaybackFor(file)
+    }
+
+    /** Lance/arrête la lecture d'un fichier (écran principal ou écran détail). */
+    fun togglePlaybackFor(file: File) {
         if (!RecordingNames.isAudio(file.name)) return // entrée texte seul : rien à écouter
-        if (_isPlaying.value) {
+        if (_isPlaying.value && _playingFile.value == file) {
             stopPlayback()
         } else {
-            val clear = resolvedAudioFile(file) ?: run {
-                _lastError.value = "Déchiffrement impossible"
-                return
-            }
-            try {
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(clear.absolutePath)
-                    setOnCompletionListener {
-                        _isPlaying.value = false
-                        release()
-                        mediaPlayer = null
-                        if (clear != file) clear.delete()
-                    }
-                    setOnErrorListener { _, _, _ ->
-                        _isPlaying.value = false
-                        release()
-                        mediaPlayer = null
-                        if (clear != file) clear.delete()
-                        true
-                    }
-                    prepare()
-                    playbackParams = PlaybackParams().setSpeed(settings.playbackSpeed)
-                    start()
+            startPlayback(file, 0L)
+        }
+    }
+
+    /** Tap sur un segment de l'écran détail : cale la lecture sur [positionMs]. */
+    fun playFrom(file: File, positionMs: Long) {
+        if (!RecordingNames.isAudio(file.name)) return
+        if (_isPlaying.value && _playingFile.value == file) {
+            seekTo(positionMs)
+        } else {
+            startPlayback(file, positionMs)
+        }
+    }
+
+    /** Curseur de position de l'écran détail. */
+    fun seekTo(positionMs: Long) {
+        try {
+            mediaPlayer?.seekTo(positionMs.toInt())
+        } catch (_: Exception) {
+        }
+        _playbackPositionMs.value = positionMs
+    }
+
+    private fun startPlayback(file: File, startMs: Long) {
+        stopPlayback()
+        val clear = resolvedAudioFile(file) ?: run {
+            _lastError.value = "Déchiffrement impossible"
+            return
+        }
+        try {
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(clear.absolutePath)
+                setOnCompletionListener {
+                    finishPlayback(clear != file, clear)
                 }
-                playbackFile = clear
-                playbackIsTemp = clear != file
-                _isPlaying.value = true
+                setOnErrorListener { _, _, _ ->
+                    finishPlayback(clear != file, clear)
+                    true
+                }
+                prepare()
+                playbackParams = PlaybackParams().setSpeed(settings.playbackSpeed)
+                if (startMs > 0) seekTo(startMs.toInt())
+                start()
+            }
+            playbackFile = clear
+            playbackIsTemp = clear != file
+            _playingFile.value = file
+            _playbackDurationMs.value = try {
+                mediaPlayer?.duration?.toLong() ?: 0L
             } catch (e: Exception) {
-                _lastError.value = "Lecture impossible : ${e.message}"
+                0L
+            }
+            _playbackPositionMs.value = startMs
+            _isPlaying.value = true
+            startPositionTicker()
+        } catch (e: Exception) {
+            _lastError.value = "Lecture impossible : ${e.message}"
+        }
+    }
+
+    /** Fin naturelle ou erreur du lecteur : libère sans repasser par stop(). */
+    private fun finishPlayback(deleteTemp: Boolean, temp: File) {
+        positionJob?.cancel()
+        positionJob = null
+        _isPlaying.value = false
+        _playingFile.value = null
+        mediaPlayer?.release()
+        mediaPlayer = null
+        playbackFile = null
+        playbackIsTemp = false
+        if (deleteTemp) temp.delete()
+    }
+
+    /** Suit la position de lecture (surlignage du segment courant à l'écran détail). */
+    private fun startPositionTicker() {
+        positionJob?.cancel()
+        positionJob = viewModelScope.launch {
+            while (isActive && _isPlaying.value) {
+                _playbackPositionMs.value = try {
+                    mediaPlayer?.currentPosition?.toLong() ?: 0L
+                } catch (e: Exception) {
+                    0L
+                }
+                delay(300)
             }
         }
     }
 
     private fun stopPlayback() {
+        positionJob?.cancel()
+        positionJob = null
         try {
             mediaPlayer?.stop()
         } catch (_: Exception) {}
@@ -918,6 +1083,8 @@ class StreamViewModel(
         playbackFile = null
         playbackIsTemp = false
         _isPlaying.value = false
+        _playingFile.value = null
+        _playbackPositionMs.value = 0L
     }
 
     // ================= TRANSCRIPTION DIFFÉRÉE + .txt =================
@@ -948,11 +1115,17 @@ class StreamViewModel(
                 if (res.error != null) {
                     _lastError.value = res.error
                 } else {
-                    val (text, srt) = withContext(Dispatchers.IO) {
-                        buildSpeakerMarkedTranscript(pcm, res) to TranscriptExporter.buildSrt(res.segments)
+                    val (text, srt, segmentsJson) = withContext(Dispatchers.IO) {
+                        val shorts = byteArrayToShorts(pcm)
+                        val speakerIds = detectSpeakers(shorts, res.segments)
+                        Triple(
+                            buildSpeakerMarkedTranscript(res, speakerIds),
+                            TranscriptExporter.buildSrt(res.segments),
+                            if (res.segments.isEmpty()) "" else SegmentsCodec.toJson(res.segments, speakerIds),
+                        )
                     }
                     _fileTranscript.value = text
-                    // Sauvegarde .txt auto + sous-titres .srt à côté du fichier
+                    // Sauvegarde .txt auto + .srt + segments .json à côté du fichier
                     val durationMs = pcm.size / 32L // 16 kHz × 2 octets = 32 octets/ms
                     withContext(Dispatchers.IO) {
                         writeTranscriptFile(file, text, durationMs)
@@ -961,6 +1134,13 @@ class StreamViewModel(
                                 RecordingNames.srtSibling(file).writeText(srt)
                             } catch (e: Exception) {
                                 Log.e(TAG, "écriture SRT : ${e.message}")
+                            }
+                        }
+                        if (segmentsJson.isNotBlank()) {
+                            try {
+                                RecordingNames.jsonSibling(file).writeText(segmentsJson)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "écriture segments : ${e.message}")
                             }
                         }
                     }
@@ -1056,11 +1236,9 @@ class StreamViewModel(
      * (variation de pitch F0 > 20 %), pauses > 1,2 s, et bloc « temps de parole »
      * par intervenant en fin de transcription (réunions, entretiens d'audit).
      */
-    private fun buildSpeakerMarkedTranscript(pcm: ByteArray, res: StreamResult): String {
+    private fun buildSpeakerMarkedTranscript(res: StreamResult, speakerIds: List<Int>): String {
         val segments = res.segments
         if (segments.isEmpty()) return res.fullText.trim()
-        val shorts = byteArrayToShorts(pcm)
-        val speakerIds = detectSpeakers(shorts, segments)
         val sb = StringBuilder()
         var currentSpeaker = 0
         for ((i, seg) in segments.withIndex()) {
@@ -1526,6 +1704,138 @@ class StreamViewModel(
         }
     }
 
+    // ================= SAUVEGARDE / RESTAURATION CHIFFRÉE =================
+
+    /**
+     * Exporte tous les enregistrements dans une archive chiffrée par phrase de passe
+     * (format .tsbk : zip AES-256-GCM, clé PBKDF2) — restaurable sur un autre
+     * appareil, contrairement aux WAV chiffrés avec la clé AndroidKeyStore.
+     */
+    fun exportBackup(destUri: Uri, passphrase: String) {
+        if (_backupBusy.value) return
+        viewModelScope.launch {
+            _backupBusy.value = true
+            val message = withContext(Dispatchers.IO) {
+                try {
+                    val out = try {
+                        appContext.contentResolver.openOutputStream(destUri, "wt")
+                    } catch (e: Exception) {
+                        appContext.contentResolver.openOutputStream(destUri)
+                    } ?: return@withContext "Impossible d'écrire la sauvegarde"
+                    var count = 0
+                    BackupCrypto.encryptingStream(out, passphrase.toCharArray()).use { enc ->
+                        ZipOutputStream(enc).use { zip ->
+                            val files = recordingsDir().listFiles()?.sortedBy { it.name }
+                                ?: emptyList()
+                            for (f in files) {
+                                if (!f.isFile) continue
+                                if (f.name.endsWith(".enc")) {
+                                    // Ré-encodé en clair DANS l'archive (elle-même chiffrée
+                                    // par la phrase de passe) : la clé KeyStore ne voyage pas
+                                    val clear = CryptoManager.decryptToTemp(
+                                        f, appContext.cacheDir, "_bak_${System.currentTimeMillis()}"
+                                    ) ?: continue
+                                    try {
+                                        zip.putNextEntry(
+                                            ZipEntry(RecordingNames.baseName(f.name) + ".wav")
+                                        )
+                                        clear.inputStream().use { it.copyTo(zip, 64 * 1024) }
+                                        zip.closeEntry()
+                                    } finally {
+                                        clear.delete()
+                                    }
+                                } else {
+                                    zip.putNextEntry(ZipEntry(f.name))
+                                    f.inputStream().use { it.copyTo(zip, 64 * 1024) }
+                                    zip.closeEntry()
+                                }
+                                count++
+                            }
+                        }
+                    }
+                    "Sauvegarde exportée ($count fichiers) — garde précieusement la phrase de passe"
+                } catch (e: Exception) {
+                    Log.e(TAG, "exportBackup", e)
+                    "Sauvegarde échouée : ${e.message}"
+                }
+            }
+            _uiMessage.value = message
+            _backupBusy.value = false
+        }
+    }
+
+    private val allowedBackupSuffixes = setOf(".wav", ".txt", ".srt", ".json")
+
+    /** Restaure une archive .tsbk : jamais destructif (les doublons sont suffixés). */
+    fun restoreBackup(srcUri: Uri, passphrase: String) {
+        if (_backupBusy.value) return
+        if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value) {
+            _uiMessage.value = "Restauration impossible pendant une opération en cours"
+            return
+        }
+        viewModelScope.launch {
+            _backupBusy.value = true
+            val message = withContext(Dispatchers.IO) {
+                try {
+                    val inp = appContext.contentResolver.openInputStream(srcUri)
+                        ?: return@withContext "Impossible de lire ce fichier"
+                    var count = 0
+                    val renames = HashMap<String, String>() // base d'origine → base locale
+                    val dir = recordingsDir()
+                    BackupCrypto.decryptingStream(inp, passphrase.toCharArray()).use { dec ->
+                        ZipInputStream(dec).use { zip ->
+                            var entry = zip.nextEntry
+                            while (entry != null) {
+                                val rawName = entry.name
+                                if (!entry.isDirectory &&
+                                    !rawName.contains('/') && !rawName.contains('\\')
+                                ) {
+                                    val base = RecordingNames.sanitize(
+                                        RecordingNames.baseName(rawName)
+                                    )
+                                    val suffixPart = rawName.substring(
+                                        RecordingNames.baseName(rawName).length
+                                    )
+                                    if (base.isNotEmpty() && suffixPart in allowedBackupSuffixes) {
+                                        val target = renames.getOrPut(base) {
+                                            uniqueRestoreBase(dir, base, renames.values)
+                                        }
+                                        val destFile = File(dir, target + suffixPart)
+                                        destFile.outputStream().use { zip.copyTo(it, 64 * 1024) }
+                                        if (suffixPart == ".wav") maybeEncrypt(destFile)
+                                        count++
+                                    }
+                                }
+                                zip.closeEntry()
+                                entry = zip.nextEntry
+                            }
+                        }
+                    }
+                    refreshRecordings()
+                    "Restauration terminée : $count fichiers"
+                } catch (e: BackupCrypto.InvalidBackupException) {
+                    e.message ?: "Fichier de sauvegarde invalide"
+                } catch (e: Exception) {
+                    Log.e(TAG, "restoreBackup", e)
+                    "Restauration échouée — phrase de passe incorrecte ou fichier corrompu"
+                }
+            }
+            _uiMessage.value = message
+            _backupBusy.value = false
+        }
+    }
+
+    /** Base unique pour une restauration : ni collision locale, ni collision d'archive. */
+    private fun uniqueRestoreBase(dir: File, base: String, taken: Collection<String>): String {
+        val existing = dir.listFiles()?.map { RecordingNames.baseName(it.name) }?.toMutableSet()
+            ?: mutableSetOf()
+        existing.addAll(taken)
+        if (base !in existing) return base
+        var i = 2
+        while ("$base ($i)" in existing) i++
+        return "$base ($i)"
+    }
+
     // ================= LISTE DES ENREGISTREMENTS =================
 
     fun refreshRecordings() {
@@ -1575,6 +1885,7 @@ class StreamViewModel(
         f.delete()
         RecordingNames.txtSibling(f).delete()
         RecordingNames.srtSibling(f).delete()
+        RecordingNames.jsonSibling(f).delete()
         // Ancienne convention (v0.2.x) : « base.wav.enc » avait parfois « base.wav.txt »
         File(f.parentFile, f.nameWithoutExtension + ".txt").delete()
     }
@@ -1704,8 +2015,11 @@ class StreamViewModel(
         }
         val extra = if (matched > 0) cleaned.substring(matched).trim() else cleaned
         if (extra.isNotEmpty()) {
-            validatedText = (validatedText.trim() + " " + extra).trim()
-            _liveText.value = validatedText
+            val shaped = if (settings.dictationMode) VoiceCommands.apply(extra) else extra
+            if (shaped.isNotEmpty()) {
+                validatedText = (validatedText.trim() + " " + shaped).trim()
+                _liveText.value = validatedText
+            }
         }
     }
 

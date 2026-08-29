@@ -55,6 +55,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getFloat("playback_speed", 1.0f)
         set(v) = prefs.edit().putFloat("playback_speed", v).apply()
 
+    // ---- Mode dictée : ponctuation dite à la voix (« point », « à la ligne »…) ----
+    var dictationMode: Boolean
+        get() = prefs.getBoolean("dictation_mode", false)
+        set(v) = prefs.edit().putBoolean("dictation_mode", v).apply()
+
     // ---- Écoute silencieuse : couper les bips système pendant l'écoute Google ----
     var muteWhileListening: Boolean
         get() = prefs.getBoolean("mute_while_listening", true)

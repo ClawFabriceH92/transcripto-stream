@@ -20,6 +20,10 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Démarrage en un geste** : tuile « Transcrire » dans les réglages rapides + App Shortcut (appui long sur l'icône).
 - **Import d'audio externe** : bouton « Importer » dans la liste, ou « Partager vers Transcripto » depuis WhatsApp/Fichiers/dictaphone — décodage local (m4a, mp3, ogg, amr, flac, wav) vers WAV 16 kHz mono, puis transcription différée comme un enregistrement natif.
 - **Export des audios** : « Exporter l'audio (WAV) » vers l'emplacement de ton choix (Téléchargements, Drive, clé USB…), déchiffré à la volée.
+- **Écran détail synchronisé** : toucher un passage de la transcription cale l'audio dessus, surlignage du passage lu, curseur de position (segments générés à la transcription différée).
+- **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
+- **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
+- **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
 - **Sécurité/RGPD** : PIN (saisie masquée), chiffrement WAV AES-256 (clé AndroidKeyStore), rétention automatique 30/60/90 j, contrôle d'espace disque avant enregistrement.
 - **Mises à jour** (Réglages) : mise à jour automatique activable/désactivable (vérification GitHub Releases au lancement + quotidienne, téléchargement et installation automatiques), bouton « Vérifier maintenant », aide à l'autorisation d'installation.
 
@@ -90,6 +94,7 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 - [x] Import d'audio externe (WhatsApp, dictaphone) vers la transcription différée
 - [x] Export des audios (WAV) vers l'emplacement choisi (SAF)
 - [x] Catalogue de modèles téléchargeables (small/medium/large-v3-turbo quantisés) + re-transcription haute fidélité
+- [x] Sauvegarde chiffrée exportable (migration d'appareil), écran détail synchronisé, résilience audio, mode dictée
 - [ ] VAD Silero (endpointing par phrases) pour un vrai temps réel
 - [ ] Base Room + FTS (segments horodatés persistés, recherche instantanée, tap sur un mot → lecture audio)
 - [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)
