@@ -1955,26 +1955,39 @@ class StreamViewModel(
                         RecordingNames.baseName(it.name) !in audioBases &&
                         it.name !in legacyTxtNames
                 }
-                val list = (audio + textOnly).map { f ->
-                    val txt = transcriptFileFor(f)
-                    val transcript = if (txt.exists()) {
-                        txt.readText().substringAfter("----\n").trim().take(200)
-                    } else ""
-                    RecordingItem(
-                        file = f,
-                        baseName = RecordingNames.baseName(f.name),
-                        sizeBytes = f.length(),
-                        durationMs = durationMsOf(f),
-                        modifiedAt = f.lastModified(),
-                        encrypted = f.name.endsWith(".enc"),
-                        hasAudio = RecordingNames.isAudio(f.name),
-                        transcript = transcript,
-                    )
-                }.sortedByDescending { it.modifiedAt }
+                val list = (audio + textOnly).map { f -> buildItem(f) }
+                    .sortedByDescending { it.modifiedAt }
                 list to files.sumOf { it.length() }
             }
             _recordings.value = items
             _storageBytes.value = totalBytes
+        }
+    }
+
+    /** Élément de liste pour un fichier (I/O : lit l'aperçu du .txt — appeler hors du main thread). */
+    private fun buildItem(f: File): RecordingItem {
+        val txt = transcriptFileFor(f)
+        val transcript = if (txt.exists()) {
+            txt.readText().substringAfter("----\n").trim().take(200)
+        } else ""
+        return RecordingItem(
+            file = f,
+            baseName = RecordingNames.baseName(f.name),
+            sizeBytes = f.length(),
+            durationMs = durationMsOf(f),
+            modifiedAt = f.lastModified(),
+            encrypted = f.name.endsWith(".enc"),
+            hasAudio = RecordingNames.isAudio(f.name),
+            transcript = transcript,
+        )
+    }
+
+    /** Ouvre la fiche d'un fichier (écran principal → détail du dernier enregistrement). */
+    fun openDetailForFile(file: File) {
+        viewModelScope.launch {
+            val item = _recordings.value.firstOrNull { it.file == file }
+                ?: withContext(Dispatchers.IO) { if (file.exists()) buildItem(file) else null }
+            if (item != null) openDetail(item)
         }
     }
 

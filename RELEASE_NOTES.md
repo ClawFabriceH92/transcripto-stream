@@ -1,10 +1,21 @@
-# Transcripto Stream v0.6.0
+# Transcripto Stream v0.7.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Nouveautés v0.6.0
+## Nouveautés v0.7.0 — interface professionnelle
+
+- **Système visuel unifié** : palette Material 3 complète (surfaces tonales claires/sombres), typographie et formes définies une fois pour toute l'app — plus d'émojis en guise d'icônes, plus de tailles de texte au cas par cas.
+- **Écran « Transcrire » repensé** : choix du moteur en boutons segmentés (Google · cloud / Whisper · local), carte de session avec état pulsant, chrono lisible (heures affichées au-delà de 60 min) et rappel de confidentialité, zone de transcription en direct aérée, gros bouton d'enregistrement avec halo, commandes Marqueur / Pause / Arrêter en pastilles.
+- **Dernier enregistrement** : deux actions principales (Écouter, Transcrire), puce de vitesse à cycle (1× → 1,5× → 2× → 0,5×), aperçu de la transcription, menu pour copier / partager / corriger / supprimer, et accès direct à la fiche.
+- **Liste** : recherche en pilule avec effacement, total des durées, en-têtes de jour épinglés au défilement, cartes avec avatar (audio / texte seul), métadonnées en puces (heure, durée, chiffré), états vides guidés (transcrire / importer, aucun résultat).
+- **Fiche d'un enregistrement** : lecteur en carte (bouton lecture, position / durée, vitesse, curseur), actions Transcrire / Partager, transcription avec intervenants colorés et passage en cours surligné, bouton retour dans la barre.
+- **Réglages** : sections en cartes avec icônes (transcription locale, reconnaissance, comportement, stockage & confidentialité, sauvegarde, sécurité, mises à jour, apparence, à propos), lignes à interrupteur cliquables en entier, sélecteurs segmentés (langue, rétention, thème), état des modèles Whisper explicite (actif / téléchargé / à télécharger).
+- **Écran PIN** : marque, points de saisie et pavé numérique tonal.
+- Transitions en fondu entre les onglets, bandeaux d'état (import, chargement ou erreur du modèle) homogènes.
+
+## v0.6.0
 
 - **Sauvegarde chiffrée exportable** (Réglages → Sauvegarde) : tous les enregistrements et transcriptions dans une archive protégée par phrase de passe, **restaurable sur un autre appareil** — jusqu'ici, un téléphone perdu = fichiers chiffrés irrécupérables (la clé AndroidKeyStore ne quitte pas l'appareil). Restauration jamais destructive (doublons suffixés).
 - **Écran détail avec lecture synchronisée** : toucher un enregistrement dans la liste ouvre sa fiche — **toucher un passage cale l'audio dessus**, le passage en cours de lecture est surligné et suivi, curseur de position, re-transcription et partage sur place. (Les segments interactifs sont générés par « Transcrire » ; re-transcrivez vos anciens enregistrements pour en profiter.)

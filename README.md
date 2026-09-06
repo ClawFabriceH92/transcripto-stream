@@ -24,6 +24,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Interface professionnelle** (v0.7.0) : système visuel Material 3 unifié (palette tonale claire/sombre, typographie, formes, jeu d'icônes vectorielles), écran « Transcrire » avec carte de session et chrono, liste à en-têtes épinglés et cartes à métadonnées, fiche avec lecteur en carte et intervenants colorés, réglages en sections.
 - **Sécurité/RGPD** : PIN (saisie masquée), chiffrement WAV AES-256 (clé AndroidKeyStore), rétention automatique 30/60/90 j, contrôle d'espace disque avant enregistrement.
 - **Mises à jour** (Réglages) : mise à jour automatique activable/désactivable (vérification GitHub Releases au lancement + quotidienne, téléchargement et installation automatiques), bouton « Vérifier maintenant », aide à l'autorisation d'installation.
 
@@ -50,11 +51,14 @@ app/src/main/
     ├── stt/ModelCatalog.kt         # Modèles Whisper embarqué/téléchargeables
     ├── stt/GoogleSpeechEngine.kt   # SpeechRecognizer système
     └── ui/StreamViewModel.kt       # Fenêtre glissante + dédup + diarisation + exports
-        StreamScreen.kt             # Écran principal Compose (Scaffold + Snackbar)
-        RecordingListScreen.kt      # Liste/recherche/partage/renommage
-        SettingsScreen.kt           # Réglages
+        StreamScreen.kt             # Écran principal Compose (Scaffold, navigation, session, contrôles)
+        RecordingListScreen.kt      # Liste/recherche/partage/renommage (en-têtes de jour épinglés)
+        DetailScreen.kt             # Fiche : lecteur synchronisé, segments par intervenant
+        SettingsScreen.kt           # Réglages en sections
         PinScreen.kt                # Verrouillage PIN
-        theme/Theme.kt              # Palette bleue clair/sombre unifiée
+        UiComponents.kt             # Composants partagés (cartes, pastilles, puces, états vides…)
+        theme/Theme.kt              # Palette M3 complète clair/sombre, typographie, formes
+        theme/AppIcons.kt           # Icônes vectorielles (Material Symbols) hors icons-core
 ```
 
 ## Build
