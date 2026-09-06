@@ -31,10 +31,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -207,7 +207,7 @@ fun StreamScreen() {
                             navigationIcon = {
                                 if (screen == 3) {
                                     IconButton(onClick = { vm.navigate(1) }) {
-                                        Icon(Icons.Filled.ArrowBack, contentDescription = "Retour à la liste")
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour à la liste")
                                     }
                                 }
                             },
@@ -1027,7 +1027,7 @@ private fun LastRecordingCard(
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onOpen, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
                 Text("Ouvrir la fiche", style = MaterialTheme.typography.labelLarge)
-                Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp))
             }
         }
     }
