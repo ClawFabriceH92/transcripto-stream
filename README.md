@@ -24,6 +24,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Synthèse de fin d'enregistrement** (v0.8.0) : proposée dès l'arrêt ; **locale** (extraction de phrases : points clés, décisions, actions, vigilance, chiffres et dates, moments ⭐, répartition de la parole, mots-clés — rien ne sort du téléphone) ou **rédigée par Claude** en option (SDK Anthropic, clé API chiffrée sur l'appareil, texte seul envoyé, choix du modèle). Enregistrée en `.md` à côté du fichier, partagée, sauvegardée, renommée avec lui.
 - **Interface professionnelle** (v0.7.0) : système visuel Material 3 unifié (palette tonale claire/sombre, typographie, formes, jeu d'icônes vectorielles), écran « Transcrire » avec carte de session et chrono, liste à en-têtes épinglés et cartes à métadonnées, fiche avec lecteur en carte et intervenants colorés, réglages en sections.
 - **Sécurité/RGPD** : PIN (saisie masquée), chiffrement WAV AES-256 (clé AndroidKeyStore), rétention automatique 30/60/90 j, contrôle d'espace disque avant enregistrement.
 - **Mises à jour** (Réglages) : mise à jour automatique activable/désactivable (vérification GitHub Releases au lancement + quotidienne, téléchargement et installation automatiques), bouton « Vérifier maintenant », aide à l'autorisation d'installation.
@@ -47,6 +48,9 @@ app/src/main/
     ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore)
     ├── data/SettingsStore.kt       # Réglages (SharedPreferences)
     ├── export/TranscriptExporter.kt # SRT + stats temps de parole (pur, testé)
+    ├── summary/LocalSummarizer.kt  # Synthèse locale extractive (pur, testé)
+    ├── summary/ClaudeSummarizer.kt # Synthèse IA via le SDK Java Anthropic (opt-in)
+    ├── summary/MarkdownLite.kt     # Markdown minimal : parsing + texte brut (pur, testé)
     ├── stt/WhisperStreamEngine.kt  # Pont JNI
     ├── stt/ModelCatalog.kt         # Modèles Whisper embarqué/téléchargeables
     ├── stt/GoogleSpeechEngine.kt   # SpeechRecognizer système
@@ -99,6 +103,7 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 - [x] Export des audios (WAV) vers l'emplacement choisi (SAF)
 - [x] Catalogue de modèles téléchargeables (small/medium/large-v3-turbo quantisés) + re-transcription haute fidélité
 - [x] Sauvegarde chiffrée exportable (migration d'appareil), écran détail synchronisé, résilience audio, mode dictée
+- [x] Synthèse de fin d'enregistrement (locale + IA Claude en option)
 - [ ] VAD Silero (endpointing par phrases) pour un vrai temps réel
 - [ ] Base Room + FTS (segments horodatés persistés, recherche instantanée, tap sur un mot → lecture audio)
 - [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)

@@ -53,9 +53,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.transcripto.stream.stt.ModelCatalog
+import com.transcripto.stream.summary.ClaudeSummarizer
 import com.transcripto.stream.ui.theme.AppIcons
 import com.transcripto.stream.update.AutoUpdater
 import com.transcripto.stream.update.UpdateManager
@@ -282,6 +284,112 @@ fun SettingsScreen(vm: StreamViewModel) {
                 },
                 icon = AppIcons.Dictation,
             )
+        }
+
+        // ================= SYNTHÈSE =================
+        SectionCard(
+            title = "Synthèse de fin d'enregistrement",
+            icon = AppIcons.Sparkle,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 16.dp),
+        ) {
+            var propose by remember { mutableStateOf(settings.proposeSummary) }
+            SettingSwitchRow(
+                title = "Proposer une synthèse",
+                subtitle = "À la fin de chaque enregistrement, un message propose de générer la synthèse : points clés, décisions, actions, chiffres cités.",
+                checked = propose,
+                onChange = {
+                    propose = it
+                    vm.setProposeSummary(it)
+                },
+                icon = AppIcons.Sparkle,
+            )
+            var aiEnabled by remember { mutableStateOf(settings.aiSummaryEnabled) }
+            SettingSwitchRow(
+                title = "Synthèse rédigée par l'IA (Claude)",
+                subtitle = "Via l'API Anthropic avec ta clé : seul le texte de la transcription est envoyé, jamais l'audio ; facturé sur ton compte Anthropic. Sans clé, hors ligne ou en cas d'erreur : synthèse locale.",
+                checked = aiEnabled,
+                onChange = {
+                    aiEnabled = it
+                    vm.setAiSummaryEnabled(it)
+                },
+                icon = AppIcons.Cloud,
+            )
+            if (aiEnabled) {
+                Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Spacer(Modifier.height(8.dp))
+                    var hasKey by remember { mutableStateOf(vm.hasAiApiKey()) }
+                    var keyInput by remember { mutableStateOf("") }
+                    var showKey by remember { mutableStateOf(false) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.Lock,
+                            contentDescription = null,
+                            tint = if (hasKey) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (hasKey) "Clé API enregistrée (chiffrée sur l'appareil)" else "Aucune clé API enregistrée",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = keyInput,
+                        onValueChange = { keyInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text(if (hasKey) "Remplacer la clé" else "Clé API Anthropic (sk-ant-…)") },
+                        visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            TextButton(onClick = { showKey = !showKey }) {
+                                Text(if (showKey) "Masquer" else "Voir")
+                            }
+                        },
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (vm.setAiApiKey(keyInput)) {
+                                    hasKey = keyInput.isNotBlank()
+                                    keyInput = ""
+                                    vm.showMessage(if (hasKey) "Clé API enregistrée" else "Clé API effacée")
+                                } else {
+                                    vm.showMessage("Impossible de chiffrer la clé sur cet appareil")
+                                }
+                            },
+                            enabled = keyInput.isNotBlank(),
+                        ) { Text("Enregistrer la clé") }
+                        if (hasKey) {
+                            TextButton(onClick = {
+                                vm.setAiApiKey("")
+                                hasKey = false
+                                vm.showMessage("Clé API effacée")
+                            }) { Text("Effacer", color = MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    var aiModel by remember { mutableStateOf(settings.aiModel) }
+                    SettingLabel("Modèle Claude")
+                    Spacer(Modifier.height(6.dp))
+                    SegmentedChoice(
+                        options = ClaudeSummarizer.MODELS,
+                        selected = aiModel,
+                        onSelect = {
+                            aiModel = it
+                            vm.setAiModel(it)
+                        },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    HintText(
+                        "Opus 5 : la meilleure rédaction (par défaut). Sonnet 5 : rapide et moins cher. " +
+                            "Haiku 4.5 : le plus économique. La clé se crée sur console.anthropic.com.",
+                    )
+                }
+            }
         }
 
         // ================= STOCKAGE & CONFIDENTIALITÉ =================

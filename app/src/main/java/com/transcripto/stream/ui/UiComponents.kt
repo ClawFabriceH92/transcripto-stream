@@ -41,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -50,9 +51,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.transcripto.stream.summary.MarkdownLite
+import com.transcripto.stream.summary.MdBlock
 import com.transcripto.stream.ui.theme.AppIcons
 import java.util.Locale
 
@@ -495,6 +504,68 @@ fun SegmentedChoice(
                 shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
                 label = { Text(label, maxLines = 1, style = MaterialTheme.typography.labelLarge) },
             )
+        }
+    }
+}
+
+/** Rendu d'une synthèse Markdown (titres, puces, gras, italique) avec les styles du thème. */
+@Composable
+fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
+    val blocks = remember(markdown) { MarkdownLite.parse(markdown) }
+    Column(modifier = modifier) {
+        blocks.forEach { block ->
+            when (block) {
+                is MdBlock.Heading -> {
+                    if (block.level > 1) Spacer(Modifier.height(8.dp))
+                    Text(
+                        richText(block.text),
+                        style = when (block.level) {
+                            1 -> MaterialTheme.typography.titleMedium
+                            2 -> MaterialTheme.typography.titleSmall
+                            else -> MaterialTheme.typography.labelLarge
+                        },
+                        color = if (block.level == 1) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                is MdBlock.Bullet -> Row(modifier = Modifier.padding(vertical = 2.dp)) {
+                    Text(
+                        "•",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 8.dp),
+                    )
+                    Text(richText(block.text), style = MaterialTheme.typography.bodyMedium)
+                }
+                is MdBlock.Paragraph -> {
+                    val spans = MarkdownLite.spans(block.text)
+                    val meta = spans.isNotEmpty() && spans.all { it.italic }
+                    Text(
+                        richText(block.text),
+                        style = if (meta) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
+                        color = if (meta) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                MdBlock.Blank -> Spacer(Modifier.height(6.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun richText(text: String): AnnotatedString = remember(text) {
+    buildAnnotatedString {
+        MarkdownLite.spans(text).forEach { span ->
+            withStyle(
+                SpanStyle(
+                    fontWeight = if (span.bold) FontWeight.SemiBold else null,
+                    fontStyle = if (span.italic) FontStyle.Italic else null,
+                )
+            ) { append(span.text) }
         }
     }
 }

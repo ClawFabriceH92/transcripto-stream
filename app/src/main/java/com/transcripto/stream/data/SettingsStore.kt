@@ -65,6 +65,27 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("mute_while_listening", true)
         set(v) = prefs.edit().putBoolean("mute_while_listening", v).apply()
 
+    // ---- Synthèse de fin d'enregistrement ----
+    /** Proposer (snackbar) une synthèse dès qu'un enregistrement se termine. */
+    var proposeSummary: Boolean
+        get() = prefs.getBoolean("propose_summary", true)
+        set(v) = prefs.edit().putBoolean("propose_summary", v).apply()
+
+    /** Synthèse rédigée par Claude (API Anthropic) au lieu de l'extraction locale. Opt-in. */
+    var aiSummaryEnabled: Boolean
+        get() = prefs.getBoolean("ai_summary_enabled", false)
+        set(v) = prefs.edit().putBoolean("ai_summary_enabled", v).apply()
+
+    /** Identifiant du modèle Claude utilisé pour la synthèse IA. */
+    var aiModel: String
+        get() = prefs.getString("ai_model", DEFAULT_AI_MODEL) ?: DEFAULT_AI_MODEL
+        set(v) = prefs.edit().putString("ai_model", v).apply()
+
+    /** Clé API Anthropic chiffrée (AES-GCM, clé AndroidKeyStore), base64 ; vide = absente. */
+    var aiApiKeyEncrypted: String
+        get() = prefs.getString("ai_api_key_enc", "") ?: ""
+        set(v) = prefs.edit().putString("ai_api_key_enc", v).apply()
+
     // ---- Modèle Whisper actif ("base" = embarqué, sinon id du catalogue) ----
     var modelId: String
         get() = prefs.getString("model_id", "base") ?: "base"
@@ -108,6 +129,7 @@ class SettingsStore(context: Context) {
     }
 
     companion object {
+        const val DEFAULT_AI_MODEL = "claude-opus-5"
         val DEFAULT_VOCAB = "CAC, commissaire aux comptes, commissariat aux comptes, exercice, normes, audit, bilan, expert-comptable, comptabilité, résultat, bilan comptable, contrôle légal, mission légale"
 
         fun hashPin(pin: String): String {

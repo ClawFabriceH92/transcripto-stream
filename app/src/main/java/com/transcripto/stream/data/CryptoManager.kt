@@ -2,6 +2,7 @@ package com.transcripto.stream.data
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Base64
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -61,6 +62,35 @@ object CryptoManager {
             Log.e(TAG, "encryptFile: ${e.message}")
             dest.delete() // pas de .enc partiel : il serait illisible (tag GCM absent)
             false
+        }
+    }
+
+    /** Chiffre une chaîne courte (clé API…) : base64(IV + AES-GCM), clé AndroidKeyStore. */
+    fun encryptString(plain: String): String? {
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            val ct = cipher.doFinal(plain.toByteArray(Charsets.UTF_8))
+            Base64.encodeToString(cipher.iv + ct, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.e(TAG, "encryptString: ${e.message}")
+            null
+        }
+    }
+
+    /** Inverse de [encryptString] ; null si absent, altéré ou clé KeyStore perdue. */
+    fun decryptString(encoded: String): String? {
+        if (encoded.isBlank()) return null
+        return try {
+            val bytes = Base64.decode(encoded, Base64.NO_WRAP)
+            if (bytes.size < IV_LEN + 16) return null
+            val iv = bytes.copyOfRange(0, IV_LEN)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
+            String(cipher.doFinal(bytes, IV_LEN, bytes.size - IV_LEN), Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.e(TAG, "decryptString: ${e.message}")
+            null
         }
     }
 

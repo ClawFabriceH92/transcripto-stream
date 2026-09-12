@@ -180,6 +180,24 @@ fun StreamScreen() {
                     }
                 }
 
+                // Fin d'enregistrement (nom choisi) : proposer la synthèse
+                val summaryProposal by vm.summaryProposal.collectAsStateWithLifecycle()
+                LaunchedEffect(summaryProposal) {
+                    val file = summaryProposal
+                    if (file != null) {
+                        val result = snackbarHostState.showSnackbar(
+                            message = "Enregistrement terminé — générer une synthèse ?",
+                            actionLabel = "Synthèse",
+                            duration = SnackbarDuration.Long,
+                        )
+                        if (result == SnackbarResult.ActionPerformed) {
+                            vm.generateSummary(file)
+                        } else {
+                            vm.dismissSummaryProposal()
+                        }
+                    }
+                }
+
                 Scaffold(
                     containerColor = MaterialTheme.colorScheme.surface,
                     snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -366,6 +384,8 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
     val isPlaying by vm.isPlaying.collectAsStateWithLifecycle()
     val isImporting by vm.isImporting.collectAsStateWithLifecycle()
     val importProgress by vm.importProgress.collectAsStateWithLifecycle()
+    val summaryBusy by vm.summaryBusy.collectAsStateWithLifecycle()
+    val summaryVersion by vm.summaryVersion.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var confirmDeleteLast by remember { mutableStateOf(false) }
@@ -725,6 +745,9 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
         AnimatedVisibility(visible = recording != null && !isStreaming) {
             if (recording != null) {
                 var playbackSpeed by remember { mutableStateOf(vm.settings.playbackSpeed) }
+                val summaryExists = remember(recording, summaryVersion) {
+                    RecordingNames.mdSibling(recording).exists()
+                }
                 Column {
                     Spacer(Modifier.height(10.dp))
                     LastRecordingCard(
@@ -760,6 +783,11 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                         },
                         onEdit = { editTranscript = true },
                         onDelete = { confirmDeleteLast = true },
+                        summaryExists = summaryExists,
+                        summaryBusy = summaryBusy,
+                        onSummary = {
+                            if (summaryExists) vm.openDetailForFile(recording) else vm.generateSummary(recording)
+                        },
                     )
                 }
             }
@@ -885,6 +913,9 @@ private fun LastRecordingCard(
     onShare: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    summaryExists: Boolean,
+    summaryBusy: Boolean,
+    onSummary: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     SectionCard(contentPadding = PaddingValues(start = 12.dp, top = 10.dp, end = 4.dp, bottom = 10.dp)) {
@@ -1009,7 +1040,25 @@ private fun LastRecordingCard(
                 }
             }
         }
-        if (isTranscribing) {
+        Spacer(Modifier.height(8.dp))
+        FilledTonalButton(
+            onClick = onSummary,
+            enabled = !summaryBusy && !isTranscribing,
+            modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            Icon(AppIcons.Sparkle, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                when {
+                    summaryBusy -> "Synthèse en cours…"
+                    summaryExists -> "Voir la synthèse"
+                    else -> "Générer la synthèse"
+                },
+                maxLines = 1,
+            )
+        }
+        if (isTranscribing || summaryBusy) {
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(end = 8.dp))
         }

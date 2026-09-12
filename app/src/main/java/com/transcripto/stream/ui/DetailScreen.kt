@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,16 +37,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.StoredSegment
+import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.ui.theme.AppIcons
 import com.transcripto.stream.ui.theme.AppTextStyles
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +95,14 @@ fun DetailScreen(vm: StreamViewModel) {
     val isTranscribing by vm.isTranscribingFile.collectAsStateWithLifecycle()
     val isStreaming by vm.isStreaming.collectAsStateWithLifecycle()
     val lastError by vm.lastError.collectAsStateWithLifecycle()
+    val summaryBusy by vm.summaryBusy.collectAsStateWithLifecycle()
+    val summaryVersion by vm.summaryVersion.collectAsStateWithLifecycle()
+
+    var summary by remember { mutableStateOf<String?>(null) }
+    var summaryExpanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(current.file.absolutePath, summaryVersion, summaryBusy) {
+        if (!summaryBusy) summary = withContext(Dispatchers.IO) { vm.readSummary(current.file) }
+    }
 
     var segments by remember { mutableStateOf<List<StoredSegment>>(emptyList()) }
     LaunchedEffect(current.file.absolutePath, isTranscribing) {
@@ -253,6 +266,91 @@ fun DetailScreen(vm: StreamViewModel) {
                 container = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
             )
+        }
+        Spacer(Modifier.height(10.dp))
+
+        // ---- Synthèse (locale ou IA) ----
+        SectionCard(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconAvatar(
+                    icon = AppIcons.Sparkle,
+                    size = 30.dp,
+                    iconSize = 17.dp,
+                    shape = CircleShape,
+                    container = MaterialTheme.colorScheme.tertiaryContainer,
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("Synthèse", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (summary != null && !summaryBusy) {
+                    TextButton(onClick = { summaryExpanded = !summaryExpanded }) {
+                        Text(if (summaryExpanded) "Réduire" else "Afficher")
+                    }
+                }
+            }
+            val summaryText = summary
+            when {
+                summaryBusy -> {
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(6.dp))
+                    HintText(
+                        if (vm.settings.aiSummaryEnabled && vm.hasAiApiKey()) {
+                            "Rédaction par Claude en cours…"
+                        } else {
+                            "Génération locale en cours…"
+                        }
+                    )
+                }
+                summaryText == null -> {
+                    Spacer(Modifier.height(6.dp))
+                    HintText(
+                        if (vm.settings.aiSummaryEnabled && vm.hasAiApiKey()) {
+                            "Rédigée par Claude à partir de la transcription (texte seul envoyé, jamais l'audio)."
+                        } else {
+                            "Points clés, décisions, actions, chiffres cités — générée sur l'appareil, sans envoi de données."
+                        }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    FilledTonalButton(
+                        onClick = { vm.generateSummary(current.file) },
+                        enabled = !isTranscribing,
+                    ) {
+                        Icon(AppIcons.Sparkle, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                        Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                        Text("Générer la synthèse")
+                    }
+                }
+                else -> {
+                    Spacer(Modifier.height(6.dp))
+                    if (summaryExpanded) {
+                        MarkdownText(
+                            summaryText,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 380.dp)
+                                .verticalScroll(rememberScrollState()),
+                        )
+                    } else {
+                        MarkdownText(
+                            summaryText,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 104.dp)
+                                .clipToBounds(),
+                        )
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = {
+                            if (vm.copyText(MarkdownLite.toPlainText(summaryText))) vm.showMessage("Synthèse copiée")
+                        }) { Text("Copier") }
+                        TextButton(
+                            onClick = { vm.generateSummary(current.file) },
+                            enabled = !isTranscribing,
+                        ) { Text("Regénérer") }
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(12.dp))
 

@@ -1,10 +1,17 @@
-# Transcripto Stream v0.7.0
+# Transcripto Stream v0.8.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Nouveautés v0.7.0 — interface professionnelle
+## Nouveautés v0.8.0 — synthèse de fin d'enregistrement
+
+- **Synthèse proposée à la fin de chaque enregistrement** : une fois le nom choisi, un message propose de générer la synthèse. Elle est aussi disponible sur la carte du dernier enregistrement (« Générer la synthèse ») et sur la fiche de n'importe quel enregistrement (« Regénérer », « Copier »).
+- **Synthèse locale, sans envoi de données** (par défaut) : points clés, décisions, actions à mener, points de vigilance, chiffres et dates cités, moments marqués ⭐, répartition de la parole, mots-clés — extraite de la transcription sur l'appareil, instantanément, hors ligne.
+- **Synthèse rédigée par l'IA (option)** : dans Réglages → Synthèse, active « Synthèse rédigée par l'IA (Claude) » et renseigne ta clé API Anthropic (chiffrée sur l'appareil). Seul le texte de la transcription est envoyé, jamais l'audio ; choix du modèle (Opus 5 par défaut, Sonnet 5, Haiku 4.5) ; en cas d'erreur ou hors ligne, la synthèse locale prend le relais.
+- La synthèse est enregistrée à côté de l'enregistrement (`.md`), **incluse dans le partage** (corps du message + pièce jointe), la sauvegarde chiffrée, le renommage et la suppression.
+
+## v0.7.0 — interface professionnelle
 
 - **Système visuel unifié** : palette Material 3 complète (surfaces tonales claires/sombres), typographie et formes définies une fois pour toute l'app — plus d'émojis en guise d'icônes, plus de tailles de texte au cas par cas.
 - **Écran « Transcrire » repensé** : choix du moteur en boutons segmentés (Google · cloud / Whisper · local), carte de session avec état pulsant, chrono lisible (heures affichées au-delà de 60 min) et rappel de confidentialité, zone de transcription en direct aérée, gros bouton d'enregistrement avec halo, commandes Marqueur / Pause / Arrêter en pastilles.

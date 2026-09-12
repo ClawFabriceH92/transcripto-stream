@@ -11,10 +11,10 @@ object RecordingNames {
 
     private val FORBIDDEN = Regex("[\\\\/:*?\"<>|]")
 
-    /** « base.wav », « base.wav.enc », « base.txt », « base.srt », « base.json » → « base ». */
+    /** « base.wav », « base.wav.enc », « base.txt », « base.srt », « base.json », « base.md » → « base ». */
     fun baseName(fileName: String): String =
         fileName.removeSuffix(".enc").removeSuffix(".wav")
-            .removeSuffix(".txt").removeSuffix(".srt").removeSuffix(".json")
+            .removeSuffix(".txt").removeSuffix(".srt").removeSuffix(".json").removeSuffix(".md")
 
     /** Suffixe conservé lors d'un renommage : « .wav », « .wav.enc » ou « .txt ». */
     fun suffix(fileName: String): String = fileName.substring(baseName(fileName).length)
@@ -50,6 +50,10 @@ object RecordingNames {
     /** Segments horodatés persistés (écran détail, lecture synchronisée). */
     fun jsonSibling(file: File): File =
         File(file.parentFile, baseName(file.name) + ".json")
+
+    /** Synthèse Markdown (locale ou IA) générée à la fin d'un enregistrement. */
+    fun mdSibling(file: File): File =
+        File(file.parentFile, baseName(file.name) + ".md")
 
     /** Fichier frère après renommage : même dossier, même suffixe, nouvelle base. */
     fun renamed(file: File, newBase: String): File =

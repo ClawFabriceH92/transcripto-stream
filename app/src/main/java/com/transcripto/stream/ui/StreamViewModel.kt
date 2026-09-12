@@ -31,6 +31,11 @@ import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.stt.StreamResult
 import com.transcripto.stream.stt.VoiceCommands
+import com.transcripto.stream.summary.AiSummaryResult
+import com.transcripto.stream.summary.ClaudeSummarizer
+import com.transcripto.stream.summary.LocalSummarizer
+import com.transcripto.stream.summary.MarkdownLite
+import com.transcripto.stream.summary.SummaryInput
 import com.transcripto.stream.stt.WhisperModel
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
@@ -101,6 +106,7 @@ class StreamViewModel(
         private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         private val REC_START_END_FORMAT = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
         private val TXT_DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        private val SUMMARY_DATE_FORMAT = SimpleDateFormat("d MMMM yyyy 'à' HH:mm", Locale.FRANCE)
         private val HASH_LINE = Regex("SHA-256 \\(PCM\\) : ([0-9a-f]{64})")
     }
 
@@ -220,6 +226,18 @@ class StreamViewModel(
     val pendingName: StateFlow<File?> = _pendingName.asStateFlow()
     private val _pendingNameDefault = MutableStateFlow("")
     val pendingNameDefault: StateFlow<String> = _pendingNameDefault.asStateFlow()
+
+    // ---- Synthèse de fin d'enregistrement (déclaré AVANT init) ----
+    private val _summaryBusy = MutableStateFlow(false)
+    val summaryBusy: StateFlow<Boolean> = _summaryBusy.asStateFlow()
+
+    /** Incrémenté à chaque .md écrit : les écrans relisent la synthèse. */
+    private val _summaryVersion = MutableStateFlow(0)
+    val summaryVersion: StateFlow<Int> = _summaryVersion.asStateFlow()
+
+    /** Fichier pour lequel une synthèse est proposée (message de fin d'enregistrement). */
+    private val _summaryProposal = MutableStateFlow<File?>(null)
+    val summaryProposal: StateFlow<File?> = _summaryProposal.asStateFlow()
 
     // ---- Internes ----
     // Le contexte whisper.cpp n'est pas thread-safe : un seul transcribeBuffer à la fois
@@ -955,6 +973,7 @@ class StreamViewModel(
         _pendingName.value = null
         renameFile(f, newName)
         refreshRecordings()
+        proposeSummaryIfEnabled()
     }
 
     /**
@@ -977,6 +996,7 @@ class StreamViewModel(
         val oldTxt = RecordingNames.txtSibling(f)
         val oldSrt = RecordingNames.srtSibling(f)
         val oldJson = RecordingNames.jsonSibling(f)
+        val oldMd = RecordingNames.mdSibling(f)
         if (!f.renameTo(dest)) {
             _lastError.value = "Renommage impossible"
             return false
@@ -984,6 +1004,7 @@ class StreamViewModel(
         if (oldTxt.exists()) oldTxt.renameTo(RecordingNames.txtSibling(dest))
         if (oldSrt.exists()) oldSrt.renameTo(RecordingNames.srtSibling(dest))
         if (oldJson.exists()) oldJson.renameTo(RecordingNames.jsonSibling(dest))
+        if (oldMd.exists()) oldMd.renameTo(RecordingNames.mdSibling(dest))
         if (_lastRecording.value == f) _lastRecording.value = dest
         return true
     }
@@ -991,6 +1012,130 @@ class StreamViewModel(
     fun dismissPendingName() {
         _pendingName.value = null
         refreshRecordings()
+        proposeSummaryIfEnabled()
+    }
+
+    // ================= SYNTHÈSE =================
+
+    /** Fin d'enregistrement (nom choisi) : proposer la synthèse s'il y a du texte. */
+    private fun proposeSummaryIfEnabled() {
+        if (!settings.proposeSummary) return
+        val f = _lastRecording.value ?: return
+        if (_liveText.value.isBlank() && _fileTranscript.value.isBlank()) return
+        _summaryProposal.value = f
+    }
+
+    fun dismissSummaryProposal() {
+        _summaryProposal.value = null
+    }
+
+    fun setProposeSummary(enabled: Boolean) {
+        settings.proposeSummary = enabled
+    }
+
+    fun setAiSummaryEnabled(enabled: Boolean) {
+        settings.aiSummaryEnabled = enabled
+    }
+
+    fun setAiModel(id: String) {
+        settings.aiModel = id
+    }
+
+    fun hasAiApiKey(): Boolean = settings.aiApiKeyEncrypted.isNotBlank()
+
+    /** Enregistre la clé API Anthropic chiffrée (AndroidKeyStore) ; vide = l'efface. */
+    fun setAiApiKey(key: String): Boolean {
+        val trimmed = key.trim()
+        if (trimmed.isEmpty()) {
+            settings.aiApiKeyEncrypted = ""
+            return true
+        }
+        val enc = CryptoManager.encryptString(trimmed) ?: return false
+        settings.aiApiKeyEncrypted = enc
+        return true
+    }
+
+    private fun aiApiKey(): String? =
+        CryptoManager.decryptString(settings.aiApiKeyEncrypted)?.takeIf { it.isNotBlank() }
+
+    /** Synthèse existante (Markdown) ou null — I/O : à appeler hors du thread principal. */
+    fun readSummary(file: File): String? = try {
+        val md = RecordingNames.mdSibling(file)
+        if (md.exists()) md.readText() else null
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Génère la synthèse d'un enregistrement — par Claude si l'option est active et
+     * qu'une clé est enregistrée (repli local en cas d'échec), sinon localement —
+     * et l'écrit en « base.md » à côté du fichier.
+     */
+    fun generateSummary(file: File) {
+        if (_summaryBusy.value) return
+        if (_backupBusy.value) {
+            _uiMessage.value = "Sauvegarde en cours — réessaie quand elle est terminée"
+            return
+        }
+        _summaryProposal.value = null
+        viewModelScope.launch {
+            _summaryBusy.value = true
+            val message = withContext(Dispatchers.IO) { buildSummaryFor(file) }
+            _summaryBusy.value = false
+            _summaryVersion.value = _summaryVersion.value + 1
+            _uiMessage.value = message
+        }
+    }
+
+    /** Lit la meilleure transcription disponible, génère, écrit le .md ; retourne le message. */
+    private fun buildSummaryFor(file: File): String {
+        val txt = transcriptFileFor(file)
+        val text = try {
+            if (txt.exists()) txt.readText().substringAfter("----\n").trim() else ""
+        } catch (e: Exception) {
+            ""
+        }
+        if (text.isBlank()) return "Pas de transcription à synthétiser — lance d'abord « Transcrire »"
+        val input = SummaryInput(
+            title = RecordingNames.baseName(file.name),
+            transcript = text,
+            durationMs = durationMsOf(file),
+            dateLabel = SUMMARY_DATE_FORMAT.format(Date(file.lastModified())),
+        )
+        val key = if (settings.aiSummaryEnabled) aiApiKey() else null
+        var failure: String? = null
+        val markdown = if (key != null) {
+            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, input)) {
+                is AiSummaryResult.Ok -> wrapAiSummary(input, r)
+                is AiSummaryResult.Failed -> {
+                    failure = r.message
+                    LocalSummarizer.summarize(input)
+                }
+            }
+        } else {
+            LocalSummarizer.summarize(input)
+        }
+        return try {
+            RecordingNames.mdSibling(file).writeText(markdown)
+            when {
+                failure != null -> "$failure — synthèse locale générée à la place"
+                key != null -> "Synthèse IA prête"
+                else -> "Synthèse prête"
+            }
+        } catch (e: Exception) {
+            "Écriture de la synthèse impossible : ${e.message}"
+        }
+    }
+
+    private fun wrapAiSummary(input: SummaryInput, r: AiSummaryResult.Ok): String = buildString {
+        append("# Synthèse — ").append(input.title).append('\n')
+        append('_').append(input.dateLabel)
+        if (input.durationMs > 0) append(" · ").append(formatHms(input.durationMs))
+        append(" · synthèse IA (").append(ClaudeSummarizer.modelLabel(r.model)).append(")_\n\n")
+        append(r.markdown.trim()).append("\n\n")
+        append("_Synthèse rédigée par Claude (").append(r.model).append(", ")
+            .append(r.inputTokens + r.outputTokens)
+            .append(" tokens) à partir de la transcription — à relire avant diffusion._\n")
     }
 
     // ================= LECTURE + VITESSE =================
@@ -1429,12 +1574,26 @@ class StreamViewModel(
                     FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", srt)
                 )
             }
+            // Synthèse : en corps de message (la transcription complète reste jointe) + .md joint
+            val md = RecordingNames.mdSibling(file)
+            val summaryText = if (md.exists()) md.readText() else null
+            if (summaryText != null) {
+                attachments.add(
+                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", md)
+                )
+            }
+            val body = if (summaryText != null) {
+                MarkdownLite.toPlainText(summaryText) +
+                    "\n\n— Transcription complète en pièce jointe (.txt)."
+            } else {
+                transcriptText
+            }
 
             Intent(Intent.ACTION_SEND_MULTIPLE).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_EMAIL, arrayOf(""))
-                putExtra(Intent.EXTRA_SUBJECT, "Transcription $base")
-                putExtra(Intent.EXTRA_TEXT, transcriptText)
+                putExtra(Intent.EXTRA_SUBJECT, if (summaryText != null) "Synthèse — $base" else "Transcription $base")
+                putExtra(Intent.EXTRA_TEXT, body)
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, attachments)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
@@ -1863,7 +2022,7 @@ class StreamViewModel(
         }
     }
 
-    private val allowedBackupSuffixes = setOf(".wav", ".txt", ".srt", ".json")
+    private val allowedBackupSuffixes = setOf(".wav", ".txt", ".srt", ".json", ".md")
 
     /** Restaure une archive .tsbk : jamais destructif (les doublons sont suffixés). */
     fun restoreBackup(srcUri: Uri, passphrase: String) {
@@ -2002,6 +2161,7 @@ class StreamViewModel(
         RecordingNames.txtSibling(f).delete()
         RecordingNames.srtSibling(f).delete()
         RecordingNames.jsonSibling(f).delete()
+        RecordingNames.mdSibling(f).delete()
         // Ancienne convention (v0.2.x) : « base.wav.enc » avait parfois « base.wav.txt »
         File(f.parentFile, f.nameWithoutExtension + ".txt").delete()
     }
@@ -2049,6 +2209,7 @@ class StreamViewModel(
                         // Entrée texte seul (Google) : soumise à la même rétention
                         f.delete()
                         RecordingNames.srtSibling(f).delete()
+                        RecordingNames.mdSibling(f).delete()
                     }
                 }
             }

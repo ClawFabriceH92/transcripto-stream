@@ -16,8 +16,8 @@ android {
         applicationId = "com.transcripto.stream"
         minSdk = 29
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.7.0"
+        versionCode = 22
+        versionName = "0.8.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -82,6 +82,12 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // SDK Anthropic (OkHttp + Jackson) : métadonnées dupliquées entre jars
+            excludes += "META-INF/versions/**"
+            excludes += "META-INF/DEPENDENCIES"
+            excludes += "META-INF/LICENSE*"
+            excludes += "META-INF/NOTICE*"
+            excludes += "META-INF/INDEX.LIST"
         }
     }
 
@@ -100,6 +106,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    // Synthèse IA (opt-in) : SDK Java officiel Anthropic — seule la transcription est envoyée
+    implementation("com.anthropic:anthropic-java:2.62.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
