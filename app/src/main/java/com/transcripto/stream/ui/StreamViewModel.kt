@@ -981,6 +981,10 @@ class StreamViewModel(
      * suffixe (.wav / .wav.enc / .txt) et renomme les fichiers frères .txt/.srt.
      */
     private fun renameFile(f: File, newName: String): Boolean {
+        if (_summaryBusy.value) {
+            _lastError.value = "Synthèse en cours — renommage possible ensuite"
+            return false
+        }
         val name = RecordingNames.sanitize(newName)
         if (name.isEmpty() || name == RecordingNames.baseName(f.name)) return false
         val dest = RecordingNames.renamed(f, name)
@@ -1072,18 +1076,27 @@ class StreamViewModel(
      * et l'écrit en « base.md » à côté du fichier.
      */
     fun generateSummary(file: File) {
-        if (_summaryBusy.value) return
+        _summaryProposal.value = null // la proposition est consommée, même si on refuse
+        if (_summaryBusy.value) {
+            _uiMessage.value = "Une synthèse est déjà en cours"
+            return
+        }
         if (_backupBusy.value) {
             _uiMessage.value = "Sauvegarde en cours — réessaie quand elle est terminée"
             return
         }
-        _summaryProposal.value = null
         viewModelScope.launch {
             _summaryBusy.value = true
-            val message = withContext(Dispatchers.IO) { buildSummaryFor(file) }
-            _summaryBusy.value = false
-            _summaryVersion.value = _summaryVersion.value + 1
-            _uiMessage.value = message
+            try {
+                val message = withContext(Dispatchers.IO) { buildSummaryFor(file) }
+                _uiMessage.value = message
+            } catch (t: Throwable) {
+                _uiMessage.value = "Synthèse impossible : ${t.message}"
+            } finally {
+                // Jamais d'état « en cours » figé, quoi qu'il arrive
+                _summaryBusy.value = false
+                _summaryVersion.value = _summaryVersion.value + 1
+            }
         }
     }
 
@@ -1104,6 +1117,10 @@ class StreamViewModel(
         )
         val key = if (settings.aiSummaryEnabled) aiApiKey() else null
         var failure: String? = null
+        if (settings.aiSummaryEnabled && key == null && settings.aiApiKeyEncrypted.isNotBlank()) {
+            // Blob présent mais indéchiffrable (clé KeyStore perdue) : le dire, pas se taire
+            failure = "Clé API illisible — ressaisis-la dans les Réglages"
+        }
         val markdown = if (key != null) {
             when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, input)) {
                 is AiSummaryResult.Ok -> wrapAiSummary(input, r)
@@ -1951,7 +1968,7 @@ class StreamViewModel(
      */
     fun backupBlocked(): Boolean {
         val blocked = _backupBusy.value || _isStreaming.value ||
-            _isImporting.value || _isTranscribingFile.value
+            _isImporting.value || _isTranscribingFile.value || _summaryBusy.value
         if (blocked) _uiMessage.value = "Sauvegarde impossible pendant une opération en cours"
         return blocked
     }
@@ -1960,7 +1977,7 @@ class StreamViewModel(
         if (_backupBusy.value) return
         // Un WAV en cours d'écriture (enregistrement) ou en cours de création
         // (import/transcription) partirait tronqué dans l'archive.
-        if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value) {
+        if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value || _summaryBusy.value) {
             _uiMessage.value = "Sauvegarde impossible pendant une opération en cours"
             return
         }
@@ -2027,7 +2044,7 @@ class StreamViewModel(
     /** Restaure une archive .tsbk : jamais destructif (les doublons sont suffixés). */
     fun restoreBackup(srcUri: Uri, passphrase: String) {
         if (_backupBusy.value) return
-        if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value) {
+        if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value || _summaryBusy.value) {
             _uiMessage.value = "Restauration impossible pendant une opération en cours"
             return
         }
@@ -2167,6 +2184,11 @@ class StreamViewModel(
     }
 
     fun deleteRecording(item: RecordingItem) {
+        if (_summaryBusy.value) {
+            _uiMessage.value = "Synthèse en cours — suppression possible ensuite"
+            return
+        }
+        if (_summaryProposal.value == item.file) _summaryProposal.value = null
         deleteWithSiblings(item.file)
         if (_lastRecording.value == item.file) {
             _lastRecording.value = null
@@ -2178,7 +2200,12 @@ class StreamViewModel(
 
     fun deleteLastRecording() {
         if (_isStreaming.value) return
+        if (_summaryBusy.value) {
+            _uiMessage.value = "Synthèse en cours — suppression possible ensuite"
+            return
+        }
         val f = _lastRecording.value ?: return
+        if (_summaryProposal.value == f) _summaryProposal.value = null
         deleteWithSiblings(f)
         _lastRecording.value = null
         activeRecordingFile = null
@@ -2197,6 +2224,16 @@ class StreamViewModel(
                 val audioBases = files.filter { RecordingNames.isAudio(it.name) }
                     .map { RecordingNames.baseName(it.name) }
                     .toSet()
+                // Synthèses orphelines (.md sans audio ni .txt du même nom) : purgées
+                files.filter { it.name.endsWith(".md") }.forEach { md ->
+                    val base = RecordingNames.baseName(md.name)
+                    val hasOwner = files.any {
+                        it != md && !it.name.endsWith(".md") &&
+                            RecordingNames.baseName(it.name) == base &&
+                            (RecordingNames.isAudio(it.name) || RecordingNames.isTextOnly(it.name))
+                    }
+                    if (!hasOwner) md.delete()
+                }
                 files.forEach { f ->
                     val expired = f.lastModified() < cutoff
                     if (!expired) return@forEach

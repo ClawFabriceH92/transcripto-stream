@@ -11,14 +11,13 @@ import com.anthropic.errors.PermissionDeniedException
 import com.anthropic.errors.RateLimitException
 import com.anthropic.errors.UnauthorizedException
 import com.anthropic.models.beta.AnthropicBeta
-import com.anthropic.models.beta.messages.BetaFallbackParam
 import com.anthropic.models.beta.messages.BetaMessage
 import com.anthropic.models.beta.messages.MessageCreateParams as BetaMessageCreateParams
 import com.anthropic.models.messages.Message
 import com.anthropic.models.messages.MessageCreateParams
-import com.anthropic.models.messages.Model
 import com.anthropic.models.messages.OutputConfig
 import com.transcripto.stream.export.TranscriptExporter
+import java.time.Duration
 
 /** Résultat d'une synthèse IA : Markdown (rubriques) ou message d'erreur exploitable. */
 sealed class AiSummaryResult {
@@ -37,10 +36,10 @@ sealed class AiSummaryResult {
  * la TRANSCRIPTION (jamais l'audio) est envoyée à api.anthropic.com, avec la
  * clé API de l'utilisateur. Appel synchrone : à exécuter hors du thread principal.
  *
- * Sur Opus 5, un repli serveur vers Opus 4.8 est demandé (comme dans l'exemple
- * officiel du SDK) pour qu'un refus des filtres de sécurité ne laisse pas
- * l'utilisateur sans synthèse ; si le serveur rejette ce paramètre, la même
- * requête est renvoyée sans repli.
+ * Sur Opus 5, un repli serveur par défaut (`fallbacks: "default"`, routé par
+ * catégorie de refus) est demandé pour qu'un refus des filtres de sécurité ne
+ * laisse pas l'utilisateur sans synthèse ; si le serveur rejette ce paramètre,
+ * la même requête est renvoyée sans repli.
  */
 object ClaudeSummarizer {
 
@@ -87,7 +86,14 @@ object ClaudeSummarizer {
         val transcript = input.transcript.trim()
         if (transcript.isBlank()) return AiSummaryResult.Failed("Transcription vide")
         val truncated = transcript.length > MAX_TRANSCRIPT_CHARS
-        val body = if (truncated) transcript.substring(0, MAX_TRANSCRIPT_CHARS) else transcript
+        val body = if (truncated) {
+            // Ne pas couper une paire de substitution (émoji) : JSON invalide sinon
+            var end = MAX_TRANSCRIPT_CHARS
+            if (Character.isHighSurrogate(transcript[end - 1])) end--
+            transcript.substring(0, end)
+        } else {
+            transcript
+        }
         val user = buildString {
             append("Titre : ").append(input.title.ifBlank { "Enregistrement" }).append('\n')
             append("Date : ").append(input.dateLabel).append('\n')
@@ -98,7 +104,18 @@ object ClaudeSummarizer {
             append("\nTranscription :\n<<<\n").append(body).append("\n>>>")
         }
 
-        val client = AnthropicOkHttpClient.builder().apiKey(apiKey).build()
+        // Mobile : 3 min par requête et une seule nouvelle tentative — les défauts du SDK
+        // (10 min × 3 essais) laisseraient « Synthèse en cours… » près d'une demi-heure.
+        val client: AnthropicClient = try {
+            AnthropicOkHttpClient.builder()
+                .apiKey(apiKey)
+                .timeout(Duration.ofMinutes(3))
+                .maxRetries(1)
+                .build()
+        } catch (t: Throwable) {
+            // Initialisation du SDK impossible (classe manquante…) : repli local en amont
+            return AiSummaryResult.Failed("Synthèse IA indisponible : ${t.message}")
+        }
         return try {
             if (modelId == MODEL_OPUS) {
                 try {
@@ -130,21 +147,26 @@ object ClaudeSummarizer {
             AiSummaryResult.Failed("Erreur API : ${e.message}")
         } catch (e: AnthropicIoException) {
             AiSummaryResult.Failed("Pas de connexion réseau")
-        } catch (e: Exception) {
-            AiSummaryResult.Failed("Synthèse IA impossible : ${e.message}")
+        } catch (t: Throwable) {
+            // Throwable : une erreur de chargement de classe du SDK (compat Android)
+            // ne doit pas planter l'app — repli local en amont
+            AiSummaryResult.Failed("Synthèse IA impossible : ${t.message}")
+        } finally {
+            try {
+                client.close()
+            } catch (_: Throwable) {
+            }
         }
     }
 
-    /** Point d'accès bêta : repli serveur vers Opus 4.8 en cas de refus des filtres. */
+    /** Point d'accès bêta : repli serveur par défaut en cas de refus des filtres. */
     private fun callWithFallbacks(client: AnthropicClient, modelId: String, user: String): AiSummaryResult {
         val params = BetaMessageCreateParams.builder()
             .model(modelId)
             .maxTokens(MAX_TOKENS)
             .system(SYSTEM_PROMPT)
             .addUserMessage(user)
-            .fallbacksOfFallbackParams(
-                listOf(BetaFallbackParam.builder().model(Model.CLAUDE_OPUS_4_8).build())
-            )
+            .fallbacksDefault()
             .addBeta(AnthropicBeta.SERVER_SIDE_FALLBACK_2026_07_01)
             .build()
         val msg: BetaMessage = client.beta().messages().create(params)

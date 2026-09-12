@@ -328,7 +328,7 @@ fun DetailScreen(vm: StreamViewModel) {
                             summaryText,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = 380.dp)
+                                .heightIn(max = 300.dp)
                                 .verticalScroll(rememberScrollState()),
                         )
                     } else {
@@ -366,7 +366,7 @@ fun DetailScreen(vm: StreamViewModel) {
                 )
             }
             Spacer(Modifier.height(6.dp))
-            LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+            LazyColumn(state = listState, modifier = Modifier.weight(1f).heightIn(min = 120.dp)) {
                 itemsIndexed(segments) { i, seg ->
                     val isCurrent = i == currentIndex
                     val speakerChanged = multiSpeaker &&

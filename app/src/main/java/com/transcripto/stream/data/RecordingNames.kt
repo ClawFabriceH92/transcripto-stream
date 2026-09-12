@@ -13,8 +13,14 @@ object RecordingNames {
 
     /** « base.wav », « base.wav.enc », « base.txt », « base.srt », « base.json », « base.md » → « base ». */
     fun baseName(fileName: String): String =
-        fileName.removeSuffix(".enc").removeSuffix(".wav")
-            .removeSuffix(".txt").removeSuffix(".srt").removeSuffix(".json").removeSuffix(".md")
+        if (fileName.endsWith(".md")) {
+            // Suffixe de synthèse : seulement en position finale, pour ne pas altérer un
+            // enregistrement antérieur nommé « rapport.md » (« rapport.md.wav » → « rapport.md »)
+            fileName.dropLast(3)
+        } else {
+            fileName.removeSuffix(".enc").removeSuffix(".wav")
+                .removeSuffix(".txt").removeSuffix(".srt").removeSuffix(".json")
+        }
 
     /** Suffixe conservé lors d'un renommage : « .wav », « .wav.enc » ou « .txt ». */
     fun suffix(fileName: String): String = fileName.substring(baseName(fileName).length)

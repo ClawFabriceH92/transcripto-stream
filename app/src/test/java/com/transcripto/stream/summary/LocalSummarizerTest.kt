@@ -85,3 +85,13 @@ class LocalSummarizerTest {
         assertTrue(md.lines().count { it.startsWith("- ") } >= 3)
     }
 }
+
+class LocalSummarizerEdgeTest {
+    @Test
+    fun noEmptyKeyPointsHeading() {
+        val text = "Nous avons décidé de valider le budget de formation. Il faut envoyer le devis signé avant vendredi."
+        val md = LocalSummarizer.summarize(SummaryInput("Court", text, 20_000, "date"))
+        assertFalse(md.contains("## Points clés\n\n"))
+        assertTrue(md.contains("## Décisions") || md.contains("## Actions à mener"))
+    }
+}

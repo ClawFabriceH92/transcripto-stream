@@ -125,9 +125,11 @@ object LocalSummarizer {
             .sortedBy { it.index }
         keyPoints.forEach { used.add(it.index) }
 
-        sb.append("## Points clés\n")
-        keyPoints.forEach { sb.append("- ").append(clean(it.text)).append('\n') }
-        sb.append('\n')
+        if (keyPoints.isNotEmpty()) {
+            sb.append("## Points clés\n")
+            keyPoints.forEach { sb.append("- ").append(clean(it.text)).append('\n') }
+            sb.append('\n')
+        }
 
         if (decisions.isNotEmpty()) {
             sb.append("## Décisions\n")
