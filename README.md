@@ -24,6 +24,10 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Organisation** (v0.9.0) : **intervenants nommés** (toucher l'étiquette sur la fiche ; les noms s'appliquent à l'affichage, au partage, à la synthèse et aux exports, le `.txt` garde « [Intervenant N] »), **dossiers / clients** (proposés à la fin de l'enregistrement, filtres dans la liste), **correction d'un passage** par appui long sur la fiche (`.txt`/`.srt`/segments mis à jour, ajout au vocabulaire).
+- **Gabarits de synthèse par mission** (v0.9.0) : Réunion, Clôture / révision, Contrôle interne, AG / Conseil, Entretien client, Dictée / note — rubriques de l'extraction locale et consigne envoyée à Claude adaptées ; **questions à l'IA** sur un enregistrement (transcription + synthèse en contexte mis en cache côté API).
+- **Exports Word (.docx) et PDF** (v0.9.0) : page de garde, synthèse, transcription par intervenant nommé avec horodatages, empreinte SHA-256 — OOXML et PdfDocument écrits sans bibliothèque tierce.
+- **Chiffrement des textes au repos, biométrie, verrouillage automatique** (v0.9.0) : textes scellés (AES-256-GCM, même clé que les WAV) avec migration au basculement, déverrouillage par empreinte / visage / code de l'appareil, verrouillage après 1/5/15 min en arrière-plan ; **journal local des incidents** consultable et partageable.
 - **Synthèse de fin d'enregistrement** (v0.8.0) : proposée dès l'arrêt ; **locale** (extraction de phrases : points clés, décisions, actions, vigilance, chiffres et dates, moments ⭐, répartition de la parole, mots-clés — rien ne sort du téléphone) ou **rédigée par Claude** en option (SDK Anthropic, clé API chiffrée sur l'appareil, texte seul envoyé, choix du modèle). Enregistrée en `.md` à côté du fichier, partagée, sauvegardée, renommée avec lui.
 - **Interface professionnelle** (v0.7.0) : système visuel Material 3 unifié (palette tonale claire/sombre, typographie, formes, jeu d'icônes vectorielles), écran « Transcrire » avec carte de session et chrono, liste à en-têtes épinglés et cartes à métadonnées, fiche avec lecteur en carte et intervenants colorés, réglages en sections.
 - **Sécurité/RGPD** : PIN (saisie masquée), chiffrement WAV AES-256 (clé AndroidKeyStore), rétention automatique 30/60/90 j, contrôle d'espace disque avant enregistrement.
@@ -44,12 +48,20 @@ app/src/main/
     ├── audio/WavFileWriter.kt      # PCM → WAV conservé
     ├── audio/AudioImporter.kt      # Import externe : MediaCodec → WAV 16 kHz mono
     ├── audio/PcmResampler.kt       # Downmix + rééchantillonnage linéaire (pur, testé)
-    ├── data/RecordingNames.kt      # Conventions de nommage (.wav / .wav.enc / .txt / .srt)
+    ├── CrashLog.kt / TranscriptoApp.kt # Journal local des plantages (Application)
+    ├── data/RecordingNames.kt      # Conventions de nommage (.wav / .wav.enc / .txt / .srt / .md / .meta)
+    ├── data/RecordingMeta.kt       # Métadonnées (.meta) : intervenants nommés, dossier, gabarit (pur, testé)
     ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore)
+    ├── data/TextSealer.kt / TextVault.kt # Chiffrement des textes au repos (scellement pur testé + coffre Android)
     ├── data/SettingsStore.kt       # Réglages (SharedPreferences)
     ├── export/TranscriptExporter.kt # SRT + stats temps de parole (pur, testé)
+    ├── export/ExportDocument.kt    # Composition des exports en blocs (pur, testé)
+    ├── export/DocxWriter.kt        # Word .docx : OOXML écrit à la main (pur, testé)
+    ├── export/PdfWriter.kt         # PDF A4 : PdfDocument + StaticLayout
+    ├── summary/SummaryTemplate.kt  # Gabarits par type de mission (pur, testé)
     ├── summary/LocalSummarizer.kt  # Synthèse locale extractive (pur, testé)
     ├── summary/ClaudeSummarizer.kt # Synthèse IA via le SDK Java Anthropic (opt-in)
+    ├── summary/ClaudeQa.kt         # Questions sur un enregistrement (prompt caching)
     ├── summary/MarkdownLite.kt     # Markdown minimal : parsing + texte brut (pur, testé)
     ├── stt/WhisperStreamEngine.kt  # Pont JNI
     ├── stt/ModelCatalog.kt         # Modèles Whisper embarqué/téléchargeables
@@ -59,7 +71,7 @@ app/src/main/
         RecordingListScreen.kt      # Liste/recherche/partage/renommage (en-têtes de jour épinglés)
         DetailScreen.kt             # Fiche : lecteur synchronisé, segments par intervenant
         SettingsScreen.kt           # Réglages en sections
-        PinScreen.kt                # Verrouillage PIN
+        PinScreen.kt / Biometrics.kt # Verrouillage PIN + BiometricPrompt
         UiComponents.kt             # Composants partagés (cartes, pastilles, puces, états vides…)
         theme/Theme.kt              # Palette M3 complète clair/sombre, typographie, formes
         theme/AppIcons.kt           # Icônes vectorielles (Material Symbols) hors icons-core
@@ -104,8 +116,10 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 - [x] Catalogue de modèles téléchargeables (small/medium/large-v3-turbo quantisés) + re-transcription haute fidélité
 - [x] Sauvegarde chiffrée exportable (migration d'appareil), écran détail synchronisé, résilience audio, mode dictée
 - [x] Synthèse de fin d'enregistrement (locale + IA Claude en option)
+- [x] Intervenants nommés, dossiers, correction sur la fiche, gabarits de synthèse par mission, questions à l'IA, exports Word/PDF, chiffrement des textes, biométrie, verrouillage automatique, journal des incidents (v0.9.0)
+- [ ] Base Room + FTS (recherche instantanée dans toutes les transcriptions)
+- [ ] Chapitres automatiques navigables sur la fiche
 - [ ] VAD Silero (endpointing par phrases) pour un vrai temps réel
-- [ ] Base Room + FTS (segments horodatés persistés, recherche instantanée, tap sur un mot → lecture audio)
 - [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)
 - [ ] Sauvegarde chiffrée exportable (migration d'appareil — la clé AndroidKeyStore ne quitte pas le téléphone)
 - [ ] Résilience audio : focus audio, appels entrants, préemption micro signalée dans l'UI

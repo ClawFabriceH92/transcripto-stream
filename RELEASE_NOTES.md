@@ -1,10 +1,32 @@
-# Transcripto Stream v0.8.0
+# Transcripto Stream v0.9.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Nouveautés v0.8.0 — synthèse de fin d'enregistrement
+## Nouveautés v0.9.0 — dossiers, intervenants nommés, exports Word/PDF, sécurité renforcée
+
+### Organisation
+- **Intervenants nommés** : sur la fiche, toucher « Intervenant 1 » pour lui donner un nom (« M. Martin (DG) »). Le nom s'applique à l'affichage, au partage, à la synthèse, aux questions à l'IA et aux exports ; la transcription brute garde les libellés génériques (renommable à tout moment).
+- **Dossiers / clients** : chaque enregistrement peut être rattaché à un dossier (proposé à la fin de l'enregistrement, modifiable sur la fiche). La liste se filtre par dossier et la recherche porte aussi sur le dossier.
+- **Correction d'un passage sur la fiche** : appui long sur un passage → texte corrigé (fichiers `.txt`, `.srt` et segments mis à jour, corrections antérieures préservées) et, au besoin, ajout du terme mal reconnu au vocabulaire personnalisé.
+
+### Synthèse et IA
+- **Gabarits de synthèse par type de mission** : Réunion, Clôture / révision (points par cycle, ajustements, pièces à obtenir), Contrôle interne (procédures, constats, risques, recommandations), AG / Conseil (ordre du jour, résolutions et votes), Entretien client (demandes, informations, conseils), Dictée / note (mise au propre du texte). Choix à la fin de l'enregistrement ou sur la fiche ; vaut pour la synthèse locale comme pour celle rédigée par Claude.
+- **Questions à l'IA sur un enregistrement** (si la synthèse IA est configurée) : « Quel montant a été évoqué pour la provision ? », « Qui envoie la convention ? » — réponses tirées de la transcription, fil de questions conservé pendant la consultation, préfixe mis en cache côté API pour réduire le coût des questions suivantes.
+
+### Exports
+- **Export Word (.docx) et PDF** depuis la fiche ou le menu de la liste, vers l'emplacement de ton choix : page de garde (titre, dossier, date, durée, type de mission, intervenants, temps de parole, empreinte SHA-256), synthèse en rubriques, transcription par intervenant nommé avec horodatages. Sans bibliothèque tierce.
+
+### Sécurité
+- **Chiffrement des textes au repos** (Réglages → Stockage) : transcriptions, sous-titres, synthèses et métadonnées scellés (AES-256-GCM, clé AndroidKeyStore) comme les WAV ; conversion immédiate des fichiers existants ; partage et sauvegarde restent lisibles.
+- **Déverrouillage biométrique** (empreinte, visage ou code de l'appareil) proposé d'emblée sur l'écran PIN, qui reste utilisable.
+- **Verrouillage automatique** après 1, 5 ou 15 minutes en arrière-plan (ou au lancement seulement).
+
+### Fiabilité
+- **Journal local des incidents** (Réglages → À propos) : chaque plantage est consigné sur l'appareil (date, version, trace) — consultable, partageable en pièce jointe, effaçable. Rien n'est envoyé.
+
+## v0.8.0 — synthèse de fin d'enregistrement
 
 - **Synthèse proposée à la fin de chaque enregistrement** : une fois le nom choisi, un message propose de générer la synthèse. Elle est aussi disponible sur la carte du dernier enregistrement (« Générer la synthèse ») et sur la fiche de n'importe quel enregistrement (« Regénérer », « Copier »).
 - **Synthèse locale, sans envoi de données** (par défaut) : points clés, décisions, actions à mener, points de vigilance, chiffres et dates cités, moments marqués ⭐, répartition de la parole, mots-clés — extraite de la transcription sur l'appareil, instantanément, hors ligne.
