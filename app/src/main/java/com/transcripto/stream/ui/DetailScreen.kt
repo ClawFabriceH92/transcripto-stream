@@ -1,7 +1,10 @@
 package com.transcripto.stream.ui
 
 import android.content.Intent
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +30,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
@@ -35,6 +40,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SegmentsCodec
+import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.data.StoredSegment
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.ui.theme.AppIcons
@@ -72,6 +79,7 @@ private fun clock(ms: Long): String = "%02d:%02d".format(ms / 60_000, (ms / 1000
  * toucher un passage cale l'audio dessus, le passage en cours de lecture est
  * surligné et suivi automatiquement.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DetailScreen(vm: StreamViewModel) {
     val item by vm.detailItem.collectAsStateWithLifecycle()
@@ -97,6 +105,11 @@ fun DetailScreen(vm: StreamViewModel) {
     val lastError by vm.lastError.collectAsStateWithLifecycle()
     val summaryBusy by vm.summaryBusy.collectAsStateWithLifecycle()
     val summaryVersion by vm.summaryVersion.collectAsStateWithLifecycle()
+    val transcriptVersion by vm.transcriptVersion.collectAsStateWithLifecycle()
+    val dossiers by vm.dossiers.collectAsStateWithLifecycle()
+    var dossierDialog by remember { mutableStateOf(false) }
+    var speakerDialog by remember { mutableStateOf<Int?>(null) }
+    var editSegment by remember { mutableStateOf<Int?>(null) }
 
     var summary by remember { mutableStateOf<String?>(null) }
     var summaryExpanded by rememberSaveable { mutableStateOf(false) }
@@ -105,7 +118,7 @@ fun DetailScreen(vm: StreamViewModel) {
     }
 
     var segments by remember { mutableStateOf<List<StoredSegment>>(emptyList()) }
-    LaunchedEffect(current.file.absolutePath, isTranscribing) {
+    LaunchedEffect(current.file.absolutePath, isTranscribing, transcriptVersion) {
         if (!isTranscribing) {
             segments = withContext(Dispatchers.IO) {
                 val json = RecordingNames.jsonSibling(current.file)
@@ -150,6 +163,22 @@ fun DetailScreen(vm: StreamViewModel) {
                     }
                     if (!current.hasAudio) MetaChip(text = "Texte seul", icon = AppIcons.Document)
                 }
+                Spacer(Modifier.height(6.dp))
+                MetaChip(
+                    text = current.dossier.ifBlank { "Dossier / client…" },
+                    icon = AppIcons.Folder,
+                    tint = if (current.dossier.isBlank()) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    },
+                    container = if (current.dossier.isBlank()) {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    } else {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    },
+                    modifier = Modifier.clickable { dossierDialog = true },
+                )
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -360,7 +389,7 @@ fun DetailScreen(vm: StreamViewModel) {
                 Text("Transcription", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "Touche un passage pour l'écouter",
+                    "Toucher : écouter · appui long : corriger",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -372,12 +401,21 @@ fun DetailScreen(vm: StreamViewModel) {
                     val speakerChanged = multiSpeaker &&
                         (i == 0 || segments[i - 1].speaker != seg.speaker)
                     if (speakerChanged) {
-                        SpeakerLabel(seg.speaker, modifier = Modifier.padding(top = if (i == 0) 0.dp else 10.dp, bottom = 4.dp))
+                        SpeakerLabel(
+                            speaker = seg.speaker,
+                            label = SpeakerNames.label(seg.speaker, current.speakerNames),
+                            modifier = Modifier
+                                .padding(top = if (i == 0) 0.dp else 10.dp, bottom = 4.dp)
+                                .clip(MaterialTheme.shapes.extraSmall)
+                                .clickable { speakerDialog = seg.speaker }
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                        )
                     }
                     SegmentRow(
                         segment = seg,
                         isCurrent = isCurrent,
                         onClick = { vm.playFrom(current.file, seg.startMs) },
+                        onLongClick = { editSegment = i },
                     )
                 }
                 item { Spacer(Modifier.height(24.dp)) }
@@ -412,6 +450,209 @@ fun DetailScreen(vm: StreamViewModel) {
             }
         }
     }
+
+    DetailDialogs(
+        vm = vm,
+        current = current,
+        segments = segments,
+        dossiers = dossiers,
+        dossierDialog = dossierDialog,
+        onDossierDismiss = { dossierDialog = false },
+        speakerDialog = speakerDialog,
+        onSpeakerDismiss = { speakerDialog = null },
+        editSegment = editSegment,
+        onEditDismiss = { editSegment = null },
+    )
+}
+
+@Composable
+private fun DetailDialogs(
+    vm: StreamViewModel,
+    current: RecordingItem,
+    segments: List<StoredSegment>,
+    dossiers: List<String>,
+    dossierDialog: Boolean,
+    onDossierDismiss: () -> Unit,
+    speakerDialog: Int?,
+    onSpeakerDismiss: () -> Unit,
+    editSegment: Int?,
+    onEditDismiss: () -> Unit,
+) {
+    if (dossierDialog) {
+        DossierDialog(
+            current = current.dossier,
+            suggestions = dossiers,
+            onConfirm = {
+                vm.setDossier(current.file, it)
+                onDossierDismiss()
+            },
+            onDismiss = onDossierDismiss,
+        )
+    }
+    speakerDialog?.let { speaker ->
+        SpeakerNameDialog(
+            speaker = speaker,
+            current = current.speakerNames[speaker] ?: "",
+            onConfirm = {
+                vm.setSpeakerName(current.file, speaker, it)
+                onSpeakerDismiss()
+            },
+            onDismiss = onSpeakerDismiss,
+        )
+    }
+    editSegment?.let { index ->
+        val seg = segments.getOrNull(index)
+        if (seg != null) {
+            EditSegmentDialog(
+                initial = seg.text,
+                onSave = { text ->
+                    vm.updateSegmentText(current.file, index, text)
+                    onEditDismiss()
+                },
+                onAddVocab = { term ->
+                    vm.showMessage(
+                        if (vm.addVocabularyTerm(term)) "« $term » ajouté au vocabulaire" else "Terme déjà présent"
+                    )
+                },
+                onDismiss = onEditDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DossierDialog(
+    current: String,
+    suggestions: List<String>,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var value by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Dossier / client") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    label = { Text("Nom du dossier") },
+                    placeholder = { Text("SARL Martin, Audit 2025…") },
+                )
+                if (suggestions.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        suggestions.forEach { d ->
+                            AssistChip(onClick = { value = d }, label = { Text(d, maxLines = 1) })
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                HintText("Sert à filtrer la liste et figure sur les exports.")
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("Enregistrer") } },
+        dismissButton = {
+            Row {
+                if (current.isNotBlank()) {
+                    TextButton(onClick = { onConfirm("") }) { Text("Retirer", color = MaterialTheme.colorScheme.error) }
+                }
+                TextButton(onClick = onDismiss) { Text("Annuler") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun SpeakerNameDialog(
+    speaker: Int,
+    current: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var value by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Intervenant $speaker") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    label = { Text("Nom affiché") },
+                    placeholder = { Text("M. Martin (DG)") },
+                )
+                Spacer(Modifier.height(4.dp))
+                HintText("Appliqué à la fiche, au partage, à la synthèse et aux exports ; la transcription brute reste inchangée.")
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("Enregistrer") } },
+        dismissButton = {
+            Row {
+                if (current.isNotBlank()) {
+                    TextButton(onClick = { onConfirm("") }) { Text("Retirer", color = MaterialTheme.colorScheme.error) }
+                }
+                TextButton(onClick = onDismiss) { Text("Annuler") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun EditSegmentDialog(
+    initial: String,
+    onSave: (String) -> Unit,
+    onAddVocab: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    var term by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Corriger le passage") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    label = { Text("Texte du passage") },
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = term,
+                        onValueChange = { term = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Terme mal reconnu") },
+                        placeholder = { Text("Nom propre, sigle…") },
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    TextButton(
+                        onClick = {
+                            onAddVocab(term)
+                            term = ""
+                        },
+                        enabled = term.isNotBlank(),
+                    ) { Text("Vocabulaire") }
+                }
+                HintText("Les termes ajoutés au vocabulaire sont soufflés aux moteurs pour les prochaines transcriptions.")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }, enabled = text.isNotBlank() && text.trim() != initial.trim()) {
+                Text("Enregistrer")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
+    )
 }
 
 /** Couleurs par intervenant (1 = primaire, 2 = tertiaire, autres = secondaire). */
@@ -423,21 +664,29 @@ private fun speakerColor(speaker: Int): Color = when (speaker) {
 }
 
 @Composable
-private fun SpeakerLabel(speaker: Int, modifier: Modifier = Modifier) {
+private fun SpeakerLabel(speaker: Int, label: String, modifier: Modifier = Modifier) {
     val color = speakerColor(speaker)
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(8.dp).background(color, CircleShape))
         Spacer(Modifier.width(6.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = color)
+        Spacer(Modifier.width(4.dp))
         Text(
-            "Intervenant $speaker",
-            style = MaterialTheme.typography.labelMedium,
-            color = color,
+            "✎",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SegmentRow(segment: StoredSegment, isCurrent: Boolean, onClick: () -> Unit) {
+private fun SegmentRow(
+    segment: StoredSegment,
+    isCurrent: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     val accent = speakerColor(segment.speaker)
     Row(
         modifier = Modifier
@@ -447,7 +696,7 @@ private fun SegmentRow(segment: StoredSegment, isCurrent: Boolean, onClick: () -
             .background(
                 if (isCurrent) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
             )
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Corriger le passage")
             .padding(horizontal = 10.dp, vertical = 7.dp),
     ) {
         Text(

@@ -35,6 +35,22 @@ object SegmentsCodec {
         return JSONObject().put("segments", arr).toString()
     }
 
+    /** Ré-sérialisation après correction d'un passage (écran détail). */
+    fun toJsonStored(segments: List<StoredSegment>): String {
+        val arr = JSONArray()
+        for (seg in segments) {
+            if (seg.text.isBlank()) continue
+            arr.put(
+                JSONObject()
+                    .put("s", seg.startMs)
+                    .put("e", seg.endMs)
+                    .put("t", seg.text.trim())
+                    .put("sp", seg.speaker)
+            )
+        }
+        return JSONObject().put("segments", arr).toString()
+    }
+
     /** Retourne une liste vide si le JSON est illisible (fichier corrompu). */
     fun fromJson(json: String): List<StoredSegment> {
         return try {

@@ -12,15 +12,14 @@ object RecordingNames {
     private val FORBIDDEN = Regex("[\\\\/:*?\"<>|]")
 
     /** « base.wav », « base.wav.enc », « base.txt », « base.srt », « base.json », « base.md » → « base ». */
-    fun baseName(fileName: String): String =
-        if (fileName.endsWith(".md")) {
-            // Suffixe de synthèse : seulement en position finale, pour ne pas altérer un
-            // enregistrement antérieur nommé « rapport.md » (« rapport.md.wav » → « rapport.md »)
-            fileName.dropLast(3)
-        } else {
-            fileName.removeSuffix(".enc").removeSuffix(".wav")
-                .removeSuffix(".txt").removeSuffix(".srt").removeSuffix(".json")
-        }
+    fun baseName(fileName: String): String = when {
+        // Suffixes annexes (synthèse, métadonnées) : seulement en position finale, pour
+        // ne pas altérer un enregistrement antérieur nommé « rapport.md » (« rapport.md.wav »)
+        fileName.endsWith(".md") -> fileName.dropLast(3)
+        fileName.endsWith(".meta") -> fileName.dropLast(5)
+        else -> fileName.removeSuffix(".enc").removeSuffix(".wav")
+            .removeSuffix(".txt").removeSuffix(".srt").removeSuffix(".json")
+    }
 
     /** Suffixe conservé lors d'un renommage : « .wav », « .wav.enc » ou « .txt ». */
     fun suffix(fileName: String): String = fileName.substring(baseName(fileName).length)
@@ -60,6 +59,10 @@ object RecordingNames {
     /** Synthèse Markdown (locale ou IA) générée à la fin d'un enregistrement. */
     fun mdSibling(file: File): File =
         File(file.parentFile, baseName(file.name) + ".md")
+
+    /** Métadonnées (intervenants nommés, dossier, gabarit) — JSON. */
+    fun metaSibling(file: File): File =
+        File(file.parentFile, baseName(file.name) + ".meta")
 
     /** Fichier frère après renommage : même dossier, même suffixe, nouvelle base. */
     fun renamed(file: File, newBase: String): File =

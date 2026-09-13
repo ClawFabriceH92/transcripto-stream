@@ -14,6 +14,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -124,6 +126,7 @@ fun StreamScreen() {
     val pinError by vm.pinError.collectAsStateWithLifecycle()
     val pendingName by vm.pendingName.collectAsStateWithLifecycle()
     val pendingNameDefault by vm.pendingNameDefault.collectAsStateWithLifecycle()
+    val dossiers by vm.dossiers.collectAsStateWithLifecycle()
 
     // Thème (réglage système/clair/sombre)
     val darkTheme = when (vm.settings.theme) {
@@ -286,7 +289,8 @@ fun StreamScreen() {
                 if (pendingName != null) {
                     NameRecordingDialog(
                         defaultName = pendingNameDefault,
-                        onConfirm = { vm.confirmPendingName(it) },
+                        dossiers = dossiers,
+                        onConfirm = { name, dossier -> vm.confirmPendingName(name, dossier) },
                         onDismiss = { vm.dismissPendingName() },
                     )
                 }
@@ -298,17 +302,19 @@ fun StreamScreen() {
 @Composable
 private fun NameRecordingDialog(
     defaultName: String,
-    onConfirm: (String) -> Unit,
+    dossiers: List<String>,
+    onConfirm: (String, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(defaultName) }
+    var dossier by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Enregistrement terminé") },
         text = {
             Column {
                 Text(
-                    "Donne un nom à cet enregistrement (client, dossier, réunion…) :",
+                    "Donne un nom à cet enregistrement (réunion, entretien, note…) :",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -319,16 +325,34 @@ private fun NameRecordingDialog(
                     singleLine = true,
                     label = { Text("Nom") },
                 )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = dossier,
+                    onValueChange = { dossier = it },
+                    singleLine = true,
+                    label = { Text("Dossier / client (facultatif)") },
+                )
+                if (dossiers.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        dossiers.forEach { d ->
+                            AssistChip(onClick = { dossier = d }, label = { Text(d, maxLines = 1) })
+                        }
+                    }
+                }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Par défaut : date + heures de début et de fin.",
+                    "Nom par défaut : date + heures de début et de fin.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(name) }) { Text("Enregistrer") }
+            TextButton(onClick = { onConfirm(name, dossier) }) { Text("Enregistrer") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Plus tard") }

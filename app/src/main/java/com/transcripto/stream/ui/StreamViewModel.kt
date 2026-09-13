@@ -23,6 +23,10 @@ import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.BackupCrypto
 import com.transcripto.stream.data.CryptoManager
 import com.transcripto.stream.data.RecordingNames
+import com.transcripto.stream.data.StoredSegment
+import com.transcripto.stream.data.SpeakerNames
+import com.transcripto.stream.data.RecordingMeta
+import com.transcripto.stream.data.MetaCodec
 import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SettingsStore
 import com.transcripto.stream.export.TranscriptExporter
@@ -80,6 +84,8 @@ data class RecordingItem(
     val encrypted: Boolean,
     val hasAudio: Boolean,
     val transcript: String,
+    val dossier: String = "",
+    val speakerNames: Map<Int, String> = emptyMap(),
 )
 
 /**
@@ -238,6 +244,17 @@ class StreamViewModel(
     /** Fichier pour lequel une synthèse est proposée (message de fin d'enregistrement). */
     private val _summaryProposal = MutableStateFlow<File?>(null)
     val summaryProposal: StateFlow<File?> = _summaryProposal.asStateFlow()
+
+    // ---- Dossiers / intervenants (déclaré AVANT init) ----
+    private val _dossiers = MutableStateFlow<List<String>>(emptyList())
+    val dossiers: StateFlow<List<String>> = _dossiers.asStateFlow()
+
+    private val _dossierFilter = MutableStateFlow<String?>(null)
+    val dossierFilter: StateFlow<String?> = _dossierFilter.asStateFlow()
+
+    /** Incrémenté quand le .txt/.json d'un enregistrement change hors transcription (correction). */
+    private val _transcriptVersion = MutableStateFlow(0)
+    val transcriptVersion: StateFlow<Int> = _transcriptVersion.asStateFlow()
 
     // ---- Internes ----
     // Le contexte whisper.cpp n'est pas thread-safe : un seul transcribeBuffer à la fois
@@ -442,12 +459,121 @@ class StreamViewModel(
             _lastRecording.value = item.file
             activeRecordingFile = null
         }
-        // Relit le .txt COMPLET (pas l'aperçu tronqué de la liste)
-        val txt = transcriptFileFor(item.file)
-        _fileTranscript.value = if (txt.exists()) {
-            txt.readText().substringAfter("----\n").trim()
-        } else {
-            item.transcript
+        // Relit le .txt COMPLET (pas l'aperçu tronqué de la liste), noms d'intervenants appliqués
+        refreshFileTranscript(item.file, item.speakerNames, item.transcript)
+    }
+
+    /** Recharge l'encart transcription pour [file] avec les noms d'intervenants. */
+    private fun refreshFileTranscript(
+        file: File,
+        names: Map<Int, String> = readMeta(file).speakers,
+        fallback: String = "",
+    ) {
+        val txt = transcriptFileFor(file)
+        val raw = try {
+            if (txt.exists()) txt.readText().substringAfter("----\n").trim() else fallback
+        } catch (e: Exception) {
+            fallback
+        }
+        _fileTranscript.value = SpeakerNames.apply(raw, names)
+    }
+
+    // ================= MÉTADONNÉES (intervenants, dossier) =================
+
+    /** Lecture du fichier .meta (I/O légère : quelques centaines d'octets). */
+    fun readMeta(file: File): RecordingMeta = try {
+        val f = RecordingNames.metaSibling(file)
+        if (f.exists()) MetaCodec.fromJson(f.readText()) else RecordingMeta()
+    } catch (e: Exception) {
+        RecordingMeta()
+    }
+
+    private fun writeMeta(file: File, meta: RecordingMeta) {
+        val f = RecordingNames.metaSibling(file)
+        try {
+            if (meta.isEmpty) f.delete() else f.writeText(MetaCodec.toJson(meta))
+        } catch (e: Exception) {
+            Log.e(TAG, "writeMeta: ${e.message}")
+        }
+    }
+
+    fun setDossierFilter(dossier: String?) {
+        _dossierFilter.value = dossier
+    }
+
+    /** Nomme (ou dé-nomme si vide) un intervenant ; le .txt garde « [Intervenant N] ». */
+    fun setSpeakerName(file: File, speaker: Int, name: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val meta = readMeta(file)
+                val speakers = meta.speakers.toMutableMap()
+                if (name.isBlank()) speakers.remove(speaker) else speakers[speaker] = name.trim()
+                writeMeta(file, meta.copy(speakers = speakers))
+            }
+            if (_lastRecording.value == file) refreshFileTranscript(file)
+            refreshRecordings()
+        }
+    }
+
+    fun setDossier(file: File, dossier: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                writeMeta(file, readMeta(file).copy(dossier = dossier.trim()))
+            }
+            refreshRecordings()
+        }
+    }
+
+    /** Ajoute un terme au vocabulaire personnalisé (noms propres mal reconnus). */
+    fun addVocabularyTerm(term: String): Boolean {
+        val t = term.trim().trim(',', ';').trim()
+        if (t.isEmpty()) return false
+        if (settings.vocabularyList.any { it.equals(t, ignoreCase = true) }) return false
+        val current = settings.vocabulary.trim().trimEnd(',', ';').trim()
+        settings.vocabulary = if (current.isEmpty()) t else "$current, $t"
+        return true
+    }
+
+    /**
+     * Correction d'un passage sur la fiche : met à jour les segments (.json), puis
+     * reconstruit le .txt (horodatages, intervenants, temps de parole) et le .srt.
+     */
+    fun updateSegmentText(file: File, index: Int, newText: String) {
+        if (_isTranscribingFile.value || _summaryBusy.value) {
+            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            return
+        }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    val json = RecordingNames.jsonSibling(file)
+                    if (!json.exists()) return@withContext false
+                    val segs = SegmentsCodec.fromJson(json.readText()).toMutableList()
+                    if (index !in segs.indices) return@withContext false
+                    segs[index] = segs[index].copy(text = newText.trim())
+                    json.writeText(SegmentsCodec.toJsonStored(segs))
+                    val data = segs.map { SegmentData(it.text, it.startMs, it.endMs) }
+                    val text = buildSpeakerMarkedTranscript(
+                        StreamResult(fullText = segs.joinToString(" ") { it.text }, segments = data),
+                        segs.map { it.speaker },
+                    )
+                    writeTranscriptFile(file, text, durationMsOf(file))
+                    val srt = TranscriptExporter.buildSrt(data)
+                    if (srt.isNotBlank()) RecordingNames.srtSibling(file).writeText(srt)
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "updateSegmentText: ${e.message}")
+                    false
+                }
+            }
+            if (ok) {
+                if (_lastRecording.value == file) refreshFileTranscript(file)
+                _transcriptVersion.value = _transcriptVersion.value + 1
+                refreshRecordings()
+                _uiMessage.value = "Passage corrigé"
+            } else {
+                _uiMessage.value = "Correction impossible (segments introuvables)"
+            }
         }
     }
 
@@ -968,10 +1094,20 @@ class StreamViewModel(
         return "${REC_START_END_FORMAT.format(start)}-${REC_START_END_FORMAT.format(end)}"
     }
 
-    fun confirmPendingName(newName: String) {
+    fun confirmPendingName(newName: String, dossier: String = "") {
         val f = _pendingName.value ?: return
         _pendingName.value = null
-        renameFile(f, newName)
+        val renamed = renameFile(f, newName)
+        // Cible du .meta : le fichier renommé si le renommage a abouti, sinon l'original
+        val target = if (renamed) RecordingNames.renamed(f, RecordingNames.sanitize(newName)) else f
+        if (dossier.isNotBlank()) {
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    writeMeta(target, readMeta(target).copy(dossier = dossier.trim()))
+                }
+                refreshRecordings()
+            }
+        }
         refreshRecordings()
         proposeSummaryIfEnabled()
     }
@@ -1001,6 +1137,7 @@ class StreamViewModel(
         val oldSrt = RecordingNames.srtSibling(f)
         val oldJson = RecordingNames.jsonSibling(f)
         val oldMd = RecordingNames.mdSibling(f)
+        val oldMeta = RecordingNames.metaSibling(f)
         if (!f.renameTo(dest)) {
             _lastError.value = "Renommage impossible"
             return false
@@ -1009,6 +1146,7 @@ class StreamViewModel(
         if (oldSrt.exists()) oldSrt.renameTo(RecordingNames.srtSibling(dest))
         if (oldJson.exists()) oldJson.renameTo(RecordingNames.jsonSibling(dest))
         if (oldMd.exists()) oldMd.renameTo(RecordingNames.mdSibling(dest))
+        if (oldMeta.exists()) oldMeta.renameTo(RecordingNames.metaSibling(dest))
         if (_lastRecording.value == f) _lastRecording.value = dest
         return true
     }
@@ -1109,6 +1247,7 @@ class StreamViewModel(
             ""
         }
         if (text.isBlank()) return "Pas de transcription à synthétiser — lance d'abord « Transcrire »"
+        val names = readMeta(file).speakers
         val input = SummaryInput(
             title = RecordingNames.baseName(file.name),
             transcript = text,
@@ -1122,15 +1261,17 @@ class StreamViewModel(
             failure = "Clé API illisible — ressaisis-la dans les Réglages"
         }
         val markdown = if (key != null) {
-            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, input)) {
+            // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
+            val named = input.copy(transcript = SpeakerNames.apply(text, names))
+            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named)) {
                 is AiSummaryResult.Ok -> wrapAiSummary(input, r)
                 is AiSummaryResult.Failed -> {
                     failure = r.message
-                    LocalSummarizer.summarize(input)
+                    SpeakerNames.apply(LocalSummarizer.summarize(input), names)
                 }
             }
         } else {
-            LocalSummarizer.summarize(input)
+            SpeakerNames.apply(LocalSummarizer.summarize(input), names)
         }
         return try {
             RecordingNames.mdSibling(file).writeText(markdown)
@@ -1557,7 +1698,7 @@ class StreamViewModel(
         } else {
             item.transcript
         }
-        buildShareIntent(item.file, text)
+        buildShareIntent(item.file, SpeakerNames.apply(text, item.speakerNames))
     }
 
     /**
@@ -2039,7 +2180,7 @@ class StreamViewModel(
         }
     }
 
-    private val allowedBackupSuffixes = setOf(".wav", ".txt", ".srt", ".json", ".md")
+    private val allowedBackupSuffixes = setOf(".wav", ".txt", ".srt", ".json", ".md", ".meta")
 
     /** Restaure une archive .tsbk : jamais destructif (les doublons sont suffixés). */
     fun restoreBackup(srcUri: Uri, passphrase: String) {
@@ -2137,6 +2278,15 @@ class StreamViewModel(
             }
             _recordings.value = items
             _storageBytes.value = totalBytes
+            _dossiers.value = items.map { it.dossier }.filter { it.isNotBlank() }.distinct()
+                .sortedBy { it.lowercase(Locale.FRANCE) }
+            if (_dossierFilter.value != null && _dossierFilter.value !in _dossiers.value) {
+                _dossierFilter.value = null
+            }
+            // La fiche ouverte reflète les métadonnées à jour (nom d'intervenant, dossier)
+            _detailItem.value?.let { d ->
+                items.firstOrNull { it.file == d.file }?.let { _detailItem.value = it }
+            }
         }
     }
 
@@ -2146,6 +2296,7 @@ class StreamViewModel(
         val transcript = if (txt.exists()) {
             txt.readText().substringAfter("----\n").trim().take(200)
         } else ""
+        val meta = readMeta(f)
         return RecordingItem(
             file = f,
             baseName = RecordingNames.baseName(f.name),
@@ -2154,7 +2305,9 @@ class StreamViewModel(
             modifiedAt = f.lastModified(),
             encrypted = f.name.endsWith(".enc"),
             hasAudio = RecordingNames.isAudio(f.name),
-            transcript = transcript,
+            transcript = SpeakerNames.apply(transcript, meta.speakers),
+            dossier = meta.dossier,
+            speakerNames = meta.speakers,
         )
     }
 
@@ -2179,6 +2332,7 @@ class StreamViewModel(
         RecordingNames.srtSibling(f).delete()
         RecordingNames.jsonSibling(f).delete()
         RecordingNames.mdSibling(f).delete()
+        RecordingNames.metaSibling(f).delete()
         // Ancienne convention (v0.2.x) : « base.wav.enc » avait parfois « base.wav.txt »
         File(f.parentFile, f.nameWithoutExtension + ".txt").delete()
     }
@@ -2224,11 +2378,11 @@ class StreamViewModel(
                 val audioBases = files.filter { RecordingNames.isAudio(it.name) }
                     .map { RecordingNames.baseName(it.name) }
                     .toSet()
-                // Synthèses orphelines (.md sans audio ni .txt du même nom) : purgées
-                files.filter { it.name.endsWith(".md") }.forEach { md ->
+                // Synthèses / métadonnées orphelines (sans audio ni .txt du même nom) : purgées
+                files.filter { it.name.endsWith(".md") || it.name.endsWith(".meta") }.forEach { md ->
                     val base = RecordingNames.baseName(md.name)
                     val hasOwner = files.any {
-                        it != md && !it.name.endsWith(".md") &&
+                        it != md && !it.name.endsWith(".md") && !it.name.endsWith(".meta") &&
                             RecordingNames.baseName(it.name) == base &&
                             (RecordingNames.isAudio(it.name) || RecordingNames.isTextOnly(it.name))
                     }
@@ -2247,6 +2401,7 @@ class StreamViewModel(
                         f.delete()
                         RecordingNames.srtSibling(f).delete()
                         RecordingNames.mdSibling(f).delete()
+                        RecordingNames.metaSibling(f).delete()
                     }
                 }
             }

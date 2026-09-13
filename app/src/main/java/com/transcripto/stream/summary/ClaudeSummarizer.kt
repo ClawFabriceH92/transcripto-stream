@@ -75,8 +75,9 @@ object ClaudeSummarizer {
         ## Points de vigilance — risques, désaccords, questions restées ouvertes.
 
         Règles : reste strictement factuel et n'invente rien ; si un passage est ambigu ou
-        probablement mal transcrit, signale-le par « (à vérifier) » ; conserve les libellés
-        « Intervenant N » tels quels ; les marqueurs [⭐mm:ss] signalent des moments jugés
+        probablement mal transcrit, signale-le par « (à vérifier) » ; désigne les intervenants
+        exactement comme dans la transcription (noms ou « Intervenant N ») ; les marqueurs
+        [⭐mm:ss] signalent des moments jugés
         importants par l'utilisateur, exploite-les ; longueur cible 250 à 450 mots, jamais plus
         de 600 ; pas de titre de niveau 1, pas d'introduction ni de conclusion hors rubriques,
         aucun commentaire sur la tâche.

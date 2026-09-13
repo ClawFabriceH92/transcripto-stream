@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -31,6 +33,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,6 +84,8 @@ fun RecordingListScreen(
     val scope = rememberCoroutineScope()
     val recordings by vm.recordings.collectAsStateWithLifecycle()
     val query by vm.searchQuery.collectAsStateWithLifecycle()
+    val dossiers by vm.dossiers.collectAsStateWithLifecycle()
+    val dossierFilter by vm.dossierFilter.collectAsStateWithLifecycle()
     var renameTarget by remember { mutableStateOf<RecordingItem?>(null) }
     var deleteTarget by remember { mutableStateOf<RecordingItem?>(null) }
     // rememberSaveable : le picker SAF peut tuer le process ; au retour, le callback
@@ -96,13 +101,12 @@ fun RecordingListScreen(
         if (uri != null && path != null) vm.exportAudio(File(path), uri)
     }
 
-    val filtered = if (query.isBlank()) {
-        recordings
-    } else {
-        recordings.filter {
-            it.baseName.contains(query, ignoreCase = true) ||
-                it.transcript.contains(query, ignoreCase = true)
-        }
+    val filtered = recordings.filter { item ->
+        (dossierFilter == null || item.dossier == dossierFilter) &&
+            (query.isBlank() ||
+                item.baseName.contains(query, ignoreCase = true) ||
+                item.dossier.contains(query, ignoreCase = true) ||
+                item.transcript.contains(query, ignoreCase = true))
     }
 
     // Groupes par jour (la liste est déjà triée par date décroissante).
@@ -139,6 +143,29 @@ fun RecordingListScreen(
                 unfocusedBorderColor = Color.Transparent,
             ),
         )
+        if (dossiers.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FilterChip(
+                    selected = dossierFilter == null,
+                    onClick = { vm.setDossierFilter(null) },
+                    label = { Text("Tous") },
+                )
+                dossiers.forEach { d ->
+                    FilterChip(
+                        selected = dossierFilter == d,
+                        onClick = { vm.setDossierFilter(if (dossierFilter == d) null else d) },
+                        label = { Text(d, maxLines = 1) },
+                        leadingIcon = {
+                            Icon(AppIcons.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                        },
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -316,6 +343,14 @@ private fun RecordingCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (item.dossier.isNotBlank()) {
+                        MetaChip(
+                            text = item.dossier,
+                            icon = AppIcons.Folder,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            container = MaterialTheme.colorScheme.secondaryContainer,
+                        )
+                    }
                     MetaChip(text = timeFmt.format(Date(item.modifiedAt)))
                     if (item.hasAudio) MetaChip(text = formatHms(item.durationMs), icon = AppIcons.Clock)
                     if (item.encrypted) {

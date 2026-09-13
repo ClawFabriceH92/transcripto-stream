@@ -1,5 +1,6 @@
 package com.transcripto.stream.ui
 
+import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -56,6 +57,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.CrashLog
 import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.summary.ClaudeSummarizer
 import com.transcripto.stream.ui.theme.AppIcons
@@ -654,6 +656,46 @@ fun SettingsScreen(vm: StreamViewModel) {
                     "l'icône, « Partager vers Transcripto » depuis n'importe quelle app pour transcrire " +
                     "un audio reçu.",
             )
+
+            var crashCount by remember { mutableStateOf(CrashLog.count(context)) }
+            var showCrashLog by remember { mutableStateOf(false) }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                if (crashCount > 0) "Journal des incidents : $crashCount plantage(s) enregistré(s)" else "Journal des incidents : aucun plantage enregistré",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (crashCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (crashCount > 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { showCrashLog = true }) { Text("Voir") }
+                    TextButton(onClick = {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "Transcripto Stream — journal des incidents")
+                            putExtra(Intent.EXTRA_TEXT, CrashLog.read(context))
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Partager le journal"))
+                    }) { Text("Partager") }
+                    TextButton(onClick = {
+                        CrashLog.clear(context)
+                        crashCount = 0
+                    }) { Text("Effacer", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+            if (showCrashLog) {
+                AlertDialog(
+                    onDismissRequest = { showCrashLog = false },
+                    title = { Text("Journal des incidents") },
+                    text = {
+                        Text(
+                            CrashLog.read(context),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.height(360.dp).verticalScroll(rememberScrollState()),
+                        )
+                    },
+                    confirmButton = { TextButton(onClick = { showCrashLog = false }) { Text("Fermer") } },
+                )
+            }
         }
         Spacer(Modifier.height(16.dp))
     }
