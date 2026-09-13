@@ -1,15 +1,7 @@
 package com.transcripto.stream.summary
 
 import com.anthropic.client.AnthropicClient
-import com.anthropic.client.okhttp.AnthropicOkHttpClient
-import com.anthropic.errors.AnthropicIoException
-import com.anthropic.errors.AnthropicServiceException
 import com.anthropic.errors.BadRequestException
-import com.anthropic.errors.InternalServerException
-import com.anthropic.errors.NotFoundException
-import com.anthropic.errors.PermissionDeniedException
-import com.anthropic.errors.RateLimitException
-import com.anthropic.errors.UnauthorizedException
 import com.anthropic.models.beta.AnthropicBeta
 import com.anthropic.models.beta.messages.BetaMessage
 import com.anthropic.models.beta.messages.MessageCreateParams as BetaMessageCreateParams
@@ -17,7 +9,6 @@ import com.anthropic.models.messages.Message
 import com.anthropic.models.messages.MessageCreateParams
 import com.anthropic.models.messages.OutputConfig
 import com.transcripto.stream.export.TranscriptExporter
-import java.time.Duration
 
 /** Résultat d'une synthèse IA : Markdown (rubriques) ou message d'erreur exploitable. */
 sealed class AiSummaryResult {
@@ -43,9 +34,9 @@ sealed class AiSummaryResult {
  */
 object ClaudeSummarizer {
 
-    const val MODEL_OPUS = "claude-opus-5"
-    const val MODEL_SONNET = "claude-sonnet-5"
-    const val MODEL_HAIKU = "claude-haiku-4-5"
+    const val MODEL_OPUS = ClaudeSupport.MODEL_OPUS
+    const val MODEL_SONNET = ClaudeSupport.MODEL_SONNET
+    const val MODEL_HAIKU = ClaudeSupport.MODEL_HAIKU
 
     /** Modèles proposés dans les réglages : identifiant → libellé. */
     val MODELS: List<Pair<String, String>> = listOf(
@@ -56,45 +47,36 @@ object ClaudeSummarizer {
 
     fun modelLabel(id: String): String = MODELS.firstOrNull { it.first == id }?.second ?: id
 
-    /** ~100k tokens : marge sous la fenêtre de 200k de Haiku, largement sous 1M ailleurs. */
-    private const val MAX_TRANSCRIPT_CHARS = 400_000
     private const val MAX_TOKENS = 16_000L
 
-    private val SYSTEM_PROMPT = """
+    private const val PREAMBLE = """
         Tu es l'assistant de rédaction d'un cabinet d'expertise comptable et de commissariat aux comptes.
         On te fournit la transcription automatique (reconnaissance vocale en français, parfois bruitée,
-        ponctuation approximative) d'une réunion, d'un entretien ou d'une dictée.
+        ponctuation approximative) d'un enregistrement. Tu rédiges en français, en Markdown.
+    """
 
-        Rédige une synthèse en français, en Markdown, avec exactement ces rubriques dans cet ordre
-        (omets celles qui seraient vides) :
-        ## Contexte — 2 à 3 phrases : objet, participants s'ils sont identifiables, tonalité.
-        ## Points clés — puces.
-        ## Décisions — puces.
-        ## Actions à mener — puces « qui — quoi — échéance » (« non précisé » si absent).
-        ## Chiffres et dates cités — puces, valeur en gras puis son contexte.
-        ## Points de vigilance — risques, désaccords, questions restées ouvertes.
-
+    private const val RULES = """
         Règles : reste strictement factuel et n'invente rien ; si un passage est ambigu ou
         probablement mal transcrit, signale-le par « (à vérifier) » ; désigne les intervenants
         exactement comme dans la transcription (noms ou « Intervenant N ») ; les marqueurs
-        [⭐mm:ss] signalent des moments jugés
-        importants par l'utilisateur, exploite-les ; longueur cible 250 à 450 mots, jamais plus
-        de 600 ; pas de titre de niveau 1, pas d'introduction ni de conclusion hors rubriques,
-        aucun commentaire sur la tâche.
-    """.trimIndent()
+        [⭐mm:ss] signalent des moments jugés importants par l'utilisateur, exploite-les ;
+        longueur cible 250 à 450 mots, jamais plus de 600 ; pas de titre de niveau 1, pas
+        d'introduction ni de conclusion hors rubriques, aucun commentaire sur la tâche.
+    """
 
-    fun summarize(apiKey: String, modelId: String, input: SummaryInput): AiSummaryResult {
+    /** Consigne système selon le gabarit (mission). */
+    fun systemPrompt(template: SummaryTemplate): String =
+        PREAMBLE.trimIndent().trim() + "\n\n" + template.aiTask.trim() + "\n\n" + RULES.trimIndent().trim()
+
+    fun summarize(
+        apiKey: String,
+        modelId: String,
+        input: SummaryInput,
+        template: SummaryTemplate = SummaryTemplates.REUNION,
+    ): AiSummaryResult {
         val transcript = input.transcript.trim()
         if (transcript.isBlank()) return AiSummaryResult.Failed("Transcription vide")
-        val truncated = transcript.length > MAX_TRANSCRIPT_CHARS
-        val body = if (truncated) {
-            // Ne pas couper une paire de substitution (émoji) : JSON invalide sinon
-            var end = MAX_TRANSCRIPT_CHARS
-            if (Character.isHighSurrogate(transcript[end - 1])) end--
-            transcript.substring(0, end)
-        } else {
-            transcript
-        }
+        val (body, truncated) = ClaudeSupport.truncate(transcript)
         val user = buildString {
             append("Titre : ").append(input.title.ifBlank { "Enregistrement" }).append('\n')
             append("Date : ").append(input.dateLabel).append('\n')
@@ -104,15 +86,10 @@ object ClaudeSummarizer {
             if (truncated) append("(Transcription tronquée : seule la première partie est fournie.)\n")
             append("\nTranscription :\n<<<\n").append(body).append("\n>>>")
         }
+        val system = systemPrompt(template)
 
-        // Mobile : 3 min par requête et une seule nouvelle tentative — les défauts du SDK
-        // (10 min × 3 essais) laisseraient « Synthèse en cours… » près d'une demi-heure.
         val client: AnthropicClient = try {
-            AnthropicOkHttpClient.builder()
-                .apiKey(apiKey)
-                .timeout(Duration.ofMinutes(3))
-                .maxRetries(1)
-                .build()
+            ClaudeSupport.newClient(apiKey)
         } catch (t: Throwable) {
             // Initialisation du SDK impossible (classe manquante…) : repli local en amont
             return AiSummaryResult.Failed("Synthèse IA indisponible : ${t.message}")
@@ -120,52 +97,32 @@ object ClaudeSummarizer {
         return try {
             if (modelId == MODEL_OPUS) {
                 try {
-                    callWithFallbacks(client, modelId, user)
+                    callWithFallbacks(client, modelId, system, user)
                 } catch (e: BadRequestException) {
                     // Paramètre de repli refusé par le serveur → même requête, sans repli
-                    if (e.message?.contains("fallback", ignoreCase = true) == true) {
-                        callStable(client, modelId, user)
-                    } else {
-                        throw e
-                    }
+                    if (ClaudeSupport.isFallbackRejected(e)) callStable(client, modelId, system, user) else throw e
                 }
             } else {
-                callStable(client, modelId, user)
+                callStable(client, modelId, system, user)
             }
-        } catch (e: UnauthorizedException) {
-            AiSummaryResult.Failed("Clé API refusée (401) — vérifie-la dans les Réglages")
-        } catch (e: PermissionDeniedException) {
-            AiSummaryResult.Failed("Accès refusé par l'API (403) : ${e.message}")
-        } catch (e: NotFoundException) {
-            AiSummaryResult.Failed("Modèle introuvable (404) — choisis un autre modèle dans les Réglages")
-        } catch (e: RateLimitException) {
-            AiSummaryResult.Failed("Limite de débit atteinte (429) — réessaie dans un instant")
-        } catch (e: BadRequestException) {
-            AiSummaryResult.Failed("Requête refusée par l'API : ${e.message}")
-        } catch (e: InternalServerException) {
-            AiSummaryResult.Failed("Service Anthropic indisponible — réessaie plus tard")
-        } catch (e: AnthropicServiceException) {
-            AiSummaryResult.Failed("Erreur API : ${e.message}")
-        } catch (e: AnthropicIoException) {
-            AiSummaryResult.Failed("Pas de connexion réseau")
         } catch (t: Throwable) {
-            // Throwable : une erreur de chargement de classe du SDK (compat Android)
-            // ne doit pas planter l'app — repli local en amont
-            AiSummaryResult.Failed("Synthèse IA impossible : ${t.message}")
+            AiSummaryResult.Failed(ClaudeSupport.describe(t, "Synthèse IA"))
         } finally {
-            try {
-                client.close()
-            } catch (_: Throwable) {
-            }
+            ClaudeSupport.closeQuietly(client)
         }
     }
 
     /** Point d'accès bêta : repli serveur par défaut en cas de refus des filtres. */
-    private fun callWithFallbacks(client: AnthropicClient, modelId: String, user: String): AiSummaryResult {
+    private fun callWithFallbacks(
+        client: AnthropicClient,
+        modelId: String,
+        system: String,
+        user: String,
+    ): AiSummaryResult {
         val params = BetaMessageCreateParams.builder()
             .model(modelId)
             .maxTokens(MAX_TOKENS)
-            .system(SYSTEM_PROMPT)
+            .system(system)
             .addUserMessage(user)
             .fallbacksDefault()
             .addBeta(AnthropicBeta.SERVER_SIDE_FALLBACK_2026_07_01)
@@ -189,11 +146,16 @@ object ClaudeSummarizer {
     }
 
     /** Point d'accès stable (Sonnet 5, Haiku 4.5, ou Opus 5 sans repli). */
-    private fun callStable(client: AnthropicClient, modelId: String, user: String): AiSummaryResult {
+    private fun callStable(
+        client: AnthropicClient,
+        modelId: String,
+        system: String,
+        user: String,
+    ): AiSummaryResult {
         val builder = MessageCreateParams.builder()
             .model(modelId)
             .maxTokens(MAX_TOKENS)
-            .system(SYSTEM_PROMPT)
+            .system(system)
             .addUserMessage(user)
         if (modelId != MODEL_HAIKU) {
             // Effort « medium » : synthèse = tâche de rédaction, pas de raisonnement long

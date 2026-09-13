@@ -35,11 +35,15 @@ import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.stt.StreamResult
 import com.transcripto.stream.stt.VoiceCommands
+import com.transcripto.stream.summary.AiAnswer
 import com.transcripto.stream.summary.AiSummaryResult
+import com.transcripto.stream.summary.ClaudeQa
 import com.transcripto.stream.summary.ClaudeSummarizer
 import com.transcripto.stream.summary.LocalSummarizer
 import com.transcripto.stream.summary.MarkdownLite
+import com.transcripto.stream.summary.QaTurn
 import com.transcripto.stream.summary.SummaryInput
+import com.transcripto.stream.summary.SummaryTemplates
 import com.transcripto.stream.stt.WhisperModel
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
@@ -86,6 +90,16 @@ data class RecordingItem(
     val transcript: String,
     val dossier: String = "",
     val speakerNames: Map<Int, String> = emptyMap(),
+    /** Identifiant du gabarit de synthèse (vide = Réunion). */
+    val template: String = "",
+)
+
+/** Questions posées à l'IA sur un enregistrement : fil d'échanges, en mémoire seulement. */
+data class QaState(
+    val file: File? = null,
+    val turns: List<QaTurn> = emptyList(),
+    val busy: Boolean = false,
+    val error: String? = null,
 )
 
 /**
@@ -255,6 +269,9 @@ class StreamViewModel(
     /** Incrémenté quand le .txt/.json d'un enregistrement change hors transcription (correction). */
     private val _transcriptVersion = MutableStateFlow(0)
     val transcriptVersion: StateFlow<Int> = _transcriptVersion.asStateFlow()
+
+    private val _qa = MutableStateFlow(QaState())
+    val qa: StateFlow<QaState> = _qa.asStateFlow()
 
     // ---- Internes ----
     // Le contexte whisper.cpp n'est pas thread-safe : un seul transcribeBuffer à la fois
@@ -1094,16 +1111,23 @@ class StreamViewModel(
         return "${REC_START_END_FORMAT.format(start)}-${REC_START_END_FORMAT.format(end)}"
     }
 
-    fun confirmPendingName(newName: String, dossier: String = "") {
+    fun confirmPendingName(newName: String, dossier: String = "", template: String = "") {
         val f = _pendingName.value ?: return
         _pendingName.value = null
         val renamed = renameFile(f, newName)
         // Cible du .meta : le fichier renommé si le renommage a abouti, sinon l'original
         val target = if (renamed) RecordingNames.renamed(f, RecordingNames.sanitize(newName)) else f
-        if (dossier.isNotBlank()) {
+        if (dossier.isNotBlank() || template.isNotBlank()) {
             viewModelScope.launch {
                 withContext(Dispatchers.IO) {
-                    writeMeta(target, readMeta(target).copy(dossier = dossier.trim()))
+                    val meta = readMeta(target)
+                    writeMeta(
+                        target,
+                        meta.copy(
+                            dossier = dossier.trim().ifBlank { meta.dossier },
+                            template = template.trim().ifBlank { meta.template },
+                        ),
+                    )
                 }
                 refreshRecordings()
             }
@@ -1247,7 +1271,9 @@ class StreamViewModel(
             ""
         }
         if (text.isBlank()) return "Pas de transcription à synthétiser — lance d'abord « Transcrire »"
-        val names = readMeta(file).speakers
+        val meta = readMeta(file)
+        val names = meta.speakers
+        val template = SummaryTemplates.byId(meta.template)
         val input = SummaryInput(
             title = RecordingNames.baseName(file.name),
             transcript = text,
@@ -1263,15 +1289,15 @@ class StreamViewModel(
         val markdown = if (key != null) {
             // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
             val named = input.copy(transcript = SpeakerNames.apply(text, names))
-            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named)) {
+            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template)) {
                 is AiSummaryResult.Ok -> wrapAiSummary(input, r)
                 is AiSummaryResult.Failed -> {
                     failure = r.message
-                    SpeakerNames.apply(LocalSummarizer.summarize(input), names)
+                    SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
                 }
             }
         } else {
-            SpeakerNames.apply(LocalSummarizer.summarize(input), names)
+            SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
         }
         return try {
             RecordingNames.mdSibling(file).writeText(markdown)
@@ -1294,6 +1320,82 @@ class StreamViewModel(
         append("_Synthèse rédigée par Claude (").append(r.model).append(", ")
             .append(r.inputTokens + r.outputTokens)
             .append(" tokens) à partir de la transcription — à relire avant diffusion._\n")
+    }
+
+    /** Gabarit de synthèse de l'enregistrement (stocké dans le .meta) ; la fiche se met à jour. */
+    fun setSummaryTemplate(file: File, templateId: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                writeMeta(file, readMeta(file).copy(template = templateId.trim()))
+            }
+            refreshRecordings()
+        }
+    }
+
+    // ================= QUESTIONS À L'IA =================
+
+    /** L'IA est utilisable (option active et clé enregistrée) — sans I/O. */
+    fun aiAvailable(): Boolean = settings.aiSummaryEnabled && settings.aiApiKeyEncrypted.isNotBlank()
+
+    /**
+     * Pose une question à Claude sur [file] : transcription (noms appliqués) + synthèse
+     * existante en contexte, historique des échanges du même enregistrement conservé
+     * (préfixe mis en cache côté API). Une seule question à la fois.
+     */
+    fun askQuestion(file: File, question: String) {
+        val q = question.trim()
+        if (q.isEmpty()) return
+        val current = _qa.value
+        if (current.busy) {
+            _uiMessage.value = "Une réponse est déjà en cours"
+            return
+        }
+        if (_isTranscribingFile.value) {
+            _uiMessage.value = "Transcription en cours — pose ta question ensuite"
+            return
+        }
+        val turns = if (current.file == file) current.turns else emptyList()
+        _qa.value = QaState(file = file, turns = turns, busy = true, error = null)
+        viewModelScope.launch {
+            val result: AiAnswer = try {
+                withContext(Dispatchers.IO) {
+                    val key = aiApiKey()
+                    if (key == null) {
+                        val why = if (settings.aiApiKeyEncrypted.isBlank()) {
+                            "Clé API absente — Réglages › Synthèse"
+                        } else {
+                            "Clé API illisible — ressaisis-la dans les Réglages"
+                        }
+                        return@withContext AiAnswer.Failed(why)
+                    }
+                    val txt = transcriptFileFor(file)
+                    val raw = if (txt.exists()) txt.readText().substringAfter("----\n").trim() else ""
+                    val names = readMeta(file).speakers
+                    ClaudeQa.ask(
+                        apiKey = key,
+                        modelId = settings.aiModel,
+                        title = RecordingNames.baseName(file.name),
+                        transcript = SpeakerNames.apply(raw, names),
+                        summaryMarkdown = readSummary(file),
+                        history = turns,
+                        question = q,
+                    )
+                }
+            } catch (t: Throwable) {
+                AiAnswer.Failed("Réponse impossible : ${t.message}")
+            }
+            val st = _qa.value
+            if (st.file != file) return@launch // fil effacé entre-temps : réponse ignorée
+            _qa.value = when (result) {
+                is AiAnswer.Ok -> st.copy(turns = turns + QaTurn(q, result.text), busy = false, error = null)
+                is AiAnswer.Failed -> st.copy(busy = false, error = result.message)
+            }
+        }
+    }
+
+    fun clearQuestions() {
+        if (_qa.value.busy) return
+        _qa.value = QaState()
     }
 
     // ================= LECTURE + VITESSE =================
@@ -2308,6 +2410,7 @@ class StreamViewModel(
             transcript = SpeakerNames.apply(transcript, meta.speakers),
             dossier = meta.dossier,
             speakerNames = meta.speakers,
+            template = meta.template,
         )
     }
 

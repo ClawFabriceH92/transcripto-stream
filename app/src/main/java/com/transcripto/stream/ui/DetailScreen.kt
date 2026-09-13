@@ -30,8 +30,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
@@ -66,8 +68,10 @@ import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.data.StoredSegment
 import com.transcripto.stream.summary.MarkdownLite
+import com.transcripto.stream.summary.SummaryTemplates
 import com.transcripto.stream.ui.theme.AppIcons
 import com.transcripto.stream.ui.theme.AppTextStyles
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -107,6 +111,7 @@ fun DetailScreen(vm: StreamViewModel) {
     val summaryVersion by vm.summaryVersion.collectAsStateWithLifecycle()
     val transcriptVersion by vm.transcriptVersion.collectAsStateWithLifecycle()
     val dossiers by vm.dossiers.collectAsStateWithLifecycle()
+    val qa by vm.qa.collectAsStateWithLifecycle()
     var dossierDialog by remember { mutableStateOf(false) }
     var speakerDialog by remember { mutableStateOf<Int?>(null) }
     var editSegment by remember { mutableStateOf<Int?>(null) }
@@ -318,6 +323,14 @@ fun DetailScreen(vm: StreamViewModel) {
                 }
             }
             val summaryText = summary
+            if (summaryText == null || summaryExpanded) {
+                Spacer(Modifier.height(8.dp))
+                TemplateChips(
+                    selected = current.template,
+                    enabled = !summaryBusy,
+                    onSelect = { vm.setSummaryTemplate(current.file, it) },
+                )
+            }
             when {
                 summaryBusy -> {
                     Spacer(Modifier.height(8.dp))
@@ -382,6 +395,18 @@ fun DetailScreen(vm: StreamViewModel) {
             }
         }
         Spacer(Modifier.height(12.dp))
+
+        // ---- Questions à l'IA (seulement si l'IA est configurée) ----
+        if (vm.aiAvailable()) {
+            QaCard(
+                state = qa,
+                file = current.file,
+                enabled = !isTranscribing && !summaryBusy,
+                onAsk = { vm.askQuestion(current.file, it) },
+                onClear = { vm.clearQuestions() },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
 
         // ---- Transcription ----
         if (segments.isNotEmpty()) {
@@ -653,6 +678,104 @@ private fun EditSegmentDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
     )
+}
+
+/** Choix du gabarit de synthèse (type de mission) + description du gabarit courant. */
+@Composable
+private fun TemplateChips(selected: String, enabled: Boolean, onSelect: (String) -> Unit) {
+    val current = SummaryTemplates.byId(selected)
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SummaryTemplates.ALL.forEach { t ->
+            FilterChip(
+                selected = t.id == current.id,
+                onClick = { onSelect(t.id) },
+                enabled = enabled,
+                label = { Text(t.label, maxLines = 1) },
+            )
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    HintText(current.description)
+}
+
+/** Fil de questions/réponses avec Claude sur l'enregistrement ouvert. */
+@Composable
+private fun QaCard(
+    state: QaState,
+    file: File,
+    enabled: Boolean,
+    onAsk: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    var question by rememberSaveable(file.absolutePath) { mutableStateOf("") }
+    val mine = state.file == file
+    val turns = if (mine) state.turns else emptyList()
+    val busy = mine && state.busy
+    val error = if (mine && !busy) state.error else null
+    SectionCard(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconAvatar(
+                icon = AppIcons.Sparkle,
+                size = 30.dp,
+                iconSize = 17.dp,
+                shape = CircleShape,
+                container = MaterialTheme.colorScheme.secondaryContainer,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text("Questions à l'IA", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            if (turns.isNotEmpty() && !busy) {
+                TextButton(onClick = onClear) { Text("Effacer") }
+            }
+        }
+        if (turns.isEmpty() && !busy) {
+            Spacer(Modifier.height(4.dp))
+            HintText(
+                "« Quel montant a été évoqué pour la provision ? », « Qui envoie la convention ? » — " +
+                    "réponses tirées de la transcription (texte seul envoyé à Claude, jamais l'audio)."
+            )
+        }
+        turns.forEach { t ->
+            Spacer(Modifier.height(10.dp))
+            Text(t.question, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(2.dp))
+            MarkdownText(t.answer, modifier = Modifier.fillMaxWidth())
+        }
+        if (busy) {
+            Spacer(Modifier.height(10.dp))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(4.dp))
+            HintText("Claude lit la transcription…")
+        }
+        if (error != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = question,
+                onValueChange = { question = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Poser une question sur l'enregistrement…") },
+                maxLines = 3,
+                enabled = !busy,
+            )
+            Spacer(Modifier.width(6.dp))
+            FilledIconButton(
+                onClick = {
+                    onAsk(question)
+                    question = ""
+                },
+                enabled = enabled && !busy && question.isNotBlank(),
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Envoyer la question")
+            }
+        }
+    }
 }
 
 /** Couleurs par intervenant (1 = primaire, 2 = tertiaire, autres = secondaire). */

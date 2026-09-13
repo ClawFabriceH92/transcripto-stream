@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -98,6 +99,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.transcripto.stream.MainActivity
 import com.transcripto.stream.data.RecordingNames
+import com.transcripto.stream.summary.SummaryTemplates
 import com.transcripto.stream.ui.theme.AppIcons
 import com.transcripto.stream.ui.theme.AppTextStyles
 import com.transcripto.stream.ui.theme.AppTheme
@@ -290,7 +292,7 @@ fun StreamScreen() {
                     NameRecordingDialog(
                         defaultName = pendingNameDefault,
                         dossiers = dossiers,
-                        onConfirm = { name, dossier -> vm.confirmPendingName(name, dossier) },
+                        onConfirm = { name, dossier, template -> vm.confirmPendingName(name, dossier, template) },
                         onDismiss = { vm.dismissPendingName() },
                     )
                 }
@@ -303,11 +305,12 @@ fun StreamScreen() {
 private fun NameRecordingDialog(
     defaultName: String,
     dossiers: List<String>,
-    onConfirm: (String, String) -> Unit,
+    onConfirm: (String, String, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(defaultName) }
     var dossier by remember { mutableStateOf("") }
+    var template by remember { mutableStateOf(SummaryTemplates.DEFAULT_ID) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Enregistrement terminé") },
@@ -343,6 +346,25 @@ private fun NameRecordingDialog(
                         }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Type de mission (oriente la synthèse) :",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    SummaryTemplates.ALL.forEach { t ->
+                        FilterChip(
+                            selected = template == t.id,
+                            onClick = { template = t.id },
+                            label = { Text(t.label, maxLines = 1) },
+                        )
+                    }
+                }
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "Nom par défaut : date + heures de début et de fin.",
@@ -352,7 +374,7 @@ private fun NameRecordingDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(name, dossier) }) { Text("Enregistrer") }
+            TextButton(onClick = { onConfirm(name, dossier, template) }) { Text("Enregistrer") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Plus tard") }

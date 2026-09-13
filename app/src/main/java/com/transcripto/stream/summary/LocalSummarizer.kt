@@ -41,18 +41,6 @@ object LocalSummarizer {
             "have has had do does did will would can could should may might there here what which who"
         ).split(' ').filter { it.isNotBlank() }.toSet()
 
-    private val DECISION = Regex(
-        "(?i)\\b(décid|décision|valid[ée]|validons|convenu|d'accord pour|accord sur|retenu|on part sur|acté|tranch|entérin|approuv|adopt)"
-    )
-    private val ACTION = Regex(
-        "(?i)\\b(il faut|il faudra|nous devons|on doit|on va |on devra|à faire|action|tâche|prévoir|planifi|envoyer|" +
-            "transmettre|relancer|vérifier|préparer|finaliser|rédiger|contacter|rappeler|organiser|rendez-vous|" +
-            "échéance|deadline|avant le|d'ici|au plus tard|prochaine étape|à confirmer|à valider|livrable|" +
-            "s'occupe|se charge|prend en charge|à envoyer|à transmettre|à signer)"
-    )
-    private val VIGILANCE = Regex(
-        "(?i)\\b(attention|risque|vigilance|problème|inquiét|alerte|litige|retard|non conforme|anomalie|écart|réserve|doute|à vérifier|bloqu)"
-    )
     private val AMOUNT = Regex(
         "\\d[\\d\\s\\u00A0.,]*\\s?(?:k€|M€|€|euros?|%|millions?|milliers?|jours?|semaines?|mois|ans?|heures?|h\\b|min\\b)",
         RegexOption.IGNORE_CASE
@@ -78,7 +66,7 @@ object LocalSummarizer {
         var score = 0.0
     }
 
-    fun summarize(input: SummaryInput): String {
+    fun summarize(input: SummaryInput, template: SummaryTemplate = SummaryTemplates.REUNION): String {
         val raw = input.transcript.trim()
         val sb = StringBuilder()
         val speakerCount = SPEAKER.findAll(raw).map { it.groupValues[1] }.toSet().size
@@ -92,7 +80,14 @@ object LocalSummarizer {
             speakerCount > 1 -> sb.append(" · ").append(speakerCount).append(" intervenants")
             stats.size > 1 -> sb.append(" · ").append(stats.size).append(" intervenants")
         }
+        if (template.id != SummaryTemplates.DEFAULT_ID) sb.append(" · ").append(template.label)
         sb.append(" · synthèse locale automatique_\n\n")
+
+        if (template.dictation) {
+            appendDictation(sb, raw)
+            sb.append("_Mise au propre locale (ponctuation et paragraphes seulement, aucune donnée envoyée). À relire avant diffusion._\n")
+            return sb.toString()
+        }
 
         val sentences = splitSentences(raw)
         if (sentences.isEmpty()) {
@@ -108,15 +103,19 @@ object LocalSummarizer {
             var score = uniq.sumOf { (tf[it] ?: 0).toDouble() } /
                 sqrt(s.tokens.size.toDouble().coerceAtLeast(1.0))
             if (AMOUNT.containsMatchIn(s.text) || DATE.containsMatchIn(s.text)) score *= 1.3
-            if (DECISION.containsMatchIn(s.text) || ACTION.containsMatchIn(s.text)) score *= 1.4
+            if (template.localSections.any { it.pattern.containsMatchIn(s.text) }) score *= 1.4
             if (s.marked) score *= 1.6
             s.score = score
         }
 
+        // Rubriques du gabarit : chaque phrase n'est rangée que dans une rubrique — les plus
+        // précises (priorité basse) sont servies en premier, l'affichage suit l'ordre du gabarit
         val used = HashSet<Int>()
-        val decisions = pick(sentences, used, 6) { DECISION.containsMatchIn(it.text) }
-        val actions = pick(sentences, used, 6) { ACTION.containsMatchIn(it.text) }
-        val vigilance = pick(sentences, used, 4) { VIGILANCE.containsMatchIn(it.text) }
+        val picked = HashMap<String, List<Sentence>>()
+        template.localSections.sortedBy { it.priority }.forEach { section ->
+            picked[section.title] = pick(sentences, used, section.max) { section.pattern.containsMatchIn(it.text) }
+        }
+        val sections = template.localSections.map { it.title to picked.getValue(it.title) }
 
         val target = (sentences.size * 0.12).roundToInt().coerceIn(3, 8)
         val keyPoints = sentences.filter { it.index !in used }
@@ -131,19 +130,10 @@ object LocalSummarizer {
             sb.append('\n')
         }
 
-        if (decisions.isNotEmpty()) {
-            sb.append("## Décisions\n")
-            decisions.forEach { sb.append("- ").append(clean(it.text)).append('\n') }
-            sb.append('\n')
-        }
-        if (actions.isNotEmpty()) {
-            sb.append("## Actions à mener\n")
-            actions.forEach { sb.append("- ").append(clean(it.text)).append('\n') }
-            sb.append('\n')
-        }
-        if (vigilance.isNotEmpty()) {
-            sb.append("## Points de vigilance\n")
-            vigilance.forEach { sb.append("- ").append(clean(it.text)).append('\n') }
+        for ((title, picked) in sections) {
+            if (picked.isEmpty()) continue
+            sb.append("## ").append(title).append('\n')
+            picked.forEach { sb.append("- ").append(clean(it.text)).append('\n') }
             sb.append('\n')
         }
 
@@ -197,6 +187,37 @@ object LocalSummarizer {
             .sortedBy { it.index }
         picked.forEach { used.add(it.index) }
         return picked
+    }
+
+    /**
+     * Dictée : pas d'extraction — le texte est nettoyé (marqueurs, étiquettes, bloc de
+     * temps de parole), ponctué et regroupé en paragraphes de quelques phrases.
+     */
+    private fun appendDictation(sb: StringBuilder, raw: String) {
+        val body = SPEAK_STATS_LINE.replace(BRACKET.replace(raw, " "), " ")
+            .replace(Regex("---[^\\n]*---"), " ")
+        val paragraphs = ArrayList<String>()
+        for (block in body.split(Regex("\\n\\s*\\n"))) {
+            val sentences = SENTENCE_SPLIT.split(block)
+                .map { it.replace(Regex("\\s+"), " ").trim() }
+                .filter { it.isNotEmpty() }
+                .map { clean(it) }
+            sentences.chunked(4).forEach { paragraphs.add(it.joinToString(" ")) }
+        }
+        if (paragraphs.isEmpty()) {
+            sb.append("_Transcription vide._\n\n")
+            return
+        }
+        sb.append("## Texte\n")
+        paragraphs.forEach { sb.append(it).append("\n\n") }
+        val figures = extractFigures(paragraphs.mapIndexed { i, p -> Sentence(i, p, false) })
+        if (figures.isNotEmpty()) {
+            sb.append("## Chiffres et dates à vérifier\n")
+            figures.forEach { (value, snippet) ->
+                sb.append("- **").append(value).append("** — ").append(snippet).append('\n')
+            }
+            sb.append('\n')
+        }
     }
 
     /** Découpe en phrases : ponctuation ou retours à la ligne, redécoupage des blocs trop longs. */
