@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.transcripto.stream.CrashLog
 import com.transcripto.stream.stt.ModelCatalog
@@ -669,12 +670,20 @@ fun SettingsScreen(vm: StreamViewModel) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = { showCrashLog = true }) { Text("Voir") }
                     TextButton(onClick = {
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "Transcripto Stream — journal des incidents")
-                            putExtra(Intent.EXTRA_TEXT, CrashLog.read(context))
+                        // Pièce jointe via FileProvider : un journal de 200 000 caractères en
+                        // EXTRA_TEXT frôlerait la limite des transactions Binder (1 Mo)
+                        val f = CrashLog.file(context)
+                        if (f != null) {
+                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", f)
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "Transcripto Stream — journal des incidents")
+                                putExtra(Intent.EXTRA_TEXT, "Journal des incidents en pièce jointe (${crashCount} plantage(s)).")
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Partager le journal"))
                         }
-                        context.startActivity(Intent.createChooser(intent, "Partager le journal"))
                     }) { Text("Partager") }
                     TextButton(onClick = {
                         CrashLog.clear(context)

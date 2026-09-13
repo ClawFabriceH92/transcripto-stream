@@ -114,6 +114,8 @@ class StreamViewModel(
 ) : ViewModel() {
 
     companion object {
+        /** Horodatage « [mm:ss] » (ou « [h:mm:ss] ») tel qu'écrit par formatClock. */
+        private val CLOCK_TAG = Regex("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\] ")
         private const val TAG = "StreamVM"
         private const val SAMPLE_RATE = 16000
         private const val WINDOW_SECONDS = 4
@@ -477,25 +479,36 @@ class StreamViewModel(
             activeRecordingFile = null
         }
         // Relit le .txt COMPLET (pas l'aperçu tronqué de la liste), noms d'intervenants appliqués
-        refreshFileTranscript(item.file, item.speakerNames, item.transcript)
+        refreshFileTranscript(item.file, item.transcript)
     }
 
-    /** Recharge l'encart transcription pour [file] avec les noms d'intervenants. */
-    private fun refreshFileTranscript(
-        file: File,
-        names: Map<Int, String> = readMeta(file).speakers,
-        fallback: String = "",
-    ) {
-        val txt = transcriptFileFor(file)
-        val raw = try {
-            if (txt.exists()) txt.readText().substringAfter("----\n").trim() else fallback
-        } catch (e: Exception) {
-            fallback
+    /** Recharge l'encart transcription pour [file] avec les noms d'intervenants (I/O hors main). */
+    private fun refreshFileTranscript(file: File, fallback: String = "") {
+        viewModelScope.launch {
+            _fileTranscript.value = withContext(Dispatchers.IO) {
+                val txt = transcriptFileFor(file)
+                val raw = try {
+                    if (txt.exists()) txt.readText().substringAfter("----\n").trim() else fallback
+                } catch (e: Exception) {
+                    fallback
+                }
+                SpeakerNames.apply(raw, readMeta(file).speakers)
+            }
         }
-        _fileTranscript.value = SpeakerNames.apply(raw, names)
     }
 
     // ================= MÉTADONNÉES (intervenants, dossier) =================
+
+    /** Nombre d'occurrences littérales de [needle] dans [text] (au plus 2 : seule l'unicité importe). */
+    private fun countOccurrences(text: String, needle: String): Int {
+        var count = 0
+        var i = text.indexOf(needle)
+        while (i >= 0 && count < 2) {
+            count++
+            i = text.indexOf(needle, i + needle.length)
+        }
+        return count
+    }
 
     /** Lecture du fichier .meta (I/O légère : quelques centaines d'octets). */
     fun readMeta(file: File): RecordingMeta = try {
@@ -556,7 +569,7 @@ class StreamViewModel(
      * reconstruit le .txt (horodatages, intervenants, temps de parole) et le .srt.
      */
     fun updateSegmentText(file: File, index: Int, newText: String) {
-        if (_isTranscribingFile.value || _summaryBusy.value) {
+        if (_isTranscribingFile.value || _summaryBusy.value || _backupBusy.value) {
             _uiMessage.value = "Opération en cours — réessaie ensuite"
             return
         }
@@ -567,13 +580,26 @@ class StreamViewModel(
                     if (!json.exists()) return@withContext false
                     val segs = SegmentsCodec.fromJson(json.readText()).toMutableList()
                     if (index !in segs.indices) return@withContext false
-                    segs[index] = segs[index].copy(text = newText.trim())
+                    val cleaned = newText.trim()
+                    if (cleaned.isEmpty()) return@withContext false
+                    val oldText = segs[index].text.trim()
+                    segs[index] = segs[index].copy(text = cleaned)
                     json.writeText(SegmentsCodec.toJsonStored(segs))
                     val data = segs.map { SegmentData(it.text, it.startMs, it.endMs) }
-                    val text = buildSpeakerMarkedTranscript(
-                        StreamResult(fullText = segs.joinToString(" ") { it.text }, segments = data),
-                        segs.map { it.speaker },
-                    )
+                    // .txt : remplacement ciblé quand l'ancien passage s'y trouve une seule fois
+                    // (les corrections manuelles antérieures sont préservées) ; sinon, reconstruction
+                    // complète depuis les segments, en gardant l'horodatage tel qu'il était
+                    val txt = transcriptFileFor(file)
+                    val body = if (txt.exists()) txt.readText().substringAfter("----\n").trim() else ""
+                    val text = if (oldText.isNotEmpty() && countOccurrences(body, oldText) == 1) {
+                        body.replaceFirst(oldText, cleaned)
+                    } else {
+                        buildSpeakerMarkedTranscript(
+                            StreamResult(fullText = segs.joinToString(" ") { it.text }, segments = data),
+                            segs.map { it.speaker },
+                            timestamps = if (body.isEmpty()) settings.useTimestamps else CLOCK_TAG.containsMatchIn(body),
+                        )
+                    }
                     writeTranscriptFile(file, text, durationMsOf(file))
                     val srt = TranscriptExporter.buildSrt(data)
                     if (srt.isNotBlank()) RecordingNames.srtSibling(file).writeText(srt)
@@ -1224,10 +1250,14 @@ class StreamViewModel(
     private fun aiApiKey(): String? =
         CryptoManager.decryptString(settings.aiApiKeyEncrypted)?.takeIf { it.isNotBlank() }
 
-    /** Synthèse existante (Markdown) ou null — I/O : à appeler hors du thread principal. */
+    /**
+     * Synthèse existante (Markdown, noms d'intervenants appliqués) ou null — I/O : à
+     * appeler hors du thread principal. Une synthèse rédigée avant le nommage suit
+     * ainsi les noms choisis ensuite.
+     */
     fun readSummary(file: File): String? = try {
         val md = RecordingNames.mdSibling(file)
-        if (md.exists()) md.readText() else null
+        if (md.exists()) SpeakerNames.apply(md.readText(), readMeta(file).speakers) else null
     } catch (e: Exception) {
         null
     }
@@ -1600,7 +1630,7 @@ class StreamViewModel(
                             if (res.segments.isEmpty()) "" else SegmentsCodec.toJson(res.segments, speakerIds),
                         )
                     }
-                    _fileTranscript.value = text
+                    _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { readMeta(file).speakers })
                     // Sauvegarde .txt auto + .srt + segments .json à côté du fichier
                     val durationMs = pcm.size / 32L // 16 kHz × 2 octets = 32 octets/ms
                     withContext(Dispatchers.IO) {
@@ -1701,7 +1731,10 @@ class StreamViewModel(
         _fileTranscript.value = newText
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                writeTranscriptFile(file, newText, durationMsOf(file))
+                // L'encart affiche les noms d'intervenants : on les ramène aux libellés
+                // génériques avant d'écrire, le .txt ne fige jamais un nom
+                val raw = SpeakerNames.unapply(newText, readMeta(file).speakers)
+                writeTranscriptFile(file, raw, durationMsOf(file))
             }
             refreshRecordings()
         }
@@ -1712,7 +1745,11 @@ class StreamViewModel(
      * (variation de pitch F0 > 20 %), pauses > 1,2 s, et bloc « temps de parole »
      * par intervenant en fin de transcription (réunions, entretiens d'audit).
      */
-    private fun buildSpeakerMarkedTranscript(res: StreamResult, speakerIds: List<Int>): String {
+    private fun buildSpeakerMarkedTranscript(
+        res: StreamResult,
+        speakerIds: List<Int>,
+        timestamps: Boolean = settings.useTimestamps,
+    ): String {
         val segments = res.segments
         if (segments.isEmpty()) return res.fullText.trim()
         val sb = StringBuilder()
@@ -1730,7 +1767,7 @@ class StreamViewModel(
                 if (sb.isNotEmpty()) sb.append('\n')
                 sb.append("[Intervenant $currentSpeaker] ")
             }
-            if (settings.useTimestamps) {
+            if (timestamps) {
                 sb.append("[").append(formatClock(seg.startMs)).append("] ")
             }
             sb.append(seg.text.trim()).append(" ")
@@ -1836,7 +1873,7 @@ class StreamViewModel(
             }
             // Synthèse : en corps de message (la transcription complète reste jointe) + .md joint
             val md = RecordingNames.mdSibling(file)
-            val summaryText = if (md.exists()) md.readText() else null
+            val summaryText = readSummary(file)
             if (summaryText != null) {
                 attachments.add(
                     FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", md)

@@ -536,7 +536,7 @@ private fun DetailDialogs(
                 },
                 onAddVocab = { term ->
                     vm.showMessage(
-                        if (vm.addVocabularyTerm(term)) "« $term » ajouté au vocabulaire" else "Terme déjà présent"
+                        if (vm.addVocabularyTerm(term)) "« $term » ajouté au vocabulaire" else "Terme vide ou déjà présent"
                     )
                 },
                 onDismiss = onEditDismiss,

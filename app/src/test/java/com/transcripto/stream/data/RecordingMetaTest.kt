@@ -43,6 +43,23 @@ class RecordingMetaTest {
     }
 
     @Test
+    fun unapplyRestoresGenericLabels() {
+        val names = mapOf(1 to "M. Martin (DG)", 2 to "M. Martin", 3 to "A+B [x]")
+        val raw = "[Intervenant 1] [00:05] Bonjour.\n[Intervenant 2] [00:10] Rebonjour.\n[Intervenant 3] Ok.\n\n" +
+            "--- Temps de parole (estimation par la voix) ---\nIntervenant 1 : 01:40 (60 %)\nIntervenant 2 : 01:05 (40 %)"
+        val shown = SpeakerNames.apply(raw, names)
+        assertTrue(shown.contains("[M. Martin (DG)] [00:05]"))
+        assertTrue(shown.contains("[A+B [x]] Ok."))
+        assertEquals(raw, SpeakerNames.unapply(shown, names))
+        // Texte modifié entre-temps : seuls les libellés sont ramenés aux génériques
+        assertEquals(
+            "[Intervenant 2] [00:10] Corrigé.",
+            SpeakerNames.unapply("[M. Martin] [00:10] Corrigé.", names),
+        )
+        assertEquals("texte", SpeakerNames.unapply("texte", emptyMap()))
+    }
+
+    @Test
     fun labelFallsBackToGeneric() {
         assertEquals("Intervenant 3", SpeakerNames.label(3, mapOf(1 to "A")))
         assertEquals("A", SpeakerNames.label(1, mapOf(1 to "A")))

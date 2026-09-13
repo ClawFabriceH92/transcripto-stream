@@ -16,9 +16,11 @@ import java.util.Locale
  */
 object CrashLog {
 
-    private const val FILE = "crash.log"
-    private const val MAX_BYTES = 200_000
-    private const val MAX_TRACE_LINES = 60
+    const val FILE = "crash.log"
+    /** Taille maximale du journal, en caractères (≈ 200 à 400 Ko sur disque). */
+    private const val MAX_CHARS = 200_000
+    /** Tête de trace conservée intégralement ; au-delà, seules les lignes « Caused by » (la cause racine). */
+    private const val HEAD_LINES = 30
     private const val SEPARATOR = "=== "
 
     fun install(context: Context) {
@@ -33,6 +35,7 @@ object CrashLog {
         }
     }
 
+    @Synchronized
     private fun append(context: Context, thread: Thread, t: Throwable) {
         val version = try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
@@ -40,8 +43,9 @@ object CrashLog {
             "?"
         }
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.FRANCE).format(Date())
-        val trace = StringWriter().also { t.printStackTrace(PrintWriter(it)) }.toString()
-            .lines().take(MAX_TRACE_LINES).joinToString("\n")
+        val lines = StringWriter().also { t.printStackTrace(PrintWriter(it)) }.toString().lines()
+        val trace = (lines.take(HEAD_LINES) + lines.drop(HEAD_LINES).filter { it.startsWith("Caused by") })
+            .joinToString("\n")
         val entry = buildString {
             append(SEPARATOR).append(stamp).append(" · v").append(version)
                 .append(" · Android ").append(android.os.Build.VERSION.RELEASE)
@@ -51,7 +55,7 @@ object CrashLog {
         }
         val f = File(context.filesDir, FILE)
         val existing = if (f.exists()) f.readText() else ""
-        f.writeText((entry + existing).take(MAX_BYTES))
+        f.writeText((entry + existing).take(MAX_CHARS))
     }
 
     fun read(context: Context): String = try {
@@ -62,6 +66,9 @@ object CrashLog {
     }
 
     fun count(context: Context): Int = read(context).lines().count { it.startsWith(SEPARATOR) }
+
+    /** Fichier du journal (partage via FileProvider) ou null s'il n'existe pas. */
+    fun file(context: Context): File? = File(context.filesDir, FILE).takeIf { it.exists() && it.length() > 0 }
 
     fun clear(context: Context) {
         try {

@@ -80,4 +80,24 @@ object SpeakerNames {
             if (name != null) "$name : " else m.value
         }
     }
+
+    /**
+     * Opération inverse de [apply] : « [Nom] » → « [Intervenant N] » et « Nom : » en début
+     * de ligne → « Intervenant N : », pour réécrire un texte affiché avec les noms sans
+     * figer ceux-ci dans le fichier. Les noms les plus longs sont traités en premier
+     * (« M. Martin (DG) » avant « M. Martin »).
+     */
+    fun unapply(text: String, names: Map<Int, String>): String {
+        if (names.isEmpty() || text.isEmpty()) return text
+        var out = text
+        names.entries
+            .filter { it.value.isNotBlank() }
+            .sortedByDescending { it.value.length }
+            .forEach { (id, name) ->
+                val n = Regex.escape(name.trim())
+                out = out.replace(Regex("\\[$n\\]"), Regex.escapeReplacement("[Intervenant $id]"))
+                out = out.replace(Regex("^$n : ", RegexOption.MULTILINE), Regex.escapeReplacement("Intervenant $id : "))
+            }
+        return out
+    }
 }
