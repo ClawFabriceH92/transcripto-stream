@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.export.ExportFormat
 import com.transcripto.stream.ui.theme.AppIcons
 import kotlinx.coroutines.launch
 import java.io.File
@@ -99,6 +100,20 @@ fun RecordingListScreen(
         val path = exportPath
         exportPath = null
         if (uri != null && path != null) vm.exportAudio(File(path), uri)
+    }
+    val docxLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(ExportFormat.DOCX.mime)
+    ) { uri ->
+        val path = exportPath
+        exportPath = null
+        if (uri != null && path != null) vm.exportDocument(File(path), uri, ExportFormat.DOCX)
+    }
+    val pdfLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(ExportFormat.PDF.mime)
+    ) { uri ->
+        val path = exportPath
+        exportPath = null
+        if (uri != null && path != null) vm.exportDocument(File(path), uri, ExportFormat.PDF)
     }
 
     val filtered = recordings.filter { item ->
@@ -226,6 +241,13 @@ fun RecordingListScreen(
                                 exportPath = rec.file.absolutePath
                                 exportLauncher.launch("${rec.baseName}.wav")
                             },
+                            onExportDocument = { format ->
+                                exportPath = rec.file.absolutePath
+                                when (format) {
+                                    ExportFormat.DOCX -> docxLauncher.launch("${rec.baseName}.docx")
+                                    ExportFormat.PDF -> pdfLauncher.launch("${rec.baseName}.pdf")
+                                }
+                            },
                         )
                     }
                 }
@@ -303,6 +325,7 @@ private fun RecordingCard(
     onDelete: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
+    onExportDocument: (ExportFormat) -> Unit,
 ) {
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.FRANCE) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -399,6 +422,26 @@ private fun RecordingCard(
                             },
                         )
                     }
+                    DropdownMenuItem(
+                        text = { Text("Exporter en Word (.docx)") },
+                        leadingIcon = {
+                            Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp))
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onExportDocument(ExportFormat.DOCX)
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Exporter en PDF") },
+                        leadingIcon = {
+                            Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp))
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onExportDocument(ExportFormat.PDF)
+                        },
+                    )
                     DropdownMenuItem(
                         text = { Text("Renommer") },
                         leadingIcon = {

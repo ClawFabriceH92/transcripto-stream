@@ -1,6 +1,8 @@
 package com.transcripto.stream.ui
 
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -35,6 +37,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -66,6 +71,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SpeakerNames
+import com.transcripto.stream.export.ExportFormat
 import com.transcripto.stream.data.StoredSegment
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.SummaryTemplates
@@ -112,6 +118,24 @@ fun DetailScreen(vm: StreamViewModel) {
     val transcriptVersion by vm.transcriptVersion.collectAsStateWithLifecycle()
     val dossiers by vm.dossiers.collectAsStateWithLifecycle()
     val qa by vm.qa.collectAsStateWithLifecycle()
+    var exportMenu by remember { mutableStateOf(false) }
+    // rememberSaveable : le sélecteur SAF peut tuer le process ; au retour, le callback
+    // doit encore savoir quel enregistrement exporter
+    var exportPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val docxLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(ExportFormat.DOCX.mime)
+    ) { uri ->
+        val path = exportPath
+        exportPath = null
+        if (uri != null && path != null) vm.exportDocument(File(path), uri, ExportFormat.DOCX)
+    }
+    val pdfLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(ExportFormat.PDF.mime)
+    ) { uri ->
+        val path = exportPath
+        exportPath = null
+        if (uri != null && path != null) vm.exportDocument(File(path), uri, ExportFormat.PDF)
+    }
     var dossierDialog by remember { mutableStateOf(false) }
     var speakerDialog by remember { mutableStateOf<Int?>(null) }
     var editSegment by remember { mutableStateOf<Int?>(null) }
@@ -286,6 +310,34 @@ fun DetailScreen(vm: StreamViewModel) {
                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                 Spacer(Modifier.width(ButtonDefaults.IconSpacing))
                 Text("Partager", maxLines = 1)
+            }
+            Box {
+                FilledTonalIconButton(
+                    onClick = { exportMenu = true },
+                    enabled = !isTranscribing,
+                ) {
+                    Icon(AppIcons.Download, contentDescription = "Exporter en Word ou PDF")
+                }
+                DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Exporter en Word (.docx)") },
+                        leadingIcon = { Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                        onClick = {
+                            exportMenu = false
+                            exportPath = current.file.absolutePath
+                            docxLauncher.launch("${current.baseName}.docx")
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Exporter en PDF") },
+                        leadingIcon = { Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                        onClick = {
+                            exportMenu = false
+                            exportPath = current.file.absolutePath
+                            pdfLauncher.launch("${current.baseName}.pdf")
+                        },
+                    )
+                }
             }
         }
         if (isTranscribing) {

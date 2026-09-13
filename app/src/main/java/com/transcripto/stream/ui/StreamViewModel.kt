@@ -29,6 +29,12 @@ import com.transcripto.stream.data.RecordingMeta
 import com.transcripto.stream.data.MetaCodec
 import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SettingsStore
+import com.transcripto.stream.export.DocxWriter
+import com.transcripto.stream.export.ExportComposer
+import com.transcripto.stream.export.ExportDocument
+import com.transcripto.stream.export.ExportFormat
+import com.transcripto.stream.export.ExportSegment
+import com.transcripto.stream.export.PdfWriter
 import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.ModelCatalog
@@ -2035,6 +2041,93 @@ class StreamViewModel(
                 "Audio « ${RecordingNames.baseName(file.name)} » exporté"
             } else {
                 "Export impossible"
+            }
+        }
+    }
+
+    // ================= EXPORTS STRUCTURÉS (WORD, PDF) =================
+
+    /** Assemble le document d'un enregistrement : page de garde, synthèse, transcription (I/O). */
+    private fun buildExportDocument(file: File): ExportDocument {
+        val meta = readMeta(file)
+        val txt = transcriptFileFor(file)
+        val content = try {
+            if (txt.exists()) txt.readText() else ""
+        } catch (e: Exception) {
+            ""
+        }
+        val raw = content.substringAfter("----\n").trim()
+        val json = RecordingNames.jsonSibling(file)
+        val segments = if (json.exists()) {
+            try {
+                SegmentsCodec.fromJson(json.readText()).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+        val version = try {
+            appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+        return ExportDocument(
+            title = RecordingNames.baseName(file.name),
+            dateLabel = SUMMARY_DATE_FORMAT.format(Date(file.lastModified())),
+            durationMs = durationMsOf(file),
+            dossier = meta.dossier,
+            missionLabel = meta.template.takeIf { it.isNotBlank() }?.let { SummaryTemplates.byId(it).label } ?: "",
+            speakerNames = meta.speakers,
+            sha256 = HASH_LINE.find(content)?.groupValues?.get(1),
+            encrypted = file.name.endsWith(".enc"),
+            summaryMarkdown = readSummary(file),
+            segments = segments,
+            transcriptText = SpeakerNames.apply(raw, meta.speakers),
+            timestamps = if (raw.isEmpty()) settings.useTimestamps else CLOCK_TAG.containsMatchIn(raw),
+            appVersion = version,
+            generatedLabel = SUMMARY_DATE_FORMAT.format(Date()),
+        )
+    }
+
+    /** Écrit le document Word ou PDF de [file] dans [destUri] (emplacement choisi via SAF). */
+    fun exportDocument(file: File, destUri: Uri, format: ExportFormat) {
+        if (_isTranscribingFile.value) {
+            _uiMessage.value = "Transcription en cours — exporte ensuite"
+            return
+        }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    val doc = buildExportDocument(file)
+                    val blocks = ExportComposer.compose(doc)
+                    val out = try {
+                        appContext.contentResolver.openOutputStream(destUri, "wt")
+                    } catch (e: Exception) {
+                        appContext.contentResolver.openOutputStream(destUri)
+                    } ?: return@withContext false
+                    out.use { o ->
+                        when (format) {
+                            ExportFormat.DOCX -> o.write(DocxWriter.write(blocks, doc.title))
+                            ExportFormat.PDF -> PdfWriter.write(
+                                blocks,
+                                o,
+                                footer = "Transcripto Stream" +
+                                    (if (doc.appVersion.isNotBlank()) " v${doc.appVersion}" else "") +
+                                    " · ${doc.title}",
+                            )
+                        }
+                    }
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "exportDocument: ${e.message}")
+                    false
+                }
+            }
+            _uiMessage.value = if (ok) {
+                "${format.label} « ${RecordingNames.baseName(file.name)} » exporté"
+            } else {
+                "Export ${format.label} impossible"
             }
         }
     }
