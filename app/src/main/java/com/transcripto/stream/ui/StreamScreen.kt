@@ -72,6 +72,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -94,6 +95,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -130,6 +134,20 @@ fun StreamScreen() {
     val pendingNameDefault by vm.pendingNameDefault.collectAsStateWithLifecycle()
     val dossiers by vm.dossiers.collectAsStateWithLifecycle()
 
+    // Verrouillage automatique : l'app note son passage en arrière-plan et vérifie au retour
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> vm.onAppBackground()
+                Lifecycle.Event.ON_START -> vm.onAppForeground()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // Thème (réglage système/clair/sombre)
     val darkTheme = when (vm.settings.theme) {
         "dark" -> true
@@ -151,6 +169,9 @@ fun StreamScreen() {
                     onUnlock = { vm.unlock(it) },
                     pinError = pinError,
                     onClearError = { vm.setPinError(null) },
+                    biometric = vm.settings.biometricUnlock,
+                    onBiometricSuccess = { vm.unlockWithBiometrics() },
+                    onBiometricError = { vm.setPinError(it) },
                 )
             } else {
                 // Bouton retour système : détail → liste, sinon retour à l'onglet Transcrire

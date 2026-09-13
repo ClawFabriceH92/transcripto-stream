@@ -106,6 +106,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    // Déverrouillage biométrique (BiometricPrompt ; MainActivity doit être une FragmentActivity)
+    implementation("androidx.biometric:biometric:1.1.0")
     // Synthèse IA (opt-in) : SDK Java officiel Anthropic — seule la transcription est envoyée
     implementation("com.anthropic:anthropic-java:2.62.0")
     testImplementation("junit:junit:4.13.2")

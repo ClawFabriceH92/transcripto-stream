@@ -3,15 +3,16 @@ package com.transcripto.stream
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.IntentCompat
+import androidx.fragment.app.FragmentActivity
 import com.transcripto.stream.ui.StreamScreen
 import com.transcripto.stream.update.UpdateManager
 import kotlinx.coroutines.flow.MutableStateFlow
 
-class MainActivity : ComponentActivity() {
+/** FragmentActivity (et non ComponentActivity) : requis par BiometricPrompt. */
+class MainActivity : FragmentActivity() {
 
     companion object {
         const val ACTION_RECORD = "com.transcripto.stream.action.RECORD"

@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.transcripto.stream.ui.theme.AppIcons
@@ -40,8 +43,28 @@ fun PinScreen(
     onUnlock: (String) -> Unit,
     pinError: String?,
     onClearError: () -> Unit,
+    biometric: Boolean = false,
+    onBiometricSuccess: () -> Unit = {},
+    onBiometricError: (String) -> Unit = {},
 ) {
     var pin by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val activity = remember(context) { Biometrics.hostActivity(context) }
+    val biometricAvailable = remember(context) { Biometrics.available(context) }
+    val canBiometric = biometric && activity != null && biometricAvailable
+    val showPrompt: () -> Unit = {
+        if (activity != null) {
+            Biometrics.prompt(
+                activity,
+                onSuccess = onBiometricSuccess,
+                onError = { msg -> if (msg != null) onBiometricError(msg) },
+            )
+        }
+    }
+    // Invite biométrique proposée d'emblée ; le clavier PIN reste disponible derrière
+    LaunchedEffect(canBiometric) {
+        if (canBiometric) showPrompt()
+    }
 
     Column(
         modifier = Modifier
@@ -105,7 +128,12 @@ fun PinScreen(
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(28.dp))
+        if (canBiometric) {
+            TextButton(onClick = showPrompt) { Text("Empreinte, visage ou code de l'appareil") }
+            Spacer(Modifier.height(8.dp))
+        } else {
+            Spacer(Modifier.height(28.dp))
+        }
 
         // Clavier numérique
         val keys = listOf(

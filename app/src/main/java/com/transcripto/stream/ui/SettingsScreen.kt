@@ -438,6 +438,17 @@ fun SettingsScreen(vm: StreamViewModel) {
                 },
                 icon = Icons.Filled.Lock,
             )
+            var encryptTexts by remember { mutableStateOf(settings.encryptTexts) }
+            SettingSwitchRow(
+                title = "Chiffrer aussi les textes",
+                subtitle = "Transcriptions, sous-titres, synthèses et métadonnées scellés au repos (même clé) ; " +
+                    "les fichiers existants sont convertis immédiatement.",
+                checked = encryptTexts,
+                onChange = {
+                    if (vm.setEncryptTexts(it)) encryptTexts = it
+                },
+                icon = Icons.Filled.Lock,
+            )
         }
 
         // ================= SAUVEGARDE =================
@@ -547,7 +558,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Verrouillage PIN", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        if (pinActive) "Actif — code demandé à chaque lancement" else "Désactivé",
+                        if (pinActive) "Actif — code demandé au lancement et après le délai choisi" else "Désactivé",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -563,6 +574,35 @@ fun SettingsScreen(vm: StreamViewModel) {
                     TextButton(onClick = { vm.disablePin() }) {
                         Text("Désactiver", color = MaterialTheme.colorScheme.error)
                     }
+                }
+                Spacer(Modifier.height(12.dp))
+                var autoLock by remember { mutableStateOf(settings.autoLockMinutes) }
+                SettingLabel("Verrouiller après un passage en arrière-plan")
+                Spacer(Modifier.height(6.dp))
+                SegmentedChoice(
+                    options = listOf("-1" to "Jamais", "1" to "1 min", "5" to "5 min", "15" to "15 min"),
+                    selected = autoLock.toString(),
+                    onSelect = {
+                        val m = it.toIntOrNull() ?: -1
+                        autoLock = m
+                        vm.setAutoLockMinutes(m)
+                    },
+                )
+                Spacer(Modifier.height(4.dp))
+                HintText("« Jamais » : code demandé seulement au lancement de l'app.")
+                if (Biometrics.available(context)) {
+                    Spacer(Modifier.height(8.dp))
+                    var biometric by remember { mutableStateOf(settings.biometricUnlock) }
+                    SettingSwitchRow(
+                        title = "Déverrouillage biométrique",
+                        subtitle = "Empreinte, visage ou code de l'appareil, proposé à la place du PIN (qui reste utilisable).",
+                        checked = biometric,
+                        onChange = {
+                            biometric = it
+                            vm.setBiometricUnlock(it)
+                        },
+                        icon = AppIcons.Security,
+                    )
                 }
             }
         }

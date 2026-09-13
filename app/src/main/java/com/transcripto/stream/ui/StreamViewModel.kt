@@ -10,6 +10,7 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.PlaybackParams
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -29,6 +30,7 @@ import com.transcripto.stream.data.RecordingMeta
 import com.transcripto.stream.data.MetaCodec
 import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SettingsStore
+import com.transcripto.stream.data.TextVault
 import com.transcripto.stream.export.DocxWriter
 import com.transcripto.stream.export.ExportComposer
 import com.transcripto.stream.export.ExportDocument
@@ -139,6 +141,11 @@ class StreamViewModel(
     }
 
     val settings = SettingsStore(appContext)
+
+    init {
+        // Avant toute écriture : les textes suivent le réglage de chiffrement au repos
+        TextVault.enabled = settings.encryptTexts
+    }
 
     // ---- Écran affiché : 0 = principal, 1 = liste, 2 = réglages ----
     private val _screen = MutableStateFlow(0)
@@ -494,7 +501,7 @@ class StreamViewModel(
             _fileTranscript.value = withContext(Dispatchers.IO) {
                 val txt = transcriptFileFor(file)
                 val raw = try {
-                    if (txt.exists()) txt.readText().substringAfter("----\n").trim() else fallback
+                    if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else fallback
                 } catch (e: Exception) {
                     fallback
                 }
@@ -519,7 +526,7 @@ class StreamViewModel(
     /** Lecture du fichier .meta (I/O légère : quelques centaines d'octets). */
     fun readMeta(file: File): RecordingMeta = try {
         val f = RecordingNames.metaSibling(file)
-        if (f.exists()) MetaCodec.fromJson(f.readText()) else RecordingMeta()
+        if (f.exists()) MetaCodec.fromJson(TextVault.read(f)) else RecordingMeta()
     } catch (e: Exception) {
         RecordingMeta()
     }
@@ -527,7 +534,7 @@ class StreamViewModel(
     private fun writeMeta(file: File, meta: RecordingMeta) {
         val f = RecordingNames.metaSibling(file)
         try {
-            if (meta.isEmpty) f.delete() else f.writeText(MetaCodec.toJson(meta))
+            if (meta.isEmpty) f.delete() else TextVault.write(f, MetaCodec.toJson(meta))
         } catch (e: Exception) {
             Log.e(TAG, "writeMeta: ${e.message}")
         }
@@ -584,19 +591,19 @@ class StreamViewModel(
                 try {
                     val json = RecordingNames.jsonSibling(file)
                     if (!json.exists()) return@withContext false
-                    val segs = SegmentsCodec.fromJson(json.readText()).toMutableList()
+                    val segs = SegmentsCodec.fromJson(TextVault.read(json)).toMutableList()
                     if (index !in segs.indices) return@withContext false
                     val cleaned = newText.trim()
                     if (cleaned.isEmpty()) return@withContext false
                     val oldText = segs[index].text.trim()
                     segs[index] = segs[index].copy(text = cleaned)
-                    json.writeText(SegmentsCodec.toJsonStored(segs))
+                    TextVault.write(json, SegmentsCodec.toJsonStored(segs))
                     val data = segs.map { SegmentData(it.text, it.startMs, it.endMs) }
                     // .txt : remplacement ciblé quand l'ancien passage s'y trouve une seule fois
                     // (les corrections manuelles antérieures sont préservées) ; sinon, reconstruction
                     // complète depuis les segments, en gardant l'horodatage tel qu'il était
                     val txt = transcriptFileFor(file)
-                    val body = if (txt.exists()) txt.readText().substringAfter("----\n").trim() else ""
+                    val body = if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else ""
                     val text = if (oldText.isNotEmpty() && countOccurrences(body, oldText) == 1) {
                         body.replaceFirst(oldText, cleaned)
                     } else {
@@ -608,7 +615,7 @@ class StreamViewModel(
                     }
                     writeTranscriptFile(file, text, durationMsOf(file))
                     val srt = TranscriptExporter.buildSrt(data)
-                    if (srt.isNotBlank()) RecordingNames.srtSibling(file).writeText(srt)
+                    if (srt.isNotBlank()) TextVault.write(RecordingNames.srtSibling(file), srt)
                     true
                 } catch (e: Exception) {
                     Log.e(TAG, "updateSegmentText: ${e.message}")
@@ -628,6 +635,65 @@ class StreamViewModel(
 
     fun lockNow() {
         if (settings.pinHash.isNotEmpty()) _locked.value = true
+    }
+
+    // ---- Verrouillage automatique / biométrie ----
+    private var backgroundedAt = 0L
+
+    /** Activité arrêtée (app en arrière-plan, sélecteur système…) : on note l'instant. */
+    fun onAppBackground() {
+        backgroundedAt = SystemClock.elapsedRealtime()
+    }
+
+    /** Retour au premier plan : verrouille si le délai réglé est dépassé. */
+    fun onAppForeground() {
+        val since = backgroundedAt
+        backgroundedAt = 0L
+        if (since == 0L || _locked.value || settings.pinHash.isEmpty()) return
+        val minutes = settings.autoLockMinutes
+        if (minutes < 0) return
+        if (SystemClock.elapsedRealtime() - since >= minutes * 60_000L) _locked.value = true
+    }
+
+    fun setAutoLockMinutes(minutes: Int) {
+        settings.autoLockMinutes = minutes
+    }
+
+    fun setBiometricUnlock(enabled: Boolean) {
+        settings.biometricUnlock = enabled
+    }
+
+    /** Déverrouillage réussi par BiometricPrompt (empreinte, visage ou code de l'appareil). */
+    fun unlockWithBiometrics() {
+        _locked.value = false
+        _pinError.value = null
+    }
+
+    /**
+     * Chiffrement des textes au repos : bascule le réglage puis migre tous les fichiers
+     * texte (scellés ↔ clairs). Refusé pendant une opération qui écrit des fichiers.
+     * Retourne false si la bascule n'a pas eu lieu.
+     */
+    fun setEncryptTexts(enabled: Boolean): Boolean {
+        if (_backupBusy.value || _isTranscribingFile.value || _summaryBusy.value ||
+            _isStreaming.value || _isImporting.value
+        ) {
+            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            return false
+        }
+        settings.encryptTexts = enabled
+        TextVault.enabled = enabled
+        viewModelScope.launch {
+            _backupBusy.value = true // aucune écriture concurrente pendant la migration
+            val n = try {
+                withContext(Dispatchers.IO) { TextVault.migrate(recordingsDir(), enabled) }
+            } finally {
+                _backupBusy.value = false
+            }
+            _uiMessage.value = if (enabled) "Textes chiffrés ($n fichiers)" else "Textes déchiffrés ($n fichiers)"
+            refreshRecordings()
+        }
+        return true
     }
 
     fun enablePin(pin: String) {
@@ -1263,7 +1329,7 @@ class StreamViewModel(
      */
     fun readSummary(file: File): String? = try {
         val md = RecordingNames.mdSibling(file)
-        if (md.exists()) SpeakerNames.apply(md.readText(), readMeta(file).speakers) else null
+        if (md.exists()) SpeakerNames.apply(TextVault.read(md), readMeta(file).speakers) else null
     } catch (e: Exception) {
         null
     }
@@ -1302,7 +1368,7 @@ class StreamViewModel(
     private fun buildSummaryFor(file: File): String {
         val txt = transcriptFileFor(file)
         val text = try {
-            if (txt.exists()) txt.readText().substringAfter("----\n").trim() else ""
+            if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else ""
         } catch (e: Exception) {
             ""
         }
@@ -1336,7 +1402,7 @@ class StreamViewModel(
             SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
         }
         return try {
-            RecordingNames.mdSibling(file).writeText(markdown)
+            TextVault.write(RecordingNames.mdSibling(file), markdown)
             when {
                 failure != null -> "$failure — synthèse locale générée à la place"
                 key != null -> "Synthèse IA prête"
@@ -1405,7 +1471,7 @@ class StreamViewModel(
                         return@withContext AiAnswer.Failed(why)
                     }
                     val txt = transcriptFileFor(file)
-                    val raw = if (txt.exists()) txt.readText().substringAfter("----\n").trim() else ""
+                    val raw = if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else ""
                     val names = readMeta(file).speakers
                     ClaudeQa.ask(
                         apiKey = key,
@@ -1643,14 +1709,14 @@ class StreamViewModel(
                         writeTranscriptFile(file, text, durationMs)
                         if (srt.isNotBlank()) {
                             try {
-                                RecordingNames.srtSibling(file).writeText(srt)
+                                TextVault.write(RecordingNames.srtSibling(file), srt)
                             } catch (e: Exception) {
                                 Log.e(TAG, "écriture SRT : ${e.message}")
                             }
                         }
                         if (segmentsJson.isNotBlank()) {
                             try {
-                                RecordingNames.jsonSibling(file).writeText(segmentsJson)
+                                TextVault.write(RecordingNames.jsonSibling(file), segmentsJson)
                             } catch (e: Exception) {
                                 Log.e(TAG, "écriture segments : ${e.message}")
                             }
@@ -1674,7 +1740,7 @@ class StreamViewModel(
             ((file.length() - 12 - 16 - 44).coerceAtLeast(0) * 1000L) / 32000L
         file.name.endsWith(".txt") ->
             try {
-                TranscriptExporter.parseDurationMs(file.readText())
+                TranscriptExporter.parseDurationMs(TextVault.read(file))
             } catch (e: Exception) {
                 0L
             }
@@ -1710,7 +1776,7 @@ class StreamViewModel(
             // L'empreinte PCM n'est calculée qu'à l'enregistrement : on la préserve
             // quand le .txt est réécrit (transcription différée, édition manuelle).
             val hash = sha256 ?: if (txt.exists()) {
-                HASH_LINE.find(txt.readText())?.groupValues?.get(1)
+                HASH_LINE.find(TextVault.read(txt))?.groupValues?.get(1)
             } else {
                 null
             }
@@ -1723,7 +1789,7 @@ class StreamViewModel(
             if (hash != null) sb.append("SHA-256 (PCM) : ").append(hash).append("\n")
             sb.append("----\n\n")
             sb.append(text)
-            txt.writeText(sb.toString())
+            TextVault.write(txt, sb.toString())
         } catch (e: Exception) {
             Log.e(TAG, "writeTranscriptFile: ${e.message}")
         }
@@ -1839,7 +1905,7 @@ class StreamViewModel(
     suspend fun buildShareIntentFor(item: RecordingItem): Intent? = withContext(Dispatchers.IO) {
         val txt = transcriptFileFor(item.file)
         val text = if (txt.exists()) {
-            txt.readText().substringAfter("----\n").trim()
+            TextVault.read(txt).substringAfter("----\n").trim()
         } else {
             item.transcript
         }
@@ -1871,18 +1937,22 @@ class StreamViewModel(
                     )
                 }
             }
+            // .srt et .md : copies en clair dans le cache (les originaux peuvent être scellés)
             val srt = RecordingNames.srtSibling(file)
             if (srt.exists()) {
+                val srtCopy = File(exportDir, "$base.srt")
+                srtCopy.writeText(TextVault.read(srt))
                 attachments.add(
-                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", srt)
+                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", srtCopy)
                 )
             }
             // Synthèse : en corps de message (la transcription complète reste jointe) + .md joint
-            val md = RecordingNames.mdSibling(file)
             val summaryText = readSummary(file)
             if (summaryText != null) {
+                val mdCopy = File(exportDir, "$base.md")
+                mdCopy.writeText(summaryText)
                 attachments.add(
-                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", md)
+                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", mdCopy)
                 )
             }
             val body = if (summaryText != null) {
@@ -2052,7 +2122,7 @@ class StreamViewModel(
         val meta = readMeta(file)
         val txt = transcriptFileFor(file)
         val content = try {
-            if (txt.exists()) txt.readText() else ""
+            if (txt.exists()) TextVault.read(txt) else ""
         } catch (e: Exception) {
             ""
         }
@@ -2060,7 +2130,7 @@ class StreamViewModel(
         val json = RecordingNames.jsonSibling(file)
         val segments = if (json.exists()) {
             try {
-                SegmentsCodec.fromJson(json.readText()).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) }
+                SegmentsCodec.fromJson(TextVault.read(json)).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) }
             } catch (e: Exception) {
                 emptyList()
             }
@@ -2393,7 +2463,22 @@ class StreamViewModel(
                                 } else {
                                     if (!usedNames.add(f.name)) continue
                                     zip.putNextEntry(ZipEntry(f.name))
-                                    f.inputStream().use { it.copyTo(zip, 64 * 1024) }
+                                    // Textes scellés (chiffrement au repos) : en clair DANS l'archive,
+                                    // comme les WAV — la clé KeyStore ne voyage pas
+                                    val plain = if (TextVault.isTextFile(f.name) && TextVault.isSealed(f)) {
+                                        try {
+                                            TextVault.read(f)
+                                        } catch (e: Exception) {
+                                            null
+                                        }
+                                    } else {
+                                        null
+                                    }
+                                    if (plain != null) {
+                                        zip.write(plain.toByteArray(Charsets.UTF_8))
+                                    } else {
+                                        f.inputStream().use { it.copyTo(zip, 64 * 1024) }
+                                    }
                                     zip.closeEntry()
                                 }
                                 count++
@@ -2453,7 +2538,16 @@ class StreamViewModel(
                                         }
                                         val destFile = File(dir, target + suffixPart)
                                         destFile.outputStream().use { zip.copyTo(it, 64 * 1024) }
-                                        if (suffixPart == ".wav") maybeEncrypt(destFile)
+                                        if (suffixPart == ".wav") {
+                                            maybeEncrypt(destFile)
+                                        } else if (TextVault.enabled) {
+                                            // Textes restaurés en clair : scellés si le réglage est actif
+                                            try {
+                                                TextVault.write(destFile, TextVault.read(destFile))
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "restore seal ${destFile.name}: ${e.message}")
+                                            }
+                                        }
                                         count++
                                     }
                                 }
@@ -2525,9 +2619,11 @@ class StreamViewModel(
     /** Élément de liste pour un fichier (I/O : lit l'aperçu du .txt — appeler hors du main thread). */
     private fun buildItem(f: File): RecordingItem {
         val txt = transcriptFileFor(f)
-        val transcript = if (txt.exists()) {
-            txt.readText().substringAfter("----\n").trim().take(200)
-        } else ""
+        val transcript = try {
+            if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim().take(200) else ""
+        } catch (e: Exception) {
+            "" // texte scellé illisible (clé KeyStore perdue) : la liste reste utilisable
+        }
         val meta = readMeta(f)
         return RecordingItem(
             file = f,

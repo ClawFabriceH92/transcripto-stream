@@ -73,6 +73,7 @@ import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.export.ExportFormat
 import com.transcripto.stream.data.StoredSegment
+import com.transcripto.stream.data.TextVault
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.SummaryTemplates
 import com.transcripto.stream.ui.theme.AppIcons
@@ -151,7 +152,11 @@ fun DetailScreen(vm: StreamViewModel) {
         if (!isTranscribing) {
             segments = withContext(Dispatchers.IO) {
                 val json = RecordingNames.jsonSibling(current.file)
-                if (json.exists()) SegmentsCodec.fromJson(json.readText()) else emptyList()
+                try {
+                    if (json.exists()) SegmentsCodec.fromJson(TextVault.read(json)) else emptyList()
+                } catch (e: Exception) {
+                    emptyList()
+                }
             }
         }
     }

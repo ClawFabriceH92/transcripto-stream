@@ -40,6 +40,21 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("encrypt_wav", false)
         set(v) = prefs.edit().putBoolean("encrypt_wav", v).apply()
 
+    // ---- Chiffrement des textes (.txt/.srt/.json/.md/.meta) au repos ----
+    var encryptTexts: Boolean
+        get() = prefs.getBoolean("encrypt_texts", false)
+        set(v) = prefs.edit().putBoolean("encrypt_texts", v).apply()
+
+    // ---- Déverrouillage biométrique (empreinte / visage / code de l'appareil) en plus du PIN ----
+    var biometricUnlock: Boolean
+        get() = prefs.getBoolean("biometric_unlock", false)
+        set(v) = prefs.edit().putBoolean("biometric_unlock", v).apply()
+
+    // ---- Verrouillage automatique après N minutes en arrière-plan (0 = immédiat, -1 = au lancement seulement) ----
+    var autoLockMinutes: Int
+        get() = prefs.getInt("auto_lock_minutes", DEFAULT_AUTO_LOCK_MINUTES)
+        set(v) = prefs.edit().putInt("auto_lock_minutes", v).apply()
+
     // ---- Thème : "system" | "light" | "dark" ----
     var theme: String
         get() = prefs.getString("theme", "system") ?: "system"
@@ -130,6 +145,8 @@ class SettingsStore(context: Context) {
 
     companion object {
         const val DEFAULT_AI_MODEL = "claude-opus-5"
+        /** -1 = verrouillage au lancement seulement (comportement historique). */
+        const val DEFAULT_AUTO_LOCK_MINUTES = -1
         val DEFAULT_VOCAB = "CAC, commissaire aux comptes, commissariat aux comptes, exercice, normes, audit, bilan, expert-comptable, comptabilité, résultat, bilan comptable, contrôle légal, mission légale"
 
         fun hashPin(pin: String): String {
