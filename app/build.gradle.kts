@@ -111,6 +111,8 @@ dependencies {
     // (≥ 0x10000) des lanceurs Activity Result de Compose (permissions, sélecteurs SAF).
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.5")
+    // Détection de parole neuronale Silero VAD (modèle ONNX embarqué dans assets/vad)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
     // Synthèse IA (opt-in) : SDK Java officiel Anthropic — seule la transcription est envoyée
     implementation("com.anthropic:anthropic-java:2.62.0")
     testImplementation("junit:junit:4.13.2")

@@ -55,6 +55,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt("auto_lock_minutes", DEFAULT_AUTO_LOCK_MINUTES)
         set(v) = prefs.edit().putInt("auto_lock_minutes", v).apply()
 
+    // ---- Détection de parole neuronale (Silero VAD) pour le découpage par phrases ----
+    var vadSilero: Boolean
+        get() = prefs.getBoolean("vad_silero", true)
+        set(v) = prefs.edit().putBoolean("vad_silero", v).apply()
+
     // ---- Thème : "system" | "light" | "dark" ----
     var theme: String
         get() = prefs.getString("theme", "system") ?: "system"

@@ -20,6 +20,8 @@ import com.transcripto.stream.RecordingService
 import com.transcripto.stream.RecordingState
 import com.transcripto.stream.audio.AudioImporter
 import com.transcripto.stream.audio.PcmAudioRecorder
+import com.transcripto.stream.audio.SileroVad
+import com.transcripto.stream.audio.SpeechGate
 import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.BackupCrypto
 import com.transcripto.stream.data.Chapter
@@ -138,6 +140,12 @@ class StreamViewModel(
         private const val WINDOW_SECONDS = 4
         private const val OVERLAP_SECONDS = 1
         private const val TICK_MS = 1000L
+        /** Cadence de vérification quand la VAD neuronale est active. */
+        private const val VAD_TICK_MS = 200L
+        /** Parole continue au-delà de cette durée : transcription partielle sans attendre la fin de phrase. */
+        private const val LONG_PHRASE_MS = 3000L
+        /** Nouvel audio minimal à la fin d'une phrase (au-delà du chevauchement déjà transcrit). */
+        private const val MIN_ENDED_MS = 250L
         private const val MODEL_ASSET = "models/ggml-base.bin"
         private const val MIN_NEW_MS = 500L // minimum de nouvel audio pour transcrire
         private const val VAD_THRESHOLD = 120.0 // RMS int16 : silence ~<50, parole >300 — seuil volontairement bas pour ne rien perdre
@@ -334,6 +342,22 @@ class StreamViewModel(
     private var writePos = 0
     private var filled = false
     private var windowStart = 0
+
+    // ---- VAD neuronale (Silero) : alimentée depuis le thread de capture ----
+    @Volatile
+    private var vad: SileroVad? = null
+    private val speechGate = SpeechGate()
+    private val vadFrame = ShortArray(SileroVad.FRAME)
+    private var vadFrameFill = 0
+    /** Une phrase vient de se terminer : transcrire sans attendre. */
+    @Volatile
+    private var phraseEnded = false
+    /** Trames de parole vues depuis le dernier prélèvement de fenêtre. */
+    @Volatile
+    private var speechFramesSinceSnapshot = 0
+    /** Faux dès qu'une erreur d'inférence survient pendant un enregistrement (repli RMS). */
+    @Volatile
+    private var vadHealthy = true
     private var validatedText = ""
 
     // ---- État des modèles Whisper (déclaré AVANT init : le bloc init et
@@ -364,6 +388,7 @@ class StreamViewModel(
             // Migration interrompue par une mort du process : reprise (idempotente)
             if (settings.encryptTexts) TextVault.migrate(recordingsDir(), true)
         }
+        if (settings.vadSilero) loadVad()
         loadWhisperModel()
         cleanupExpired()
         refreshRecordings()
@@ -1037,6 +1062,12 @@ class StreamViewModel(
         writePos = 0
         filled = false
         windowStart = 0
+        speechGate.reset()
+        vadFrameFill = 0
+        phraseEnded = false
+        speechFramesSinceSnapshot = 0
+        vadHealthy = true
+        vad?.reset()
         activeStartTime = System.currentTimeMillis()
 
         val recDir = recordingsDir()
@@ -1092,7 +1123,10 @@ class StreamViewModel(
                 writer.write(buf, n)
                 updateDigest(buf, n)
                 // Le ring buffer ne sert qu'au moteur Whisper (transcription locale)
-                if (_selectedEngine.value == "whisper") appendSamples(buf, n)
+                if (_selectedEngine.value == "whisper") {
+                    appendSamples(buf, n)
+                    feedVad(buf, n)
+                }
             }
         }
         if (!rec.start()) {
@@ -1144,26 +1178,49 @@ class StreamViewModel(
         val prompt = settings.vocabularyList.joinToString(", ")
         streamJob = viewModelScope.launch {
             while (isActive) {
-                delay(TICK_MS)
+                val neural = vad != null && vadHealthy
+                // VAD neuronale : réaction rapide à la fin d'une phrase ; sinon tic d'une seconde
+                delay(if (neural) VAD_TICK_MS else TICK_MS)
                 if (transcribing || _isPaused.value) continue
+                if (neural) {
+                    // On transcrit quand une phrase vient de se terminer, ou quand la parole
+                    // continue depuis longtemps (résultat partiel) — sans prélever avant
+                    val ended = phraseEnded
+                    if (!ended && pendingNewMs() < LONG_PHRASE_MS) continue
+                    phraseEnded = false
+                    val (pcm, newMs) = snapshotNewAudio()
+                    val speechFrames = speechFramesSinceSnapshot
+                    speechFramesSinceSnapshot = 0
+                    // Fin de phrase : on accepte une fenêtre courte, mais pas le seul chevauchement déjà transcrit
+                    if (newMs < (if (ended) MIN_ENDED_MS else MIN_NEW_MS)) continue
+                    // Aucune trame de parole dans la fenêtre : bruit ou silence, on n'envoie rien
+                    if (speechFrames == 0) continue
+                    runWindow(pcm, prompt)
+                    continue
+                }
                 val (pcm, newMs) = snapshotNewAudio()
                 if (newMs < MIN_NEW_MS) continue
-                // VAD : ignore les fenêtres de silence (coupe les blancs, moins d'hallucinations)
+                // VAD par volume : ignore les fenêtres de silence (coupe les blancs, moins d'hallucinations)
                 if (rmsOf(pcm) < VAD_THRESHOLD) continue
-                transcribing = true
-                val res = whisperLock.withLock {
-                    engine.transcribeBuffer(pcm, settings.language, prompt)
-                }
-                transcribing = false
-                if (res.error != null) {
-                    _lastError.value = res.error
-                } else {
-                    _transcriptionCount.value++
-                    _lastWindowText.value = res.fullText.trim()
-                    if (res.fullText.isNotBlank()) {
-                        mergeLive(res.fullText)
-                    }
-                }
+                runWindow(pcm, prompt)
+            }
+        }
+    }
+
+    /** Transcrit une fenêtre audio et fusionne le résultat dans le texte en direct. */
+    private suspend fun runWindow(pcm: ByteArray, prompt: String) {
+        transcribing = true
+        val res = whisperLock.withLock {
+            engine.transcribeBuffer(pcm, settings.language, prompt)
+        }
+        transcribing = false
+        if (res.error != null) {
+            _lastError.value = res.error
+        } else {
+            _transcriptionCount.value++
+            _lastWindowText.value = res.fullText.trim()
+            if (res.fullText.isNotBlank()) {
+                mergeLive(res.fullText)
             }
         }
     }
@@ -2910,6 +2967,64 @@ class StreamViewModel(
                 if (writePos == 0) filled = true
                 i++
             }
+        }
+    }
+
+    /** Audio accumulé depuis le dernier prélèvement, sans le prélever (ms). */
+    private fun pendingNewMs(): Long {
+        synchronized(ring) {
+            var len = (writePos - windowStart + ring.size) % ring.size
+            if (len == 0 && filled) len = ring.size
+            return (len * 1000L) / SAMPLE_RATE
+        }
+    }
+
+    /**
+     * Découpe le flux en trames de 512 échantillons pour la VAD neuronale et met à jour
+     * la machine à états (thread de capture). Une erreur d'inférence désactive la VAD
+     * jusqu'au prochain enregistrement : la boucle repasse au seuil de volume.
+     */
+    private fun feedVad(buf: ShortArray, n: Int) {
+        val v = vad ?: return
+        if (!vadHealthy) return
+        var i = 0
+        try {
+            while (i < n) {
+                val take = minOf(n - i, SileroVad.FRAME - vadFrameFill)
+                System.arraycopy(buf, i, vadFrame, vadFrameFill, take)
+                vadFrameFill += take
+                i += take
+                if (vadFrameFill == SileroVad.FRAME) {
+                    vadFrameFill = 0
+                    val p = v.process(vadFrame)
+                    if (p >= 0.5f) speechFramesSinceSnapshot++
+                    if (speechGate.feed(p, SileroVad.FRAME_MS) == SpeechGate.Event.SPEECH_END) phraseEnded = true
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "VAD : ${t.message} — repli sur le seuil de volume")
+            vadHealthy = false
+        }
+    }
+
+    /** Charge le modèle Silero hors du thread principal ; sans effet s'il est déjà chargé. */
+    private fun loadVad() {
+        if (vad != null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val v = SileroVad.create(appContext)
+            if (v != null && vad == null) vad = v else v?.close()
+        }
+    }
+
+    fun setVadSilero(enabled: Boolean) {
+        settings.vadSilero = enabled
+        if (enabled) {
+            loadVad()
+        } else {
+            // Pas pendant un enregistrement : la boucle et le thread audio s'en servent
+            if (_isStreaming.value) return
+            vad?.close()
+            vad = null
         }
     }
 

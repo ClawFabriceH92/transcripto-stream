@@ -265,6 +265,18 @@ fun SettingsScreen(vm: StreamViewModel) {
                 },
                 icon = AppIcons.Clock,
             )
+            var vadSilero by remember { mutableStateOf(settings.vadSilero) }
+            SettingSwitchRow(
+                title = "Détection de parole neuronale (Silero)",
+                subtitle = "En mode Whisper : les phrases sont transcrites dès qu'elles se terminent, les silences et " +
+                    "bruits ignorés. Désactivé ou indisponible : détection par volume.",
+                checked = vadSilero,
+                onChange = {
+                    vadSilero = it
+                    vm.setVadSilero(it)
+                },
+                icon = AppIcons.Waveform,
+            )
             var muteListening by remember { mutableStateOf(settings.muteWhileListening) }
             SettingSwitchRow(
                 title = "Écoute silencieuse (Google)",
