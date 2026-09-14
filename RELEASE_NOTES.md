@@ -1,10 +1,16 @@
-# Transcripto Stream v0.9.0
+# Transcripto Stream v0.10.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Nouveautés v0.9.0 — dossiers, intervenants nommés, exports Word/PDF, sécurité renforcée
+## Nouveautés v0.10.0 — recherche dans les passages, chapitres, détection de parole neuronale
+
+- **Recherche instantanée dans tous les passages** : la recherche de la liste trouve désormais les passages eux-mêmes, dans toutes les transcriptions (accents et casse ignorés, tous les termes exigés). Une section « Passages » affiche l'extrait avec les termes en gras, l'horodatage, l'intervenant et le dossier ; toucher un passage ouvre la fiche et cale la lecture dessus. L'index est en mémoire, reconstruit seulement pour les enregistrements modifiés : rien n'est stocké en clair, même avec le chiffrement des textes.
+- **Chapitres automatiques** : sur la fiche, « Détecter les chapitres » découpe un long enregistrement en parties titrées — par Claude si l'IA est configurée, sinon sur l'appareil par bascule de vocabulaire (frontières espacées d'au moins deux minutes). Toucher un chapitre lance la lecture et fait défiler la transcription ; les chapitres figurent en sous-titres dans les exports Word et PDF.
+- **Détection de parole neuronale (Silero VAD)** en mode Whisper : les phrases sont transcrites dès qu'elles se terminent (au lieu d'un tic fixe d'une seconde), les silences et bruits ne sont plus envoyés au moteur. Modèle ONNX embarqué (2,3 Mo), exécuté sur l'appareil ; si le runtime est indisponible, l'app revient automatiquement à la détection par volume. Désactivable dans Réglages → Reconnaissance.
+
+## v0.9.0 — dossiers, intervenants nommés, exports Word/PDF, sécurité renforcée
 
 ### Organisation
 - **Intervenants nommés** : sur la fiche, toucher « Intervenant 1 » pour lui donner un nom (« M. Martin (DG) »). Le nom s'applique à l'affichage, au partage, à la synthèse, aux questions à l'IA et aux exports ; la transcription brute garde les libellés génériques (renommable à tout moment).

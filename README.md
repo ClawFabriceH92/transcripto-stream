@@ -24,6 +24,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Recherche dans les passages, chapitres, VAD neuronale** (v0.10.0) : **index en mémoire de tous les passages** (section « Passages » dans la liste, extrait en gras, lecture calée sur le passage ; rien n'est persisté en clair), **chapitres automatiques** titrés (bascule de vocabulaire sur l'appareil ou Claude ; navigation sur la fiche, sous-titres dans les exports), **Silero VAD** (ONNX Runtime) pour transcrire chaque phrase dès qu'elle se termine et ignorer silences et bruits, avec repli sur le seuil de volume.
 - **Organisation** (v0.9.0) : **intervenants nommés** (toucher l'étiquette sur la fiche ; les noms s'appliquent à l'affichage, au partage, à la synthèse et aux exports, le `.txt` garde « [Intervenant N] »), **dossiers / clients** (proposés à la fin de l'enregistrement, filtres dans la liste), **correction d'un passage** par appui long sur la fiche (`.txt`/`.srt`/segments mis à jour, ajout au vocabulaire).
 - **Gabarits de synthèse par mission** (v0.9.0) : Réunion, Clôture / révision, Contrôle interne, AG / Conseil, Entretien client, Dictée / note — rubriques de l'extraction locale et consigne envoyée à Claude adaptées ; **questions à l'IA** sur un enregistrement (transcription + synthèse en contexte mis en cache côté API).
 - **Exports Word (.docx) et PDF** (v0.9.0) : page de garde, synthèse, transcription par intervenant nommé avec horodatages, empreinte SHA-256 — OOXML et PdfDocument écrits sans bibliothèque tierce.
@@ -48,11 +49,14 @@ app/src/main/
     ├── audio/WavFileWriter.kt      # PCM → WAV conservé
     ├── audio/AudioImporter.kt      # Import externe : MediaCodec → WAV 16 kHz mono
     ├── audio/PcmResampler.kt       # Downmix + rééchantillonnage linéaire (pur, testé)
+    ├── audio/SileroVad.kt          # Silero VAD v5 via ONNX Runtime (modèle dans assets/vad)
+    ├── audio/SpeechGate.kt         # Hystérésis début/fin de phrase sur les probabilités VAD (pur, testé)
     ├── CrashLog.kt / TranscriptoApp.kt # Journal local des plantages (Application)
     ├── data/RecordingNames.kt      # Conventions de nommage (.wav / .wav.enc / .txt / .srt / .md / .meta)
     ├── data/RecordingMeta.kt       # Métadonnées (.meta) : intervenants nommés, dossier, gabarit (pur, testé)
     ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore)
     ├── data/TextSealer.kt / TextVault.kt # Chiffrement des textes au repos (scellement pur testé + coffre Android)
+    ├── data/SearchIndex.kt         # Index en mémoire des passages, recherche sans accents (pur, testé)
     ├── data/SettingsStore.kt       # Réglages (SharedPreferences)
     ├── export/TranscriptExporter.kt # SRT + stats temps de parole (pur, testé)
     ├── export/ExportDocument.kt    # Composition des exports en blocs (pur, testé)
@@ -62,6 +66,8 @@ app/src/main/
     ├── summary/LocalSummarizer.kt  # Synthèse locale extractive (pur, testé)
     ├── summary/ClaudeSummarizer.kt # Synthèse IA via le SDK Java Anthropic (opt-in)
     ├── summary/ClaudeQa.kt         # Questions sur un enregistrement (prompt caching)
+    ├── summary/ChapterDetector.kt  # Chapitres par bascule de vocabulaire (pur, testé)
+    ├── summary/ClaudeChapters.kt   # Chapitrage par Claude (JSON tolérant, testé)
     ├── summary/MarkdownLite.kt     # Markdown minimal : parsing + texte brut (pur, testé)
     ├── stt/WhisperStreamEngine.kt  # Pont JNI
     ├── stt/ModelCatalog.kt         # Modèles Whisper embarqué/téléchargeables
@@ -117,9 +123,7 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 - [x] Sauvegarde chiffrée exportable (migration d'appareil), écran détail synchronisé, résilience audio, mode dictée
 - [x] Synthèse de fin d'enregistrement (locale + IA Claude en option)
 - [x] Intervenants nommés, dossiers, correction sur la fiche, gabarits de synthèse par mission, questions à l'IA, exports Word/PDF, chiffrement des textes, biométrie, verrouillage automatique, journal des incidents (v0.9.0)
-- [ ] Base Room + FTS (recherche instantanée dans toutes les transcriptions)
-- [ ] Chapitres automatiques navigables sur la fiche
-- [ ] VAD Silero (endpointing par phrases) pour un vrai temps réel
+- [x] Recherche instantanée dans tous les passages (index en mémoire, sans base persistée en clair), chapitres automatiques, Silero VAD (v0.10.0)
 - [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)
 - [ ] Sauvegarde chiffrée exportable (migration d'appareil — la clé AndroidKeyStore ne quitte pas le téléphone)
 - [ ] Résilience audio : focus audio, appels entrants, préemption micro signalée dans l'UI
