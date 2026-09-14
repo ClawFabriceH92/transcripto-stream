@@ -85,6 +85,8 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -260,7 +262,16 @@ class StreamViewModel(
     private val searchIndex = SearchIndex()
     private val _searchHits = MutableStateFlow<List<SearchHit>>(emptyList())
     val searchHits: StateFlow<List<SearchHit>> = _searchHits.asStateFlow()
+    /** Chemins de TOUS les enregistrements dont un passage correspond (sans le plafond des passages affichés). */
+    private val _searchFiles = MutableStateFlow<Set<String>>(emptySet())
+    val searchFiles: StateFlow<Set<String>> = _searchFiles.asStateFlow()
     private var searchJob: Job? = null
+
+    private suspend fun runSearch(q: String) {
+        val (hits, files) = withContext(Dispatchers.Default) { searchIndex.search(q) to searchIndex.matchingFiles(q) }
+        _searchHits.value = hits
+        _searchFiles.value = files
+    }
 
     // ---- Écran détail (écran 3) : enregistrement ouvert + lecture synchronisée ----
     private val _detailItem = MutableStateFlow<RecordingItem?>(null)
@@ -342,6 +353,8 @@ class StreamViewModel(
     private var writePos = 0
     private var filled = false
     private var windowStart = 0
+    /** Position d'écriture au dernier prélèvement (-1 : aucun) : distingue l'audio neuf du chevauchement. */
+    private var lastSnapshotEnd = -1
 
     // ---- VAD neuronale (Silero) : alimentée depuis le thread de capture ----
     @Volatile
@@ -352,9 +365,9 @@ class StreamViewModel(
     /** Une phrase vient de se terminer : transcrire sans attendre. */
     @Volatile
     private var phraseEnded = false
-    /** Trames de parole vues depuis le dernier prélèvement de fenêtre. */
-    @Volatile
-    private var speechFramesSinceSnapshot = 0
+    /** Trames de parole vues depuis le dernier prélèvement de fenêtre (thread audio ↔ boucle). */
+    private val speechFramesSinceSnapshot = AtomicInteger(0)
+    private val vadLoading = AtomicBoolean(false)
     /** Faux dès qu'une erreur d'inférence survient pendant un enregistrement (repli RMS). */
     @Volatile
     private var vadHealthy = true
@@ -813,13 +826,13 @@ class StreamViewModel(
     fun setSearchQuery(q: String) {
         _searchQuery.value = q
         searchJob?.cancel()
-        if (q.isBlank()) {
-            _searchHits.value = emptyList()
-            return
-        }
+        // Les résultats de la requête précédente ne restent pas affichés sous la nouvelle
+        _searchHits.value = emptyList()
+        _searchFiles.value = emptySet()
+        if (q.isBlank()) return
         searchJob = viewModelScope.launch {
             delay(SEARCH_DEBOUNCE_MS) // pas une recherche par frappe
-            _searchHits.value = withContext(Dispatchers.Default) { searchIndex.search(q) }
+            runSearch(q)
         }
     }
 
@@ -880,9 +893,13 @@ class StreamViewModel(
             _isPaused.value = false
             RecordingState.isPaused = false
             googleEngine?.resume()
-            writePos = 0
-            filled = false
-            windowStart = 0
+            synchronized(ring) {
+                writePos = 0
+                filled = false
+                windowStart = 0
+                lastSnapshotEnd = -1
+            }
+            resetVadState()
         } else {
             _isPaused.value = true
             RecordingState.isPaused = true
@@ -1062,12 +1079,9 @@ class StreamViewModel(
         writePos = 0
         filled = false
         windowStart = 0
-        speechGate.reset()
-        vadFrameFill = 0
-        phraseEnded = false
-        speechFramesSinceSnapshot = 0
+        lastSnapshotEnd = -1
+        resetVadState()
         vadHealthy = true
-        vad?.reset()
         activeStartTime = System.currentTimeMillis()
 
         val recDir = recordingsDir()
@@ -1178,7 +1192,7 @@ class StreamViewModel(
         val prompt = settings.vocabularyList.joinToString(", ")
         streamJob = viewModelScope.launch {
             while (isActive) {
-                val neural = vad != null && vadHealthy
+                val neural = settings.vadSilero && vad != null && vadHealthy
                 // VAD neuronale : réaction rapide à la fin d'une phrase ; sinon tic d'une seconde
                 delay(if (neural) VAD_TICK_MS else TICK_MS)
                 if (transcribing || _isPaused.value) continue
@@ -1189,8 +1203,7 @@ class StreamViewModel(
                     if (!ended && pendingNewMs() < LONG_PHRASE_MS) continue
                     phraseEnded = false
                     val (pcm, newMs) = snapshotNewAudio()
-                    val speechFrames = speechFramesSinceSnapshot
-                    speechFramesSinceSnapshot = 0
+                    val speechFrames = speechFramesSinceSnapshot.getAndSet(0)
                     // Fin de phrase : on accepte une fenêtre courte, mais pas le seul chevauchement déjà transcrit
                     if (newMs < (if (ended) MIN_ENDED_MS else MIN_NEW_MS)) continue
                     // Aucune trame de parole dans la fenêtre : bruit ou silence, on n'envoie rien
@@ -1244,6 +1257,7 @@ class StreamViewModel(
         googleEngine = null
         recorder?.stop()
         recorder = null
+        releaseVadIfDisabled()
         try {
             wavWriter?.close()
         } catch (_: Exception) {}
@@ -1642,9 +1656,10 @@ class StreamViewModel(
                     val meta = readMeta(file)
                     var failure: String? = null
                     val key = if (settings.aiSummaryEnabled) aiApiKey() else null
-                    val chapters = if (key != null) {
+                    val detected = if (key != null) {
+                        // Horodatages hh:mm:ss au-delà d'une heure (réunions longues) : pas de repli à 00:00
                         val timed = segs.joinToString("\n") { s ->
-                            "[${formatClock(s.startMs)}] ${SpeakerNames.label(s.speaker, meta.speakers)} : ${s.text.trim()}"
+                            "[${formatHms(s.startMs)}] ${SpeakerNames.label(s.speaker, meta.speakers)} : ${s.text.trim()}"
                         }
                         when (val r = ClaudeChapters.detect(key, settings.aiModel, RecordingNames.baseName(file.name), timed)) {
                             is AiChaptersResult.Ok -> r.chapters
@@ -1656,11 +1671,18 @@ class StreamViewModel(
                     } else {
                         ChapterDetector.detect(segs)
                     }
+                    // Bornes : pas de chapitre après la fin ; le premier commence avec le premier passage
+                    val lastMs = segs.last().endMs.coerceAtLeast(segs.last().startMs)
+                    val chapters = detected.filter { it.startMs <= lastMs }
+                        .sortedBy { it.startMs }
+                        .mapIndexed { i, c -> if (i == 0) c.copy(startMs = minOf(c.startMs, segs.first().startMs)) else c }
                     if (chapters.isEmpty()) {
                         return@withContext failure?.let { "$it — et pas de changement de sujet net détecté localement" }
                             ?: "Pas de changement de sujet assez net pour des chapitres"
                     }
-                    writeMeta(file, meta.copy(chapters = chapters))
+                    // Relu au moment d'écrire : un nom d'intervenant ou un dossier saisi pendant
+                    // l'appel (jusqu'à plusieurs minutes) n'est pas écrasé
+                    writeMeta(file, readMeta(file).copy(chapters = chapters))
                     when {
                         failure != null -> "$failure — ${chapters.size} chapitres détectés localement"
                         key != null -> "${chapters.size} chapitres (IA)"
@@ -2799,9 +2821,13 @@ class StreamViewModel(
                 }
                 val list = (audio + textOnly).map { f -> buildItem(f) }
                     .sortedByDescending { it.modifiedAt }
-                // Index de recherche : seuls les enregistrements dont le texte a changé sont relus
+                list to files.sumOf { it.length() }
+            }
+            _recordings.value = items
+            // Index de recherche APRÈS publication de la liste (relecture des seuls textes modifiés)
+            withContext(Dispatchers.IO) {
                 searchIndex.sync(
-                    list.map { item ->
+                    items.map { item ->
                         IndexSource(
                             file = item.file,
                             contentStamp = contentStamp(item.file),
@@ -2813,13 +2839,9 @@ class StreamViewModel(
                         )
                     },
                 ) { f -> loadSegmentsForIndex(f) }
-                list to files.sumOf { it.length() }
             }
-            _recordings.value = items
             val q = _searchQuery.value
-            if (q.isNotBlank()) {
-                _searchHits.value = withContext(Dispatchers.Default) { searchIndex.search(q) }
-            }
+            if (q.isNotBlank()) runSearch(q)
             _storageBytes.value = totalBytes
             _dossiers.value = items.map { it.dossier }.filter { it.isNotBlank() }.distinct()
                 .sortedBy { it.lowercase(Locale.FRANCE) }
@@ -2970,13 +2992,23 @@ class StreamViewModel(
         }
     }
 
-    /** Audio accumulé depuis le dernier prélèvement, sans le prélever (ms). */
+    /** Audio NEUF depuis le dernier prélèvement (hors chevauchement), sans le prélever (ms). */
     private fun pendingNewMs(): Long {
         synchronized(ring) {
-            var len = (writePos - windowStart + ring.size) % ring.size
-            if (len == 0 && filled) len = ring.size
-            return (len * 1000L) / SAMPLE_RATE
+            return (freshSamples() * 1000L) / SAMPLE_RATE
         }
+    }
+
+    /** Échantillons écrits depuis le dernier prélèvement (tout le tampon s'il n'y en a pas eu). */
+    private fun freshSamples(): Int {
+        val end = writePos
+        if (lastSnapshotEnd < 0) {
+            val len = (end - windowStart + ring.size) % ring.size
+            return if (len == 0 && filled) ring.size else len
+        }
+        var fresh = (end - lastSnapshotEnd + ring.size) % ring.size
+        if (fresh == 0 && filled && end != lastSnapshotEnd) fresh = ring.size
+        return fresh.coerceAtMost(ring.size)
     }
 
     /**
@@ -2986,7 +3018,7 @@ class StreamViewModel(
      */
     private fun feedVad(buf: ShortArray, n: Int) {
         val v = vad ?: return
-        if (!vadHealthy) return
+        if (!vadHealthy || !settings.vadSilero) return
         var i = 0
         try {
             while (i < n) {
@@ -2997,7 +3029,7 @@ class StreamViewModel(
                 if (vadFrameFill == SileroVad.FRAME) {
                     vadFrameFill = 0
                     val p = v.process(vadFrame)
-                    if (p >= 0.5f) speechFramesSinceSnapshot++
+                    if (p >= 0.5f) speechFramesSinceSnapshot.incrementAndGet()
                     if (speechGate.feed(p, SileroVad.FRAME_MS) == SpeechGate.Event.SPEECH_END) phraseEnded = true
                 }
             }
@@ -3007,12 +3039,33 @@ class StreamViewModel(
         }
     }
 
-    /** Charge le modèle Silero hors du thread principal ; sans effet s'il est déjà chargé. */
+    /** Charge le modèle Silero hors du thread principal ; sans effet s'il est déjà chargé ou en cours. */
     private fun loadVad() {
-        if (vad != null) return
+        if (vad != null || !vadLoading.compareAndSet(false, true)) return
         viewModelScope.launch(Dispatchers.IO) {
-            val v = SileroVad.create(appContext)
-            if (v != null && vad == null) vad = v else v?.close()
+            try {
+                val v = SileroVad.create(appContext)
+                if (v != null && vad == null && settings.vadSilero) vad = v else v?.close()
+            } finally {
+                vadLoading.set(false)
+            }
+        }
+    }
+
+    /** État de la VAD remis à zéro (début d'enregistrement, reprise après pause). */
+    private fun resetVadState() {
+        speechGate.reset()
+        vadFrameFill = 0
+        phraseEnded = false
+        speechFramesSinceSnapshot.set(0)
+        vad?.reset()
+    }
+
+    /** Ferme la VAD si le réglage a été désactivé pendant un enregistrement. */
+    private fun releaseVadIfDisabled() {
+        if (!settings.vadSilero) {
+            vad?.close()
+            vad = null
         }
     }
 
@@ -3020,9 +3073,9 @@ class StreamViewModel(
         settings.vadSilero = enabled
         if (enabled) {
             loadVad()
-        } else {
-            // Pas pendant un enregistrement : la boucle et le thread audio s'en servent
-            if (_isStreaming.value) return
+        } else if (!_isStreaming.value) {
+            // Pendant un enregistrement, la boucle et feedVad ignorent déjà la VAD (réglage lu à
+            // chaque tic) ; l'instance est fermée à l'arrêt
             vad?.close()
             vad = null
         }
@@ -3046,13 +3099,15 @@ class StreamViewModel(
                 bytes[2 * i] = (v and 0xFF).toByte()
                 bytes[2 * i + 1] = ((v shr 8) and 0xFF).toByte()
             }
+            // Durée renvoyée = audio neuf (hors chevauchement déjà transcrit)
+            val newMs = (freshSamples().coerceAtMost(len) * 1000L) / SAMPLE_RATE
             val overlap = SAMPLE_RATE * OVERLAP_SECONDS
             windowStart = if (!filled) {
                 maxOf(0, end - overlap)
             } else {
                 (end - overlap + ring.size) % ring.size
             }
-            val newMs = (len * 1000L) / SAMPLE_RATE
+            lastSnapshotEnd = end
             return bytes to newMs
         }
     }

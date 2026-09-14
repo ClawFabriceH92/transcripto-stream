@@ -95,6 +95,7 @@ fun RecordingListScreen(
     val dossiers by vm.dossiers.collectAsStateWithLifecycle()
     val dossierFilter by vm.dossierFilter.collectAsStateWithLifecycle()
     val hits by vm.searchHits.collectAsStateWithLifecycle()
+    val hitFiles by vm.searchFiles.collectAsStateWithLifecycle()
     var renameTarget by remember { mutableStateOf<RecordingItem?>(null) }
     var deleteTarget by remember { mutableStateOf<RecordingItem?>(null) }
     // rememberSaveable : le picker SAF peut tuer le process ; au retour, le callback
@@ -124,15 +125,15 @@ fun RecordingListScreen(
         if (uri != null && path != null) vm.exportDocument(File(path), uri, ExportFormat.PDF)
     }
 
-    // Recherche : nom / dossier (accents et casse ignorés) ou au moins un passage indexé
-    val hitPaths = remember(hits) { hits.map { it.file.absolutePath }.toSet() }
+    // Recherche : nom / dossier (accents et casse ignorés) ou au moins un passage indexé —
+    // hitFiles n'est pas plafonné, contrairement aux passages affichés
     val foldedQuery = remember(query) { TextFold.fold(query.trim()) }
     val filtered = recordings.filter { item ->
         (dossierFilter == null || item.dossier == dossierFilter) &&
             (foldedQuery.isEmpty() ||
                 TextFold.fold(item.baseName).contains(foldedQuery) ||
                 TextFold.fold(item.dossier).contains(foldedQuery) ||
-                item.file.absolutePath in hitPaths)
+                item.file.absolutePath in hitFiles)
     }
     val visibleHits = remember(hits, dossierFilter) {
         if (dossierFilter == null) hits else hits.filter { it.dossier == dossierFilter }
@@ -328,7 +329,7 @@ private fun HitCard(
     onClick: () -> Unit,
 ) {
     val terms = remember(query) { TextFold.terms(query) }
-    val highlighted = remember(hit.text, terms) { highlight(hit.text, terms) }
+    val highlighted = remember(hit.text, terms) { highlight(excerpt(hit.text, terms), terms) }
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
@@ -368,6 +369,16 @@ private fun HitCard(
             }
         }
     }
+}
+
+/** Un long passage est recadré autour de la première occurrence pour que le terme reste visible. */
+private fun excerpt(text: String, terms: List<String>, window: Int = 110): String {
+    if (text.length <= 2 * window) return text
+    val folded = String(text.map { c -> TextFold.fold(c.toString()).firstOrNull() ?: c }.toCharArray())
+    val first = terms.mapNotNull { t -> folded.indexOf(t).takeIf { it >= 0 } }.minOrNull() ?: return text
+    val start = (first - window / 2).coerceAtLeast(0)
+    val end = (first + window * 3 / 2).coerceAtMost(text.length)
+    return (if (start > 0) "…" else "") + text.substring(start, end) + (if (end < text.length) "…" else "")
 }
 
 /** Met en gras chaque occurrence des termes (comparaison sans accents ni casse, longueurs identiques). */

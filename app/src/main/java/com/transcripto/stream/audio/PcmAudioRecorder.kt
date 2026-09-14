@@ -37,7 +37,9 @@ class PcmAudioRecorder(
         )
         if (minBuf <= 0) return false
 
-        // Tampon d'environ 100 ms
+        // Bloc de lecture d'environ 100 ms ; tampon matériel d'une seconde : un retard
+        // ponctuel du thread (inférence VAD, GC, ordonnancement) ne fait perdre aucun
+        // échantillon au WAV probant
         val bufBytes = maxOf(minBuf, sampleRate * 2 * 2 / 10)
         val record = try {
             AudioRecord(
@@ -45,7 +47,7 @@ class PcmAudioRecorder(
                 sampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
-                bufBytes,
+                maxOf(minBuf, sampleRate * 2),
             )
         } catch (e: Exception) {
             return false

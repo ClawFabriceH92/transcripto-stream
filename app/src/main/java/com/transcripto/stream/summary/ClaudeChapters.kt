@@ -29,7 +29,8 @@ object ClaudeChapters {
 
     private val SYSTEM = """
         Tu es l'assistant d'un cabinet d'expertise comptable et de commissariat aux comptes. On te fournit la
-        transcription automatique horodatée d'un enregistrement (une ligne par passage, « [mm:ss] Intervenant : texte »).
+        transcription automatique horodatée d'un enregistrement (une ligne par passage, « [mm:ss] Intervenant : texte »,
+        ou « [h:mm:ss] » au-delà d'une heure).
         Découpe-la en chapitres thématiques : entre 3 et 12, chacun d'au moins deux minutes, en suivant les vrais
         changements de sujet (pas un chapitre par intervention). Le premier chapitre commence au premier horodatage.
 
@@ -111,14 +112,21 @@ object ClaudeChapters {
 
     /** Tableau JSON [{"start":"mm:ss","title":"…"}] extrait d'une réponse éventuellement bavarde. */
     fun parse(text: String): List<Chapter> {
-        val start = text.indexOf('[')
         val end = text.lastIndexOf(']')
-        if (start < 0 || end <= start) return emptyList()
-        val arr = try {
-            JSONArray(text.substring(start, end + 1))
-        } catch (e: Exception) {
-            return emptyList()
+        if (end < 0) return emptyList()
+        // Le tableau commence au premier « [ » qui donne un JSON valide (une prose du type
+        // « Voici [le] découpage » précède parfois la réponse)
+        var arr: JSONArray? = null
+        var start = text.indexOf('[')
+        while (start in 0 until end && arr == null) {
+            arr = try {
+                JSONArray(text.substring(start, end + 1))
+            } catch (e: Exception) {
+                null
+            }
+            if (arr == null) start = text.indexOf('[', start + 1)
         }
+        if (arr == null) return emptyList()
         val out = ArrayList<Chapter>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue

@@ -6,6 +6,8 @@ import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.util.Log
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 
@@ -14,8 +16,10 @@ import java.nio.LongBuffer
  * une probabilité de parole par trame de 512 échantillons (32 ms à 16 kHz), avec
  * l'état récurrent et le contexte de 64 échantillons attendus par le modèle.
  *
- * Instance à usage exclusif d'un thread (celui de capture). Toute erreur
- * d'inférence lève : l'appelant se replie sur la détection par volume (RMS).
+ * Tampons d'entrée directs alloués une fois (pas d'allocation par trame) ; le
+ * tenseur « sr » (constante) est créé une fois. Les appels sont synchronisés :
+ * `process` sur le thread de capture, `reset`/`close` depuis le thread principal.
+ * Toute erreur d'inférence lève : l'appelant se replie sur la détection par volume.
  */
 class SileroVad private constructor(
     private val env: OrtEnvironment,
@@ -24,13 +28,22 @@ class SileroVad private constructor(
 ) : AutoCloseable {
 
     private val context = FloatArray(CONTEXT)
-    private val input = FloatArray(CONTEXT + FRAME)
-    private var state = FloatArray(2 * 128)
+    private val inputBuf: FloatBuffer = ByteBuffer.allocateDirect((CONTEXT + FRAME) * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private val stateBuf: FloatBuffer = ByteBuffer.allocateDirect(2 * 128 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private val srTensor: OnnxTensor = OnnxTensor.createTensor(
+        env,
+        LongBuffer.wrap(longArrayOf(SAMPLE_RATE.toLong())),
+        if (scalarSampleRate) longArrayOf() else longArrayOf(1),
+    )
+    private val lock = Any()
+    private var closed = false
 
     /** Remet à zéro l'état récurrent (à chaque nouvel enregistrement). */
     fun reset() {
-        context.fill(0f)
-        state = FloatArray(2 * 128)
+        synchronized(lock) {
+            context.fill(0f)
+            for (i in 0 until 2 * 128) stateBuf.put(i, 0f)
+        }
     }
 
     /**
@@ -38,38 +51,44 @@ class SileroVad private constructor(
      * Appel bloquant d'environ une milliseconde.
      */
     fun process(frame: ShortArray, offset: Int = 0): Float {
-        System.arraycopy(context, 0, input, 0, CONTEXT)
-        for (i in 0 until FRAME) input[CONTEXT + i] = frame[offset + i] / 32768f
-        val x = OnnxTensor.createTensor(env, FloatBuffer.wrap(input), longArrayOf(1, (CONTEXT + FRAME).toLong()))
-        val st = OnnxTensor.createTensor(env, FloatBuffer.wrap(state), longArrayOf(2, 1, 128))
-        val sr = OnnxTensor.createTensor(
-            env,
-            LongBuffer.wrap(longArrayOf(SAMPLE_RATE.toLong())),
-            if (scalarSampleRate) longArrayOf() else longArrayOf(1),
-        )
-        try {
-            session.run(mapOf("input" to x, "state" to st, "sr" to sr)).use { res ->
-                @Suppress("UNCHECKED_CAST")
-                val out = res.get(0).value as Array<FloatArray>
-                @Suppress("UNCHECKED_CAST")
-                val newState = res.get(1).value as Array<Array<FloatArray>>
-                val flat = FloatArray(2 * 128)
-                for (k in 0 until 2) System.arraycopy(newState[k][0], 0, flat, k * 128, 128)
-                state = flat
-                System.arraycopy(input, FRAME, context, 0, CONTEXT)
-                return out[0][0].coerceIn(0f, 1f)
+        synchronized(lock) {
+            check(!closed) { "VAD fermée" }
+            for (i in 0 until CONTEXT) inputBuf.put(i, context[i])
+            for (i in 0 until FRAME) inputBuf.put(CONTEXT + i, frame[offset + i] / 32768f)
+            inputBuf.rewind()
+            stateBuf.rewind()
+            val x = OnnxTensor.createTensor(env, inputBuf, longArrayOf(1, (CONTEXT + FRAME).toLong()))
+            val st = OnnxTensor.createTensor(env, stateBuf, longArrayOf(2, 1, 128))
+            try {
+                session.run(mapOf("input" to x, "state" to st, "sr" to srTensor)).use { res ->
+                    @Suppress("UNCHECKED_CAST")
+                    val out = (res.get("output").orElse(null) ?: res.get(0)).value as Array<FloatArray>
+                    @Suppress("UNCHECKED_CAST")
+                    val newState = (res.get("stateN").orElse(null) ?: res.get(1)).value as Array<Array<FloatArray>>
+                    for (k in 0 until 2) for (j in 0 until 128) stateBuf.put(k * 128 + j, newState[k][0][j])
+                    // Contexte = 64 derniers échantillons de la trame
+                    for (i in 0 until CONTEXT) context[i] = frame[offset + FRAME - CONTEXT + i] / 32768f
+                    return out[0][0].coerceIn(0f, 1f)
+                }
+            } finally {
+                x.close()
+                st.close()
             }
-        } finally {
-            x.close()
-            st.close()
-            sr.close()
         }
     }
 
     override fun close() {
-        try {
-            session.close()
-        } catch (_: Exception) {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            try {
+                srTensor.close()
+            } catch (_: Exception) {
+            }
+            try {
+                session.close()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -89,11 +108,11 @@ class SileroVad private constructor(
         fun create(context: Context): SileroVad? = try {
             val bytes = context.assets.open(ASSET).use { it.readBytes() }
             val env = OrtEnvironment.getEnvironment()
-            val opts = OrtSession.SessionOptions().apply {
-                setIntraOpNumThreads(1)
-                setInterOpNumThreads(1)
+            val session = OrtSession.SessionOptions().use { opts ->
+                opts.setIntraOpNumThreads(1)
+                opts.setInterOpNumThreads(1)
+                env.createSession(bytes, opts)
             }
-            val session = env.createSession(bytes, opts)
             val names = session.inputNames
             if (!names.containsAll(listOf("input", "state", "sr"))) {
                 Log.e(TAG, "Modèle inattendu (entrées : $names)")
@@ -104,8 +123,8 @@ class SileroVad private constructor(
                 val scalar = srInfo?.shape?.isEmpty() ?: true
                 // Inférence d'échauffement : valide la forme du tenseur « sr » (scalaire ou [1])
                 // avant le premier enregistrement ; l'autre forme est tentée en secours
-                warmUp(SileroVad(env, session, scalar))
-                    ?: warmUp(SileroVad(env, session, !scalar))
+                warmUp(env, session, scalar)
+                    ?: warmUp(env, session, !scalar)
                     ?: run {
                         Log.e(TAG, "Modèle chargé mais inférence impossible")
                         session.close()
@@ -118,13 +137,25 @@ class SileroVad private constructor(
             null
         }
 
-        private fun warmUp(v: SileroVad): SileroVad? = try {
-            v.process(ShortArray(FRAME))
-            v.reset()
-            v
-        } catch (t: Throwable) {
-            Log.w(TAG, "Échauffement VAD (sr ${if (v.scalarSampleRate) "scalaire" else "[1]"}) : ${t.message}")
-            null
+        private fun warmUp(env: OrtEnvironment, session: OrtSession, scalar: Boolean): SileroVad? {
+            val v = try {
+                SileroVad(env, session, scalar)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Tenseur sr (${if (scalar) "scalaire" else "[1]"}) : ${t.message}")
+                return null
+            }
+            return try {
+                v.process(ShortArray(FRAME))
+                v.reset()
+                v
+            } catch (t: Throwable) {
+                Log.w(TAG, "Échauffement VAD (sr ${if (scalar) "scalaire" else "[1]"}) : ${t.message}")
+                try {
+                    v.srTensor.close()
+                } catch (_: Exception) {
+                }
+                null
+            }
         }
     }
 }

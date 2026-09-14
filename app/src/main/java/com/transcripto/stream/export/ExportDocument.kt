@@ -121,6 +121,11 @@ object ExportComposer {
                     val clock = if (doc.timestamps) TranscriptExporter.formatHms(seg.startMs) else null
                     out += DocBlock.Segment(clock, seg.text.trim())
                 }
+                // Chapitres situés après le dernier passage : listés quand même (jamais perdus)
+                while (nextChapter < chapters.size) {
+                    val c = chapters[nextChapter++]
+                    out += DocBlock.Heading(2, "${TranscriptExporter.formatHms(c.startMs)} — ${c.title}")
+                }
             }
             doc.transcriptText.isNotBlank() -> {
                 doc.transcriptText.lines()

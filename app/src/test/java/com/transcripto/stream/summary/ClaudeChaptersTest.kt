@@ -10,7 +10,7 @@ class ClaudeChaptersTest {
 
     @Test
     fun parsesJsonArrayEvenWhenWrappedInProse() {
-        val text = "Voici le découpage :\n```json\n[{\"start\": \"00:00\", \"title\": \"Ouverture de séance.\"}," +
+        val text = "Voici [le] découpage :\n```json\n[{\"start\": \"00:00\", \"title\": \"Ouverture de séance.\"}," +
             " {\"start\": \"[12:30]\", \"title\": \"Stocks et provisions\"}, {\"start\": \"1:05:07\", \"title\": \"Questions diverses\"}," +
             " {\"start\": \"12:30\", \"title\": \"Doublon\"}, {\"start\": \"n/a\", \"title\": \"Ignoré\"}, {\"start\": \"20:00\", \"title\": \"\"}]\n```"
         val chapters = ClaudeChapters.parse(text)

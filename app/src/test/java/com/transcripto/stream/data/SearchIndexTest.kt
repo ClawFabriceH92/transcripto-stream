@@ -20,7 +20,9 @@ class SearchIndexTest {
     @Test
     fun foldIgnoresAccentsAndCase() {
         assertEquals("ecriture d'ete", TextFold.fold("Écriture d'Été"))
+        assertEquals("coeur d'oeuvre", TextFold.fold("Cœur d'Œuvre"))
         assertEquals(listOf("provision", "12"), TextFold.terms("  Provision, « 12 » "))
+        assertEquals(listOf("dossier", "12", "000"), TextFold.terms("dossier : 12 000 €"))
         assertTrue(TextFold.terms("   ").isEmpty())
     }
 
@@ -76,12 +78,13 @@ class SearchIndexTest {
 
     @Test
     fun segmentsFromTextParsesSpeakerAndClock() {
-        val body = "[Intervenant 1] [00:05] Bonjour à tous.\n[Mme Durand] [01:02:03] Reprise.\nSans étiquette.\n\n--- Temps de parole ---\nIntervenant 1 : 00:10 (50 %)"
+        val body = "[Intervenant 1] [00:05] Bonjour à tous.\n[Mme Durand] [01:02:03] Reprise.\nSans étiquette.\n[00:42] Horodatage seul.\n\n--- Temps de parole ---\nIntervenant 1 : 00:10 (50 %)"
         val segs = SearchIndex.segmentsFromText(body)
-        assertEquals(4, segs.size)
+        assertEquals(5, segs.size)
+        assertEquals(StoredSegment(42_000, 42_000, "Horodatage seul.", 0), segs[3])
         assertEquals(StoredSegment(5000, 5000, "Bonjour à tous.", 1), segs[0])
         assertEquals(StoredSegment(3_723_000, 3_723_000, "Reprise.", 0), segs[1])
         assertEquals(StoredSegment(-1, -1, "Sans étiquette.", 0), segs[2])
-        assertEquals("Intervenant 1 : 00:10 (50 %)", segs[3].text)
+        assertEquals("Intervenant 1 : 00:10 (50 %)", segs[4].text)
     }
 }

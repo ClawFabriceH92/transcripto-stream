@@ -84,7 +84,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private fun clock(ms: Long): String = "%02d:%02d".format(ms / 60_000, (ms / 1000) % 60)
+/** « mm:ss », ou « h:mm:ss » au-delà d'une heure (comme les exports). */
+private fun clock(ms: Long): String {
+    val totalSec = ms / 1000
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+}
 
 /**
  * Fiche d'un enregistrement : lecteur, actions, puis transcription synchronisée —

@@ -38,7 +38,8 @@ class SpeechGate(
                     return Event.SPEECH_START
                 }
             } else {
-                speechMs = 0
+                // Une trame hésitante ne remet pas l'attaque à zéro : le crédit s'érode
+                speechMs = (speechMs - frameMs).coerceAtLeast(0)
             }
             return null
         }

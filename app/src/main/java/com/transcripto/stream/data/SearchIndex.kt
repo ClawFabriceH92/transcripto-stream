@@ -35,14 +35,16 @@ data class IndexSource(
 object TextFold {
     private val MARKS = Regex("\\p{M}+")
 
-    /** « Écriture d'Été » → « ecriture d'ete ». */
+    /** « Écriture d'Été » → « ecriture d'ete » ; ligatures œ/æ décomposées (NFD ne le fait pas). */
     fun fold(s: String): String =
         MARKS.replace(Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD), "")
+            .replace("œ", "oe").replace("æ", "ae")
 
-    /** Termes de la requête (repliés, non vides). */
+    /** Termes de la requête (repliés, non vides, contenant au moins une lettre ou un chiffre). */
     fun terms(query: String): List<String> =
-        fold(query).split(Regex("\\s+")).map { it.trim('«', '»', '"', '\'', ',', ';', '.', '!', '?', '(', ')') }
-            .filter { it.isNotEmpty() }
+        fold(query).split(Regex("\\s+"))
+            .map { it.trim('«', '»', '"', '\'', ',', ';', '.', '!', '?', '(', ')', ':', '…', '—', '-') }
+            .filter { t -> t.any { it.isLetterOrDigit() } }
 }
 
 /**
@@ -148,7 +150,8 @@ class SearchIndex {
     fun clear() = synchronized(entries) { entries.clear() }
 
     companion object {
-        private val SPEAKER_LINE = Regex("^\\[(?:Intervenant (\\d+)|[^\\]]+)\\]\\s*")
+        /** Étiquette d'intervenant en tête de ligne — jamais un horodatage « [mm:ss] ». */
+        private val SPEAKER_LINE = Regex("^\\[(?:Intervenant (\\d+)|[^\\]\\d][^\\]]*)\\]\\s*")
         private val CLOCK = Regex("^\\[(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\]\\s*")
 
         /**

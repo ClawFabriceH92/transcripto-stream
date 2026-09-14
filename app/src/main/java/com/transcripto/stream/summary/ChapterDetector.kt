@@ -109,7 +109,8 @@ object ChapterDetector {
     }
 
     private fun cosine(a: Map<String, Int>, b: Map<String, Int>, idf: (String) -> Double): Double {
-        if (a.isEmpty() || b.isEmpty()) return 0.0
+        // Une minute sans terme significatif (« oui, d'accord, merci ») n'est pas une bascule
+        if (a.isEmpty() || b.isEmpty()) return 1.0
         var dot = 0.0
         var na = 0.0
         var nb = 0.0
@@ -123,7 +124,7 @@ object ChapterDetector {
             val w = c * idf(t)
             nb += w * w
         }
-        if (na == 0.0 || nb == 0.0) return 0.0
+        if (na == 0.0 || nb == 0.0) return 1.0
         return dot / (sqrt(na) * sqrt(nb))
     }
 }

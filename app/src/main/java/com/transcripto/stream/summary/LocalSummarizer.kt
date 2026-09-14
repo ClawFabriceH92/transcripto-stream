@@ -290,10 +290,13 @@ object LocalSummarizer {
      */
     fun tokenPairs(text: String): List<Pair<String, String>> =
         WORD.findAll(text.lowercase())
-            .map { it.value.trim('\'', '’', '-') }
+            .map { ELISION.replace(it.value, "").trim('\'', '’', '-') }
             .filter { it.length >= 3 && it !in STOPWORDS && !it.all { c -> c.isDigit() } }
             .map { stem(it) to it }
             .toList()
+
+    /** Article ou pronom élidé en tête de mot : « l'inventaire » → « inventaire ». */
+    private val ELISION = Regex("^(?:[ldjmnstc]|qu|jusqu|lorsqu|puisqu)['’]")
 
     /** Regroupement minimal singulier/pluriel (« comptes » → « compte »). */
     private fun stem(w: String): String = when {
