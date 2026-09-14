@@ -114,19 +114,24 @@ object ClaudeChapters {
     fun parse(text: String): List<Chapter> {
         val end = text.lastIndexOf(']')
         if (end < 0) return emptyList()
-        // Le tableau commence au premier « [ » qui donne un JSON valide (une prose du type
-        // « Voici [le] découpage » précède parfois la réponse)
-        var arr: JSONArray? = null
+        // Le tableau commence au premier « [ » qui donne des chapitres : org.json est tolérant
+        // (« [le] » d'une prose du type « Voici [le] découpage » passe pour un tableau d'une
+        // chaîne nue), on ne s'arrête donc qu'à un résultat exploitable
         var start = text.indexOf('[')
-        while (start in 0 until end && arr == null) {
-            arr = try {
-                JSONArray(text.substring(start, end + 1))
-            } catch (e: Exception) {
-                null
-            }
-            if (arr == null) start = text.indexOf('[', start + 1)
+        while (start in 0 until end) {
+            val chapters = parseArray(text.substring(start, end + 1))
+            if (chapters.isNotEmpty()) return chapters
+            start = text.indexOf('[', start + 1)
         }
-        if (arr == null) return emptyList()
+        return emptyList()
+    }
+
+    private fun parseArray(json: String): List<Chapter> {
+        val arr = try {
+            JSONArray(json)
+        } catch (e: Exception) {
+            return emptyList()
+        }
         val out = ArrayList<Chapter>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
