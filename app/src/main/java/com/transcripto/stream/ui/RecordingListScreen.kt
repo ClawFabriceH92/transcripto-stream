@@ -54,9 +54,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.data.SearchHit
+import com.transcripto.stream.data.SpeakerNames
+import com.transcripto.stream.data.TextFold
 import com.transcripto.stream.export.ExportFormat
 import com.transcripto.stream.ui.theme.AppIcons
 import kotlinx.coroutines.launch
@@ -87,6 +94,7 @@ fun RecordingListScreen(
     val query by vm.searchQuery.collectAsStateWithLifecycle()
     val dossiers by vm.dossiers.collectAsStateWithLifecycle()
     val dossierFilter by vm.dossierFilter.collectAsStateWithLifecycle()
+    val hits by vm.searchHits.collectAsStateWithLifecycle()
     var renameTarget by remember { mutableStateOf<RecordingItem?>(null) }
     var deleteTarget by remember { mutableStateOf<RecordingItem?>(null) }
     // rememberSaveable : le picker SAF peut tuer le process ; au retour, le callback
@@ -116,12 +124,18 @@ fun RecordingListScreen(
         if (uri != null && path != null) vm.exportDocument(File(path), uri, ExportFormat.PDF)
     }
 
+    // Recherche : nom / dossier (accents et casse ignorés) ou au moins un passage indexé
+    val hitPaths = remember(hits) { hits.map { it.file.absolutePath }.toSet() }
+    val foldedQuery = remember(query) { TextFold.fold(query.trim()) }
     val filtered = recordings.filter { item ->
         (dossierFilter == null || item.dossier == dossierFilter) &&
-            (query.isBlank() ||
-                item.baseName.contains(query, ignoreCase = true) ||
-                item.dossier.contains(query, ignoreCase = true) ||
-                item.transcript.contains(query, ignoreCase = true))
+            (foldedQuery.isEmpty() ||
+                TextFold.fold(item.baseName).contains(foldedQuery) ||
+                TextFold.fold(item.dossier).contains(foldedQuery) ||
+                item.file.absolutePath in hitPaths)
+    }
+    val visibleHits = remember(hits, dossierFilter) {
+        if (dossierFilter == null) hits else hits.filter { it.dossier == dossierFilter }
     }
 
     // Groupes par jour (la liste est déjà triée par date décroissante).
@@ -193,7 +207,7 @@ fun RecordingListScreen(
         }
         Spacer(Modifier.height(4.dp))
 
-        if (filtered.isEmpty()) {
+        if (filtered.isEmpty() && visibleHits.isEmpty()) {
             if (query.isBlank()) {
                 EmptyState(
                     icon = AppIcons.Mic,
@@ -216,6 +230,22 @@ fun RecordingListScreen(
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
+                if (query.isNotBlank() && visibleHits.isNotEmpty()) {
+                    stickyHeader(key = "header-hits") {
+                        DayHeader("Passages (${visibleHits.size}${if (visibleHits.size >= 80) "+" else ""})")
+                    }
+                    items(visibleHits, key = { "hit-${it.file.absolutePath}-${it.index}" }) { hit ->
+                        HitCard(
+                            hit = hit,
+                            query = query,
+                            formatHms = { vm.formatHms(it) },
+                            onClick = { vm.openHit(hit) },
+                        )
+                    }
+                    if (grouped.isNotEmpty()) {
+                        item(key = "hits-spacer") { Spacer(Modifier.height(8.dp)) }
+                    }
+                }
                 grouped.forEach { (label, items) ->
                     stickyHeader(key = "header-$label") {
                         DayHeader(label)
@@ -289,6 +319,81 @@ fun RecordingListScreen(
 }
 
 /** « Aujourd'hui », « Hier », sinon « Vendredi 22 août 2026 ». */
+/** Passage trouvé : enregistrement, intervenant, horodatage, extrait avec les termes en gras. */
+@Composable
+private fun HitCard(
+    hit: SearchHit,
+    query: String,
+    formatHms: (Long) -> String,
+    onClick: () -> Unit,
+) {
+    val terms = remember(query) { TextFold.terms(query) }
+    val highlighted = remember(hit.text, terms) { highlight(hit.text, terms) }
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    hit.baseName,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (hit.startMs >= 0) MetaChip(text = formatHms(hit.startMs), icon = AppIcons.Clock)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                highlighted,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val who = when {
+                hit.speaker > 0 -> SpeakerNames.label(hit.speaker, hit.speakerNames)
+                else -> ""
+            }
+            if (who.isNotEmpty() || hit.dossier.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    listOf(who, hit.dossier).filter { it.isNotBlank() }.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** Met en gras chaque occurrence des termes (comparaison sans accents ni casse, longueurs identiques). */
+private fun highlight(text: String, terms: List<String>) = buildAnnotatedString {
+    // Le repli NFD peut changer la longueur : on replie caractère par caractère pour garder les index
+    val foldedChars = text.map { c -> TextFold.fold(c.toString()).firstOrNull() ?: c }
+    val folded = String(foldedChars.toCharArray())
+    val bold = BooleanArray(text.length)
+    for (t in terms) {
+        if (t.isEmpty()) continue
+        var i = folded.indexOf(t)
+        while (i >= 0) {
+            for (k in i until minOf(i + t.length, bold.size)) bold[k] = true
+            i = folded.indexOf(t, i + t.length)
+        }
+    }
+    var i = 0
+    while (i < text.length) {
+        val b = bold[i]
+        var j = i
+        while (j < text.length && bold[j] == b) j++
+        if (b) withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(text, i, j) } else append(text, i, j)
+        i = j
+    }
+}
+
 private fun dayLabel(millis: Long, today: LocalDate): String {
     val date = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
     return when (date) {

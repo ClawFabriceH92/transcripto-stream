@@ -29,6 +29,9 @@ import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.data.RecordingMeta
 import com.transcripto.stream.data.MetaCodec
 import com.transcripto.stream.data.SegmentsCodec
+import com.transcripto.stream.data.IndexSource
+import com.transcripto.stream.data.SearchHit
+import com.transcripto.stream.data.SearchIndex
 import com.transcripto.stream.data.SettingsStore
 import com.transcripto.stream.data.TextVault
 import com.transcripto.stream.export.DocxWriter
@@ -126,6 +129,7 @@ class StreamViewModel(
         private val CLOCK_TAG = Regex("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\] ")
         private const val TAG = "StreamVM"
         private const val SAMPLE_RATE = 16000
+        private const val SEARCH_DEBOUNCE_MS = 150L
         private const val WINDOW_SECONDS = 4
         private const val OVERLAP_SECONDS = 1
         private const val TICK_MS = 1000L
@@ -238,6 +242,12 @@ class StreamViewModel(
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    /** Index en mémoire de tous les passages (rien n'est persisté en clair). */
+    private val searchIndex = SearchIndex()
+    private val _searchHits = MutableStateFlow<List<SearchHit>>(emptyList())
+    val searchHits: StateFlow<List<SearchHit>> = _searchHits.asStateFlow()
+    private var searchJob: Job? = null
 
     // ---- Écran détail (écran 3) : enregistrement ouvert + lecture synchronisée ----
     private val _detailItem = MutableStateFlow<RecordingItem?>(null)
@@ -769,7 +779,38 @@ class StreamViewModel(
 
     fun setSearchQuery(q: String) {
         _searchQuery.value = q
+        searchJob?.cancel()
+        if (q.isBlank()) {
+            _searchHits.value = emptyList()
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS) // pas une recherche par frappe
+            _searchHits.value = withContext(Dispatchers.Default) { searchIndex.search(q) }
+        }
     }
+
+    /** Résultat de recherche : ouvre la fiche et cale la lecture sur le passage. */
+    fun openHit(hit: SearchHit) {
+        openDetailForFile(hit.file)
+        if (hit.hasAudio && hit.startMs >= 0) playFrom(hit.file, hit.startMs)
+    }
+
+    /** Segments à indexer : ceux du .json, sinon les lignes du .txt (texte seul). */
+    private fun loadSegmentsForIndex(file: File): List<StoredSegment> {
+        val json = RecordingNames.jsonSibling(file)
+        if (json.exists()) {
+            val segs = SegmentsCodec.fromJson(TextVault.read(json))
+            if (segs.isNotEmpty()) return segs
+        }
+        val txt = transcriptFileFor(file)
+        if (!txt.exists()) return emptyList()
+        return SearchIndex.segmentsFromText(TextVault.read(txt).substringAfter("----\n"))
+    }
+
+    /** Date du contenu textuel d'un enregistrement (max des fichiers texte). */
+    private fun contentStamp(file: File): Long =
+        maxOf(transcriptFileFor(file).lastModified(), RecordingNames.jsonSibling(file).lastModified())
 
     // ================= STREAMING =================
 
@@ -2633,9 +2674,27 @@ class StreamViewModel(
                 }
                 val list = (audio + textOnly).map { f -> buildItem(f) }
                     .sortedByDescending { it.modifiedAt }
+                // Index de recherche : seuls les enregistrements dont le texte a changé sont relus
+                searchIndex.sync(
+                    list.map { item ->
+                        IndexSource(
+                            file = item.file,
+                            contentStamp = contentStamp(item.file),
+                            baseName = item.baseName,
+                            dossier = item.dossier,
+                            hasAudio = item.hasAudio,
+                            speakerNames = item.speakerNames,
+                            modifiedAt = item.modifiedAt,
+                        )
+                    },
+                ) { f -> loadSegmentsForIndex(f) }
                 list to files.sumOf { it.length() }
             }
             _recordings.value = items
+            val q = _searchQuery.value
+            if (q.isNotBlank()) {
+                _searchHits.value = withContext(Dispatchers.Default) { searchIndex.search(q) }
+            }
             _storageBytes.value = totalBytes
             _dossiers.value = items.map { it.dossier }.filter { it.isNotBlank() }.distinct()
                 .sortedBy { it.lowercase(Locale.FRANCE) }
