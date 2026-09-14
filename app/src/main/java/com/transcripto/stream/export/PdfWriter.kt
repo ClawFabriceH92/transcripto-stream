@@ -60,7 +60,7 @@ object PdfWriter {
 
         fun finishPage() {
             val p = page ?: return
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = MUTED
                 textSize = 8f
             }
