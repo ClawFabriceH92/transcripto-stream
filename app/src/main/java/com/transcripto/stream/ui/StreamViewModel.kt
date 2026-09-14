@@ -338,6 +338,14 @@ class StreamViewModel(
     private var modelLoadJob: Job? = null
 
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Copies en clair du cache (partage, écoute, export) et temporaires d'écriture :
+            // purgés au démarrage — rien ne doit survivre en clair à côté des textes scellés
+            purgeClearCopies()
+            TextVault.purgeTemporaries(recordingsDir())
+            // Migration interrompue par une mort du process : reprise (idempotente)
+            if (settings.encryptTexts) TextVault.migrate(recordingsDir(), true)
+        }
         loadWhisperModel()
         cleanupExpired()
         refreshRecordings()
@@ -685,12 +693,15 @@ class StreamViewModel(
         TextVault.enabled = enabled
         viewModelScope.launch {
             _backupBusy.value = true // aucune écriture concurrente pendant la migration
-            val n = try {
+            val r = try {
                 withContext(Dispatchers.IO) { TextVault.migrate(recordingsDir(), enabled) }
             } finally {
                 _backupBusy.value = false
             }
-            _uiMessage.value = if (enabled) "Textes chiffrés ($n fichiers)" else "Textes déchiffrés ($n fichiers)"
+            _uiMessage.value = buildString {
+                append(if (enabled) "Textes chiffrés (${r.rewritten} fichiers)" else "Textes déchiffrés (${r.rewritten} fichiers)")
+                if (r.unreadable > 0) append(" — ${r.unreadable} illisible(s) : clé perdue ou fichier altéré")
+            }
             refreshRecordings()
         }
         return true
@@ -706,6 +717,7 @@ class StreamViewModel(
 
     fun disablePin() {
         settings.clearPin()
+        settings.biometricUnlock = false // n'a de sens qu'avec un PIN
         _locked.value = false
     }
 
@@ -1507,6 +1519,20 @@ class StreamViewModel(
      * [suffix] distingue les usages simultanés (lecture "_pb", transcription "_tr",
      * partage "_dec") : la suppression du temp d'un flux n'invalide pas les autres.
      */
+    /** Supprime les copies en clair du cache : dossier « exports » et WAV déchiffrés temporaires. */
+    private fun purgeClearCopies() {
+        try {
+            File(appContext.cacheDir, "exports").listFiles()?.forEach { it.delete() }
+            appContext.cacheDir.listFiles()?.forEach { f ->
+                if (f.isFile && f.name.endsWith(".wav") && Regex("_(dec|pb|tr|exp_\\d+|bak_\\d+)\\.wav$").containsMatchIn(f.name)) {
+                    f.delete()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "purgeClearCopies: ${e.message}")
+        }
+    }
+
     private fun resolvedAudioFile(file: File, suffix: String = "_dec"): File? {
         if (file.extension != "enc") return file
         return CryptoManager.decryptToTemp(file, appContext.cacheDir, suffix)
@@ -1775,10 +1801,10 @@ class StreamViewModel(
             val txt = RecordingNames.txtSibling(audioFile)
             // L'empreinte PCM n'est calculée qu'à l'enregistrement : on la préserve
             // quand le .txt est réécrit (transcription différée, édition manuelle).
-            val hash = sha256 ?: if (txt.exists()) {
-                HASH_LINE.find(TextVault.read(txt))?.groupValues?.get(1)
-            } else {
-                null
+            val hash = sha256 ?: try {
+                if (txt.exists()) HASH_LINE.find(TextVault.read(txt))?.groupValues?.get(1) else null
+            } catch (e: Exception) {
+                null // ancien .txt illisible (clé perdue, fichier altéré) : on réécrit sans empreinte
             }
             val date = if (audioFile.exists()) audioFile.lastModified() else System.currentTimeMillis()
             val sb = StringBuilder()
@@ -1789,7 +1815,9 @@ class StreamViewModel(
             if (hash != null) sb.append("SHA-256 (PCM) : ").append(hash).append("\n")
             sb.append("----\n\n")
             sb.append(text)
-            TextVault.write(txt, sb.toString())
+            if (!TextVault.write(txt, sb.toString())) {
+                _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
+            }
         } catch (e: Exception) {
             Log.e(TAG, "writeTranscriptFile: ${e.message}")
         }
@@ -1904,10 +1932,10 @@ class StreamViewModel(
     /** Partage direct d'un élément de la liste, sans passer par l'écran principal. */
     suspend fun buildShareIntentFor(item: RecordingItem): Intent? = withContext(Dispatchers.IO) {
         val txt = transcriptFileFor(item.file)
-        val text = if (txt.exists()) {
-            TextVault.read(txt).substringAfter("----\n").trim()
-        } else {
-            item.transcript
+        val text = try {
+            if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else item.transcript
+        } catch (e: Exception) {
+            item.transcript // .txt scellé illisible : on partage au moins l'aperçu
         }
         buildShareIntent(item.file, SpeakerNames.apply(text, item.speakerNames))
     }
@@ -2434,6 +2462,7 @@ class StreamViewModel(
                         appContext.contentResolver.openOutputStream(destUri)
                     } ?: return@withContext "Impossible d'écrire la sauvegarde"
                     var count = 0
+                    var unreadable = 0
                     // out.use englobe tout : même un échec avant le flux chiffrant ferme le SAF
                     out.use { rawOut ->
                     BackupCrypto.encryptingStream(rawOut, passphrase.toCharArray()).use { enc ->
@@ -2462,18 +2491,21 @@ class StreamViewModel(
                                     }
                                 } else {
                                     if (!usedNames.add(f.name)) continue
-                                    zip.putNextEntry(ZipEntry(f.name))
                                     // Textes scellés (chiffrement au repos) : en clair DANS l'archive,
-                                    // comme les WAV — la clé KeyStore ne voyage pas
-                                    val plain = if (TextVault.isTextFile(f.name) && TextVault.isSealed(f)) {
+                                    // comme les WAV — la clé KeyStore ne voyage pas. Un texte scellé
+                                    // illisible (clé perdue) est ignoré : il ne serait lisible nulle part.
+                                    val sealed = TextVault.isTextFile(f.name) && TextVault.isSealed(f)
+                                    val plain = if (sealed) {
                                         try {
                                             TextVault.read(f)
                                         } catch (e: Exception) {
-                                            null
+                                            unreadable++
+                                            continue
                                         }
                                     } else {
                                         null
                                     }
+                                    zip.putNextEntry(ZipEntry(f.name))
                                     if (plain != null) {
                                         zip.write(plain.toByteArray(Charsets.UTF_8))
                                     } else {
@@ -2486,7 +2518,8 @@ class StreamViewModel(
                         }
                     }
                     } // out.use
-                    "Sauvegarde exportée ($count fichiers) — garde précieusement la phrase de passe"
+                    "Sauvegarde exportée ($count fichiers) — garde précieusement la phrase de passe" +
+                        (if (unreadable > 0) " ($unreadable texte(s) illisible(s) ignoré(s))" else "")
                 } catch (e: Exception) {
                     Log.e(TAG, "exportBackup", e)
                     "Sauvegarde échouée : ${e.message}"

@@ -2,6 +2,7 @@ package com.transcripto.stream.ui
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.os.Build
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -13,12 +14,23 @@ import androidx.fragment.app.FragmentActivity
  */
 object Biometrics {
 
-    private const val AUTHENTICATORS =
-        BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    /**
+     * Android 11+ : biométrie forte + code de l'appareil. Android 10 (minSdk) : la
+     * bibliothèque n'accepte pas cette combinaison — biométrie « faible » + code.
+     */
+    private val AUTHENTICATORS: Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        }
 
     /** Vrai si l'appareil peut authentifier (capteur enrôlé ou verrouillage d'écran configuré). */
-    fun available(context: Context): Boolean =
+    fun available(context: Context): Boolean = try {
         BiometricManager.from(context).canAuthenticate(AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
+    } catch (e: Exception) {
+        false
+    }
 
     /** L'activité hôte (FragmentActivity) derrière un contexte Compose, ou null. */
     fun hostActivity(context: Context): FragmentActivity? {
@@ -47,12 +59,12 @@ object Biometrics {
                 onError(if (silent) null else errString.toString())
             }
         }
-        val info = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Déverrouiller Transcripto Stream")
-            .setSubtitle("Empreinte, visage ou code de l'appareil")
-            .setAllowedAuthenticators(AUTHENTICATORS)
-            .build()
         try {
+            val info = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Déverrouiller Transcripto Stream")
+                .setSubtitle("Empreinte, visage ou code de l'appareil")
+                .setAllowedAuthenticators(AUTHENTICATORS)
+                .build()
             BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), callback).authenticate(info)
         } catch (e: Exception) {
             onError(e.message ?: "Authentification indisponible")

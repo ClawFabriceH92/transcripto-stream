@@ -590,12 +590,15 @@ fun SettingsScreen(vm: StreamViewModel) {
                 )
                 Spacer(Modifier.height(4.dp))
                 HintText("« Jamais » : code demandé seulement au lancement de l'app.")
-                if (Biometrics.available(context)) {
+                val biometricAvailable = remember(context) { Biometrics.available(context) }
+                if (biometricAvailable) {
                     Spacer(Modifier.height(8.dp))
                     var biometric by remember { mutableStateOf(settings.biometricUnlock) }
                     SettingSwitchRow(
                         title = "Déverrouillage biométrique",
-                        subtitle = "Empreinte, visage ou code de l'appareil, proposé à la place du PIN (qui reste utilisable).",
+                        subtitle = "Empreinte ou visage proposés à la place du PIN (qui reste utilisable). " +
+                            "À défaut, le code de verrouillage de l'appareil est accepté : qui le connaît " +
+                            "contourne le PIN de l'app.",
                         checked = biometric,
                         onChange = {
                             biometric = it
