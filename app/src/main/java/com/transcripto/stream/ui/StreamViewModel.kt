@@ -1215,8 +1215,8 @@ class StreamViewModel(
         val renamed = renameFile(f, newName)
         // Cible du .meta : le fichier renommé si le renommage a abouti, sinon l'original
         val target = if (renamed) RecordingNames.renamed(f, RecordingNames.sanitize(newName)) else f
-        if (dossier.isNotBlank() || template.isNotBlank()) {
-            viewModelScope.launch {
+        viewModelScope.launch {
+            if (dossier.isNotBlank() || template.isNotBlank()) {
                 withContext(Dispatchers.IO) {
                     val meta = readMeta(target)
                     writeMeta(
@@ -1227,11 +1227,11 @@ class StreamViewModel(
                         ),
                     )
                 }
-                refreshRecordings()
             }
+            // Après l'écriture du .meta : la synthèse proposée lit le gabarit choisi
+            refreshRecordings()
+            proposeSummaryIfEnabled()
         }
-        refreshRecordings()
-        proposeSummaryIfEnabled()
     }
 
     /**
@@ -2147,7 +2147,7 @@ class StreamViewModel(
             dateLabel = SUMMARY_DATE_FORMAT.format(Date(file.lastModified())),
             durationMs = durationMsOf(file),
             dossier = meta.dossier,
-            missionLabel = meta.template.takeIf { it.isNotBlank() }?.let { SummaryTemplates.byId(it).label } ?: "",
+            missionLabel = SummaryTemplates.ALL.firstOrNull { it.id == meta.template }?.label ?: "",
             speakerNames = meta.speakers,
             sha256 = HASH_LINE.find(content)?.groupValues?.get(1),
             encrypted = file.name.endsWith(".enc"),

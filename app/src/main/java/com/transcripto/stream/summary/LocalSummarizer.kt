@@ -111,11 +111,11 @@ object LocalSummarizer {
         // Rubriques du gabarit : chaque phrase n'est rangée que dans une rubrique — les plus
         // précises (priorité basse) sont servies en premier, l'affichage suit l'ordre du gabarit
         val used = HashSet<Int>()
-        val picked = HashMap<String, List<Sentence>>()
-        template.localSections.sortedBy { it.priority }.forEach { section ->
-            picked[section.title] = pick(sentences, used, section.max) { section.pattern.containsMatchIn(it.text) }
+        val picked = HashMap<Int, List<Sentence>>()
+        template.localSections.withIndex().sortedBy { it.value.priority }.forEach { (i, section) ->
+            picked[i] = pick(sentences, used, section.max) { section.pattern.containsMatchIn(it.text) }
         }
-        val sections = template.localSections.map { it.title to picked.getValue(it.title) }
+        val sections = template.localSections.mapIndexed { i, it -> it.title to picked.getValue(i) }
 
         val target = (sentences.size * 0.12).roundToInt().coerceIn(3, 8)
         val keyPoints = sentences.filter { it.index !in used }

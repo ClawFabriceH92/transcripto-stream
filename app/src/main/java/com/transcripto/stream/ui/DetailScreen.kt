@@ -446,7 +446,7 @@ fun DetailScreen(vm: StreamViewModel) {
                         TextButton(
                             onClick = { vm.generateSummary(current.file) },
                             enabled = !isTranscribing,
-                        ) { Text("Regénérer") }
+                        ) { Text("Régénérer") }
                     }
                 }
             }
@@ -772,6 +772,11 @@ private fun QaCard(
     val turns = if (mine) state.turns else emptyList()
     val busy = mine && state.busy
     val error = if (mine && !busy) state.error else null
+    // Le champ n'est vidé qu'une fois la réponse arrivée : en cas de refus (opération en
+    // cours) ou d'échec, la question reste à l'écran pour être renvoyée
+    LaunchedEffect(turns.size) {
+        if (turns.isNotEmpty() && question.trim() == turns.last().question) question = ""
+    }
     SectionCard(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconAvatar(
@@ -823,10 +828,7 @@ private fun QaCard(
             )
             Spacer(Modifier.width(6.dp))
             FilledIconButton(
-                onClick = {
-                    onAsk(question)
-                    question = ""
-                },
+                onClick = { onAsk(question) },
                 enabled = enabled && !busy && question.isNotBlank(),
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Envoyer la question")

@@ -5,6 +5,7 @@ import com.anthropic.errors.BadRequestException
 import com.anthropic.models.beta.AnthropicBeta
 import com.anthropic.models.beta.messages.BetaCacheControlEphemeral
 import com.anthropic.models.beta.messages.BetaMessage
+import com.anthropic.models.beta.messages.BetaOutputConfig
 import com.anthropic.models.beta.messages.BetaTextBlockParam
 import com.anthropic.models.beta.messages.MessageCreateParams as BetaMessageCreateParams
 import com.anthropic.models.messages.CacheControlEphemeral
@@ -86,7 +87,7 @@ object ClaudeQa {
             return AiAnswer.Failed("Assistant IA indisponible : ${t.message}")
         }
         return try {
-            if (modelId == ClaudeSupport.MODEL_OPUS) {
+            if (modelId == ClaudeSupport.MODEL_OPUS && !ClaudeSupport.fallbacksRejected) {
                 try {
                     askWithFallbacks(client, modelId, context, turns, q)
                 } catch (e: BadRequestException) {
@@ -126,6 +127,8 @@ object ClaudeQa {
             builder.addAssistantMessage(t.answer)
         }
         builder.addUserMessage(question)
+            // Question ponctuelle : effort bas, réponse rapide (Opus 5 accepte le paramètre)
+            .outputConfig(BetaOutputConfig.builder().effort(BetaOutputConfig.Effort.LOW).build())
             .fallbacksDefault()
             .addBeta(AnthropicBeta.SERVER_SIDE_FALLBACK_2026_07_01)
         val msg: BetaMessage = client.beta().messages().create(builder.build())
@@ -139,7 +142,7 @@ object ClaudeQa {
             .trim()
         if (text.isBlank()) return AiAnswer.Failed("Réponse vide du modèle")
         return AiAnswer.Ok(
-            text = text,
+            text = ClaudeSupport.markTruncated(text, stop),
             model = msg.model().asString(),
             inputTokens = msg.usage().inputTokens(),
             outputTokens = msg.usage().outputTokens(),
@@ -186,7 +189,7 @@ object ClaudeQa {
             .trim()
         if (text.isBlank()) return AiAnswer.Failed("Réponse vide du modèle")
         return AiAnswer.Ok(
-            text = text,
+            text = ClaudeSupport.markTruncated(text, stop),
             model = msg.model().asString(),
             inputTokens = msg.usage().inputTokens(),
             outputTokens = msg.usage().outputTokens(),

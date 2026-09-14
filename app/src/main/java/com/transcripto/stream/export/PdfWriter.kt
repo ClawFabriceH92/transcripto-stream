@@ -10,6 +10,7 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
@@ -35,7 +36,19 @@ object PdfWriter {
     private const val MUTED = 0xFF6B6B6B.toInt()
     private const val CLOCK = 0xFF8A8A8A.toInt()
 
-    private class Styled(val text: CharSequence, val size: Float, val bold: Boolean, val italic: Boolean, val color: Int, val before: Float, val after: Float, val indent: Float = 0f, val bullet: Boolean = false)
+    private class Styled(
+        val text: CharSequence,
+        val size: Float,
+        val bold: Boolean,
+        val italic: Boolean,
+        val color: Int,
+        val before: Float,
+        val after: Float,
+        val indent: Float = 0f,
+        val bullet: Boolean = false,
+        /** Titre ou étiquette : ne jamais rester seul en bas de page. */
+        val keepWithNext: Boolean = false,
+    )
 
     fun write(blocks: List<DocBlock>, out: OutputStream, footer: String) {
         val pdf = PdfDocument()
@@ -52,9 +65,12 @@ object PdfWriter {
                 textSize = 8f
             }
             val fy = PAGE_H - MARGIN + 10f
-            p.canvas.drawText(footer, MARGIN, fy, paint)
             val label = "Page $pageNo"
-            p.canvas.drawText(label, PAGE_W - MARGIN - paint.measureText(label), fy, paint)
+            val labelW = paint.measureText(label)
+            // Titre long : tronqué avec « … » pour ne jamais chevaucher le numéro de page
+            val shown = TextUtils.ellipsize(footer, paint, contentW - labelW - 12f, TextUtils.TruncateAt.END).toString()
+            p.canvas.drawText(shown, MARGIN, fy, paint)
+            p.canvas.drawText(label, PAGE_W - MARGIN - labelW, fy, paint)
             pdf.finishPage(p)
             page = null
         }
@@ -93,6 +109,8 @@ object PdfWriter {
                 .build()
             // Espace avant : ignoré en haut de page
             if (page != null && y > MARGIN) y += s.before
+            // Titre / étiquette : s'il ne tient pas avec au moins une ligne de corps, on change de page
+            if (s.keepWithNext && page != null && y + layout.height + 16f > limit) newPage()
             var first = true
             for (line in 0 until layout.lineCount) {
                 val top = layout.getLineTop(line).toFloat()
@@ -121,9 +139,9 @@ object PdfWriter {
                 is DocBlock.Title -> draw(Styled(b.text, 21f, true, false, TITLE_INK, 0f, 4f))
                 is DocBlock.Subtitle -> draw(Styled(b.text, 13f, false, false, 0xFF4A6785.toInt(), 0f, 12f))
                 is DocBlock.Heading -> when (b.level) {
-                    1 -> draw(Styled(b.text, 15f, true, false, TITLE_INK, 18f, 6f))
-                    2 -> draw(Styled(b.text, 12.5f, true, false, 0xFF2E5077.toInt(), 12f, 4f))
-                    else -> draw(Styled(b.text, 11.5f, true, false, INK, 8f, 3f))
+                    1 -> draw(Styled(b.text, 15f, true, false, TITLE_INK, 18f, 6f, keepWithNext = true))
+                    2 -> draw(Styled(b.text, 12.5f, true, false, 0xFF2E5077.toInt(), 12f, 4f, keepWithNext = true))
+                    else -> draw(Styled(b.text, 11.5f, true, false, INK, 8f, 3f, keepWithNext = true))
                 }
                 is DocBlock.Meta -> {
                     val ssb = SpannableStringBuilder()
@@ -148,7 +166,11 @@ object PdfWriter {
                     draw(Styled(ssb, 10.5f, false, false, INK, 0f, if (b.bullet) 3f else 6f, bullet = b.bullet))
                 }
                 is DocBlock.Speaker -> draw(
-                    Styled(b.label, 10.5f, true, false, SPEAKER_COLORS[Math.floorMod(b.index, SPEAKER_COLORS.size)], 10f, 2f)
+                    Styled(
+                        b.label, 10.5f, true, false,
+                        SPEAKER_COLORS[Math.floorMod(b.index, SPEAKER_COLORS.size)], 10f, 2f,
+                        keepWithNext = true,
+                    )
                 )
                 is DocBlock.Segment -> {
                     val ssb = SpannableStringBuilder()

@@ -4,6 +4,7 @@ import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.MdBlock
 import com.transcripto.stream.summary.MdSpan
+import kotlin.math.roundToInt
 
 /** Formats d'export structuré d'un enregistrement. */
 enum class ExportFormat(val label: String, val mime: String, val extension: String) {
@@ -139,7 +140,7 @@ object ExportComposer {
         val grand = totals.values.sum()
         if (grand <= 0) return null
         return totals.entries.sortedBy { it.key }.joinToString(" · ") { (id, dur) ->
-            "${SpeakerNames.label(id, doc.speakerNames)} ${(dur * 100.0 / grand).toInt()} %"
+            "${SpeakerNames.label(id, doc.speakerNames)} ${(dur * 100.0 / grand).roundToInt()} %"
         }
     }
 }

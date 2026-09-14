@@ -4,6 +4,7 @@ import com.anthropic.client.AnthropicClient
 import com.anthropic.errors.BadRequestException
 import com.anthropic.models.beta.AnthropicBeta
 import com.anthropic.models.beta.messages.BetaMessage
+import com.anthropic.models.beta.messages.BetaOutputConfig
 import com.anthropic.models.beta.messages.MessageCreateParams as BetaMessageCreateParams
 import com.anthropic.models.messages.Message
 import com.anthropic.models.messages.MessageCreateParams
@@ -95,7 +96,7 @@ object ClaudeSummarizer {
             return AiSummaryResult.Failed("Synthèse IA indisponible : ${t.message}")
         }
         return try {
-            if (modelId == MODEL_OPUS) {
+            if (modelId == MODEL_OPUS && !ClaudeSupport.fallbacksRejected) {
                 try {
                     callWithFallbacks(client, modelId, system, user)
                 } catch (e: BadRequestException) {
@@ -124,6 +125,8 @@ object ClaudeSummarizer {
             .maxTokens(MAX_TOKENS)
             .system(system)
             .addUserMessage(user)
+            // Même effort « medium » que sur le point d'accès stable
+            .outputConfig(BetaOutputConfig.builder().effort(BetaOutputConfig.Effort.MEDIUM).build())
             .fallbacksDefault()
             .addBeta(AnthropicBeta.SERVER_SIDE_FALLBACK_2026_07_01)
             .build()

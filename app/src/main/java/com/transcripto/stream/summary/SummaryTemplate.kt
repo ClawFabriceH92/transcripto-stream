@@ -29,20 +29,25 @@ object SummaryTemplates {
 
     const val DEFAULT_ID = "reunion"
 
-    private fun re(pattern: String) = Regex("(?i)\\b(?:$pattern)")
+    /**
+     * Début de mot par lookbehind plutôt que `\b` : sur JDK ≥ 19, `\b` n'est plus
+     * Unicode par défaut (« écriture » ne serait pas reconnu) alors qu'Android (ICU)
+     * l'est ; IGNORE_CASE de Kotlin active le repli de casse Unicode sur les deux moteurs.
+     */
+    private fun re(pattern: String) = Regex("(?<![\\p{L}\\p{N}])(?:$pattern)", RegexOption.IGNORE_CASE)
 
     private val DECISION = LocalSection(
         "Décisions",
-        re("décid|décision|valid[ée]|validons|convenu|d'accord pour|accord sur|retenu|on part sur|acté|tranch|entérin|approuv|adopt"),
+        re("décid|décision|valid[ée]|validons|convenu|d['’]accord pour|accord sur|retenu|on part sur|acté|tranch|entérin|approuv|adopt"),
         priority = 3,
     )
     private val ACTION = LocalSection(
         "Actions à mener",
         re(
-            "il faut|il faudra|nous devons|on doit|on va |on devra|à faire|action|tâche|prévoir|planifi|envoyer|" +
+            "il faut|il faudra|nous devons|on doit|on va |on devra|à faire|action(?!naire)|tâche|prévoir|planifi|envoyer|" +
                 "transmettre|relancer|vérifier|préparer|finaliser|rédiger|contacter|rappeler|organiser|rendez-vous|" +
-                "échéance|deadline|avant le|d'ici|au plus tard|prochaine étape|à confirmer|à valider|livrable|" +
-                "s'occupe|se charge|prend en charge|à envoyer|à transmettre|à signer"
+                "échéance|deadline|avant le|d['’]ici|au plus tard|prochaine étape|à confirmer|à valider|livrable|" +
+                "s['’]occupe|se charge|prend en charge|à envoyer|à transmettre|à signer"
         ),
         priority = 4,
     )
@@ -91,7 +96,7 @@ object SummaryTemplates {
                 re(
                     "immobilisation|amortissement|stock|créance|client|fournisseur|trésorerie|provision|capitaux|emprunt|" +
                         "TVA|paie|impôt|charge|produit|cut-off|FNP|CCA|FAE|AAR|inventaire|rapprochement|lettrage|balance|" +
-                        "grand livre|compte de résultat|bilan|résultat|marge|chiffre d'affaires"
+                        "grand livre|compte de résultat|bilan|résultat|marge|chiffre d['’]affaires"
                 ),
                 max = 8,
                 priority = 6,
@@ -103,7 +108,7 @@ object SummaryTemplates {
             ),
             LocalSection(
                 "Documents à obtenir",
-                re("pièce|justificatif|facture|relevé|contrat|attestation|à fournir|à obtenir|manqu|à récupérer|à demander|procès-verbal|liasse|déclaration|tableau d'amortissement"),
+                re("pièce|justificatif|facture|relevé|contrat|attestation|à fournir|à obtenir|manqu|à récupérer|à demander|procès-verbal|liasse|déclaration|tableau d['’]amortissement"),
                 priority = 1,
             ),
             DECISION,
@@ -213,7 +218,7 @@ object SummaryTemplates {
             ),
             LocalSection(
                 "Informations recueillies",
-                re("chiffre d'affaires|salarié|effectif|activité|statut|création|projet|investissement|cession|acquisition|banque|emprunt|associé|dividende|rémunération|local|bail|véhicule"),
+                re("chiffre d['’]affaires|salarié|effectif|activité|statut|création|projet|investissement|cession|acquisition|banque|emprunt|associé|dividende|rémunération|local|bail|véhicule"),
                 priority = 3,
             ),
             LocalSection(

@@ -59,9 +59,24 @@ internal object ClaudeSupport {
         else -> "$what impossible : ${t.message}"
     }
 
+    /**
+     * Mémorise, pour la durée du process, un refus du paramètre de repli par le serveur :
+     * les appels suivants partent directement sur le point d'accès stable (une requête
+     * au lieu de deux).
+     */
+    @Volatile
+    var fallbacksRejected: Boolean = false
+
     /** Vrai si le serveur a refusé le paramètre de repli (`fallbacks`) : on renvoie sans. */
-    fun isFallbackRejected(e: BadRequestException): Boolean =
-        e.message?.contains("fallback", ignoreCase = true) == true
+    fun isFallbackRejected(e: BadRequestException): Boolean {
+        val rejected = e.message?.contains("fallback", ignoreCase = true) == true
+        if (rejected) fallbacksRejected = true
+        return rejected
+    }
+
+    /** Réponse coupée par max_tokens : le signaler plutôt que de la présenter comme complète. */
+    fun markTruncated(text: String, stopReason: String): String =
+        if (stopReason.contains("max_tokens", ignoreCase = true)) "$text\n\n_(réponse tronquée : limite de longueur atteinte)_" else text
 
     fun closeQuietly(client: AnthropicClient?) {
         try {
