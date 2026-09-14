@@ -13,6 +13,7 @@ class RecordingMetaTest {
             speakers = mapOf(1 to "M. Martin (DG)", 2 to "Mme Durand"),
             dossier = "SARL Martin",
             template = "cloture",
+            chapters = listOf(Chapter(0L, "Introduction"), Chapter(125_000L, "Stocks · inventaire")),
         )
         val back = MetaCodec.fromJson(MetaCodec.toJson(meta))
         assertEquals(meta, back)

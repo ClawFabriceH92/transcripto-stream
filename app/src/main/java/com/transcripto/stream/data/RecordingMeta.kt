@@ -1,5 +1,6 @@
 package com.transcripto.stream.data
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -12,9 +13,14 @@ data class RecordingMeta(
     val speakers: Map<Int, String> = emptyMap(),
     val dossier: String = "",
     val template: String = "",
+    /** Chapitres (début + titre), détectés localement ou par l'IA ; vide = pas encore détectés. */
+    val chapters: List<Chapter> = emptyList(),
 ) {
-    val isEmpty: Boolean get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank()
+    val isEmpty: Boolean get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty()
 }
+
+/** Un chapitre : instant de début et titre court. */
+data class Chapter(val startMs: Long, val title: String)
 
 /** Sérialisation JSON des métadonnées — pur (org.json), testable en JVM. */
 object MetaCodec {
@@ -22,10 +28,13 @@ object MetaCodec {
     fun toJson(meta: RecordingMeta): String {
         val speakers = JSONObject()
         meta.speakers.forEach { (id, name) -> if (name.isNotBlank()) speakers.put(id.toString(), name.trim()) }
+        val chapters = JSONArray()
+        meta.chapters.forEach { c -> chapters.put(JSONObject().put("s", c.startMs).put("t", c.title.trim())) }
         return JSONObject()
             .put("speakers", speakers)
             .put("dossier", meta.dossier.trim())
             .put("template", meta.template.trim())
+            .put("chapters", chapters)
             .toString()
     }
 
@@ -42,10 +51,19 @@ object MetaCodec {
                     if (name.isNotEmpty()) speakers[id] = name
                 }
             }
+            val chapters = ArrayList<Chapter>()
+            o.optJSONArray("chapters")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val c = arr.optJSONObject(i) ?: continue
+                    val title = c.optString("t", "").trim()
+                    if (title.isNotEmpty()) chapters += Chapter(c.optLong("s", 0L).coerceAtLeast(0L), title)
+                }
+            }
             RecordingMeta(
                 speakers = speakers,
                 dossier = o.optString("dossier", "").trim(),
                 template = o.optString("template", "").trim(),
+                chapters = chapters.sortedBy { it.startMs },
             )
         } catch (e: Exception) {
             RecordingMeta()

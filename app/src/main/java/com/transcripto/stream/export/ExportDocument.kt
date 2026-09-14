@@ -1,5 +1,6 @@
 package com.transcripto.stream.export
 
+import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.MdBlock
@@ -32,6 +33,8 @@ data class ExportDocument(
     /** Synthèse Markdown (noms d'intervenants déjà appliqués) ou null. */
     val summaryMarkdown: String? = null,
     val segments: List<ExportSegment> = emptyList(),
+    /** Chapitres (début + titre) insérés comme sous-titres dans la transcription. */
+    val chapters: List<Chapter> = emptyList(),
     /** Transcription texte (noms appliqués) — utilisée quand il n'y a pas de segments. */
     val transcriptText: String = "",
     val timestamps: Boolean = true,
@@ -68,6 +71,7 @@ object ExportComposer {
         val speakers = speakerLabels(doc)
         if (speakers.isNotEmpty()) out += DocBlock.Meta("Intervenants", speakers.joinToString(", "))
         speakingShares(doc)?.let { out += DocBlock.Meta("Temps de parole", it) }
+        if (doc.chapters.isNotEmpty()) out += DocBlock.Meta("Chapitres", doc.chapters.size.toString())
         if (doc.encrypted) out += DocBlock.Meta("Audio", "chiffré sur l'appareil (AES-256-GCM)")
         doc.sha256?.takeIf { it.isNotBlank() }?.let { out += DocBlock.Meta("Empreinte SHA-256 (PCM)", it) }
         out += DocBlock.Note(
@@ -101,8 +105,15 @@ object ExportComposer {
         when {
             segs.isNotEmpty() -> {
                 val multi = segs.map { it.speaker }.distinct().size > 1 || doc.speakerNames.isNotEmpty()
+                val chapters = doc.chapters.sortedBy { it.startMs }
+                var nextChapter = 0
                 var current = Int.MIN_VALUE
                 for (seg in segs) {
+                    while (nextChapter < chapters.size && chapters[nextChapter].startMs <= seg.startMs) {
+                        val c = chapters[nextChapter++]
+                        out += DocBlock.Heading(2, "${TranscriptExporter.formatHms(c.startMs)} — ${c.title}")
+                        current = Int.MIN_VALUE // l'étiquette d'intervenant est répétée après un titre de chapitre
+                    }
                     if (multi && seg.speaker != current) {
                         current = seg.speaker
                         out += DocBlock.Speaker(SpeakerNames.label(seg.speaker, doc.speakerNames), seg.speaker)

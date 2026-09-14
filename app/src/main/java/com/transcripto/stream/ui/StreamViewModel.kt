@@ -22,6 +22,7 @@ import com.transcripto.stream.audio.AudioImporter
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.BackupCrypto
+import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.CryptoManager
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.StoredSegment
@@ -47,7 +48,10 @@ import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.stt.StreamResult
 import com.transcripto.stream.stt.VoiceCommands
 import com.transcripto.stream.summary.AiAnswer
+import com.transcripto.stream.summary.AiChaptersResult
 import com.transcripto.stream.summary.AiSummaryResult
+import com.transcripto.stream.summary.ChapterDetector
+import com.transcripto.stream.summary.ClaudeChapters
 import com.transcripto.stream.summary.ClaudeQa
 import com.transcripto.stream.summary.ClaudeSummarizer
 import com.transcripto.stream.summary.LocalSummarizer
@@ -103,6 +107,7 @@ data class RecordingItem(
     val speakerNames: Map<Int, String> = emptyMap(),
     /** Identifiant du gabarit de synthèse (vide = Réunion). */
     val template: String = "",
+    val chapters: List<Chapter> = emptyList(),
 )
 
 /** Questions posées à l'IA sur un enregistrement : fil d'échanges, en mémoire seulement. */
@@ -297,6 +302,9 @@ class StreamViewModel(
 
     private val _qa = MutableStateFlow(QaState())
     val qa: StateFlow<QaState> = _qa.asStateFlow()
+
+    private val _chaptersBusy = MutableStateFlow(false)
+    val chaptersBusy: StateFlow<Boolean> = _chaptersBusy.asStateFlow()
 
     // ---- Internes ----
     // Le contexte whisper.cpp n'est pas thread-safe : un seul transcribeBuffer à la fois
@@ -1553,6 +1561,65 @@ class StreamViewModel(
         _qa.value = QaState()
     }
 
+    // ================= CHAPITRES =================
+
+    /**
+     * Détecte les chapitres d'un enregistrement — par Claude si l'IA est configurée
+     * (repli local en cas d'échec), sinon par bascule de vocabulaire — et les écrit
+     * dans le .meta. Requiert les segments horodatés (« Transcrire »).
+     */
+    fun generateChapters(file: File) {
+        if (_chaptersBusy.value) return
+        if (_isTranscribingFile.value || _backupBusy.value) {
+            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            return
+        }
+        viewModelScope.launch {
+            _chaptersBusy.value = true
+            try {
+                val message = withContext(Dispatchers.IO) {
+                    val json = RecordingNames.jsonSibling(file)
+                    if (!json.exists()) return@withContext "Chapitres : lance d'abord « Transcrire » (segments horodatés requis)"
+                    val segs = SegmentsCodec.fromJson(TextVault.read(json))
+                    if (segs.size < 8) return@withContext "Enregistrement trop court pour des chapitres"
+                    val meta = readMeta(file)
+                    var failure: String? = null
+                    val key = if (settings.aiSummaryEnabled) aiApiKey() else null
+                    val chapters = if (key != null) {
+                        val timed = segs.joinToString("\n") { s ->
+                            "[${formatClock(s.startMs)}] ${SpeakerNames.label(s.speaker, meta.speakers)} : ${s.text.trim()}"
+                        }
+                        when (val r = ClaudeChapters.detect(key, settings.aiModel, RecordingNames.baseName(file.name), timed)) {
+                            is AiChaptersResult.Ok -> r.chapters
+                            is AiChaptersResult.Failed -> {
+                                failure = r.message
+                                ChapterDetector.detect(segs)
+                            }
+                        }
+                    } else {
+                        ChapterDetector.detect(segs)
+                    }
+                    if (chapters.isEmpty()) {
+                        return@withContext failure?.let { "$it — et pas de changement de sujet net détecté localement" }
+                            ?: "Pas de changement de sujet assez net pour des chapitres"
+                    }
+                    writeMeta(file, meta.copy(chapters = chapters))
+                    when {
+                        failure != null -> "$failure — ${chapters.size} chapitres détectés localement"
+                        key != null -> "${chapters.size} chapitres (IA)"
+                        else -> "${chapters.size} chapitres détectés"
+                    }
+                }
+                _uiMessage.value = message
+            } catch (t: Throwable) {
+                _uiMessage.value = "Chapitrage impossible : ${t.message}"
+            } finally {
+                _chaptersBusy.value = false
+            }
+            refreshRecordings()
+        }
+    }
+
     // ================= LECTURE + VITESSE =================
 
     /**
@@ -2222,6 +2289,7 @@ class StreamViewModel(
             encrypted = file.name.endsWith(".enc"),
             summaryMarkdown = readSummary(file),
             segments = segments,
+            chapters = meta.chapters,
             transcriptText = SpeakerNames.apply(raw, meta.speakers),
             timestamps = if (raw.isEmpty()) settings.useTimestamps else CLOCK_TAG.containsMatchIn(raw),
             appVersion = version,
@@ -2729,6 +2797,7 @@ class StreamViewModel(
             dossier = meta.dossier,
             speakerNames = meta.speakers,
             template = meta.template,
+            chapters = meta.chapters,
         )
     }
 

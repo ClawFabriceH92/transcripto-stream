@@ -281,11 +281,18 @@ object LocalSummarizer {
         return if (capped.last() in ".!?…") capped else "$capped."
     }
 
-    private fun tokenize(text: String): List<String> =
+    private fun tokenize(text: String): List<String> = tokenPairs(text).map { it.first }
+
+    /**
+     * Termes significatifs de [text] : (racine, forme de surface en minuscules) — mots
+     * vides, chiffres seuls et mots de moins de trois lettres exclus. Utilisé aussi par
+     * la détection de chapitres.
+     */
+    fun tokenPairs(text: String): List<Pair<String, String>> =
         WORD.findAll(text.lowercase())
             .map { it.value.trim('\'', '’', '-') }
             .filter { it.length >= 3 && it !in STOPWORDS && !it.all { c -> c.isDigit() } }
-            .map { stem(it) }
+            .map { stem(it) to it }
             .toList()
 
     /** Regroupement minimal singulier/pluriel (« comptes » → « compte »). */

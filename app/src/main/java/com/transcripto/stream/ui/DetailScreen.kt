@@ -68,6 +68,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.data.SpeakerNames
@@ -119,6 +120,7 @@ fun DetailScreen(vm: StreamViewModel) {
     val transcriptVersion by vm.transcriptVersion.collectAsStateWithLifecycle()
     val dossiers by vm.dossiers.collectAsStateWithLifecycle()
     val qa by vm.qa.collectAsStateWithLifecycle()
+    val chaptersBusy by vm.chaptersBusy.collectAsStateWithLifecycle()
     var exportMenu by remember { mutableStateOf(false) }
     // rememberSaveable : le sélecteur SAF peut tuer le process ; au retour, le callback
     // doit encore savoir quel enregistrement exporter
@@ -465,6 +467,23 @@ fun DetailScreen(vm: StreamViewModel) {
             Spacer(Modifier.height(12.dp))
         }
 
+        // ---- Chapitres (segments horodatés requis) ----
+        if (segments.isNotEmpty()) {
+            ChaptersCard(
+                chapters = current.chapters,
+                busy = chaptersBusy,
+                enabled = !isTranscribing,
+                ai = vm.aiAvailable(),
+                onGenerate = { vm.generateChapters(current.file) },
+                onOpen = { chapter ->
+                    if (current.hasAudio) vm.playFrom(current.file, chapter.startMs)
+                    val idx = segments.indexOfFirst { it.startMs >= chapter.startMs }.let { if (it < 0) segments.lastIndex else it }
+                    scope.launch { listState.animateScrollToItem(idx) }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+
         // ---- Transcription ----
         if (segments.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -735,6 +754,88 @@ private fun EditSegmentDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
     )
+}
+
+/** Chapitres de l'enregistrement : liste navigable + détection (locale ou IA). */
+@Composable
+private fun ChaptersCard(
+    chapters: List<Chapter>,
+    busy: Boolean,
+    enabled: Boolean,
+    ai: Boolean,
+    onGenerate: () -> Unit,
+    onOpen: (Chapter) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(true) }
+    SectionCard(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconAvatar(
+                icon = AppIcons.Document,
+                size = 30.dp,
+                iconSize = 17.dp,
+                shape = CircleShape,
+                container = MaterialTheme.colorScheme.primaryContainer,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                if (chapters.isEmpty()) "Chapitres" else "Chapitres (${chapters.size})",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (chapters.isNotEmpty() && !busy) {
+                TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Réduire" else "Afficher") }
+            }
+        }
+        when {
+            busy -> {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(4.dp))
+                HintText(if (ai) "Chapitrage par Claude en cours…" else "Détection des changements de sujet…")
+            }
+            chapters.isEmpty() -> {
+                Spacer(Modifier.height(6.dp))
+                HintText(
+                    if (ai) {
+                        "Découpage thématique titré, rédigé par Claude (texte seul envoyé)."
+                    } else {
+                        "Découpage par changement de vocabulaire, sur l'appareil — pour naviguer dans un long enregistrement."
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
+                FilledTonalButton(onClick = onGenerate, enabled = enabled) {
+                    Text("Détecter les chapitres")
+                }
+            }
+            else -> {
+                if (expanded) {
+                    Spacer(Modifier.height(6.dp))
+                    chapters.forEach { c ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(MaterialTheme.shapes.small)
+                                .clickable { onOpen(c) }
+                                .padding(horizontal = 6.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                clock(c.startMs),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.width(52.dp),
+                            )
+                            Text(c.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                        }
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onGenerate, enabled = enabled) { Text("Redétecter") }
+                }
+            }
+        }
+    }
 }
 
 /** Choix du gabarit de synthèse (type de mission) + description du gabarit courant. */

@@ -1,5 +1,6 @@
 package com.transcripto.stream.export
 
+import com.transcripto.stream.data.Chapter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -26,6 +27,7 @@ class DocxExportTest {
             ExportSegment(2, 30_000L, 60_000L, "L'inventaire a été rapproché & validé."),
             ExportSegment(1, 60_000L, 95_000L, "Parfait, on passe aux provisions."),
         ),
+        chapters = listOf(Chapter(0L, "Ouverture"), Chapter(30_000L, "Stocks et provisions")),
         appVersion = "0.9.0",
         generatedLabel = "13 sept. 2026 09:00",
     )
@@ -64,6 +66,11 @@ class DocxExportTest {
         assertTrue(t.contains("SP:M. Martin (DG)"))
         assertTrue(t.contains("SG:00:00 Bonjour à tous, on commence par les stocks."))
         assertTrue(t.contains("SP:Intervenant 2"))
+        assertTrue(t.contains("M:Chapitres=2"))
+        assertTrue(t.contains("H2:00:00 — Ouverture"))
+        assertTrue(t.contains("H2:00:30 — Stocks et provisions"))
+        // Un titre de chapitre précède l'étiquette d'intervenant du passage qui le suit
+        assertTrue(t.indexOf("H2:00:30 — Stocks et provisions") < t.indexOf("SP:Intervenant 2"))
         // Les deux passages consécutifs de M. Martin ne répètent l'étiquette qu'au changement
         assertEquals(2, t.count { it == "SP:M. Martin (DG)" })
     }
