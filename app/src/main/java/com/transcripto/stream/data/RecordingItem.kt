@@ -17,6 +17,16 @@ data class RecordingItem(
     /** Identifiant du gabarit de synthèse (vide = Réunion). */
     val template: String = "",
     val chapters: List<Chapter> = emptyList(),
+    /** Segments horodatés non synchronisés avec le texte corrigé (relancer « Transcrire »). */
+    val segmentsStale: Boolean = false,
+)
+
+/** Résultat d'une correction manuelle de la transcription. */
+data class EditOutcome(
+    /** Faux si le scellement demandé a échoué (texte conservé en clair). */
+    val sealed: Boolean,
+    /** Les segments n'ont pas pu être réalignés sur le texte corrigé. */
+    val segmentsStale: Boolean,
 )
 
 /** Liste des enregistrements et espace total occupé par le dossier (WAV + textes). */

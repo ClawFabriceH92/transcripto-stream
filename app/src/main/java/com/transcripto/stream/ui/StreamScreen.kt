@@ -101,6 +101,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.ModelState
 import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.MainActivity
@@ -111,13 +112,8 @@ import com.transcripto.stream.ui.theme.AppTextStyles
 import com.transcripto.stream.ui.theme.AppTheme
 import kotlinx.coroutines.launch
 
-/** « mm:ss », ou « h:mm:ss » au-delà d'une heure (réunions longues). */
-private fun formatTime(sec: Long): String {
-    val h = sec / 3600
-    val mm = (sec % 3600) / 60
-    val ss = sec % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, mm, ss) else "%02d:%02d".format(mm, ss)
-}
+/** « mm:ss », ou « hh:mm:ss » au-delà d'une heure — le même format que les fichiers et les exports. */
+private fun formatTime(sec: Long): String = TranscriptExporter.formatHms(sec * 1000)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

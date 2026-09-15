@@ -72,6 +72,7 @@ import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SegmentsCodec
+import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.export.ExportFormat
 import com.transcripto.stream.data.StoredSegment
@@ -85,14 +86,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** « mm:ss », ou « h:mm:ss » au-delà d'une heure (comme les exports). */
-private fun clock(ms: Long): String {
-    val totalSec = ms / 1000
-    val h = totalSec / 3600
-    val m = (totalSec % 3600) / 60
-    val s = totalSec % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
-}
+/** « mm:ss », ou « hh:mm:ss » au-delà d'une heure — le même format que les fichiers et les exports. */
+private fun clock(ms: Long): String = TranscriptExporter.formatHms(ms)
 
 /**
  * Fiche d'un enregistrement : lecteur, actions, puis transcription synchronisée —
@@ -501,6 +496,13 @@ fun DetailScreen(vm: StreamViewModel) {
                     "Toucher : écouter · appui long : corriger",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (current.segmentsStale) {
+                Text(
+                    "Passages non synchronisés avec le texte corrigé — relance « Transcrire » pour les réaligner.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
                 )
             }
             Spacer(Modifier.height(6.dp))

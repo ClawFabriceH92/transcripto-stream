@@ -1,6 +1,7 @@
 package com.transcripto.stream.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -17,6 +18,18 @@ class RecordingMetaTest {
         )
         val back = MetaCodec.fromJson(MetaCodec.toJson(meta))
         assertEquals(meta, back)
+    }
+
+    @Test
+    fun staleFlagRoundTripsAndCountsAsContent() {
+        val stale = RecordingMeta(segmentsStale = true)
+        assertFalse(stale.isEmpty)
+        assertTrue(RecordingMeta().isEmpty)
+        val json = MetaCodec.toJson(stale)
+        assertTrue(json, json.contains("\"stale\":true"))
+        assertTrue(MetaCodec.fromJson(json).segmentsStale)
+        assertFalse(MetaCodec.toJson(RecordingMeta(dossier = "X")).contains("stale"))
+        assertFalse(MetaCodec.fromJson(MetaCodec.toJson(RecordingMeta(dossier = "X"))).segmentsStale)
     }
 
     @Test

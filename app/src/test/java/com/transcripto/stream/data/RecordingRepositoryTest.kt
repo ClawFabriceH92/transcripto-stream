@@ -146,7 +146,7 @@ class RecordingRepositoryTest {
         assertEquals(RecordingRepository.HASH_LINE.find(repo.readTranscript(f)!!)!!.groupValues[1], "ab".repeat(32))
         // Texte corrigé à la main : les noms affichés redeviennent génériques dans le fichier
         repo.setSpeakerName(f, 1, "M. Martin")
-        assertTrue(repo.saveEditedTranscript(f, "[M. Martin] Corrigé"))
+        assertTrue(repo.saveEditedTranscript(f, "[M. Martin] Corrigé").sealed)
         assertEquals("[Intervenant 1] Corrigé", repo.transcriptBody(f))
         // Fichier scellé avec une autre clé : illisible → null, aperçu vide, liste utilisable
         TextVault.keyProvider = KeyProvider { KeyGenerator.getInstance("AES").apply { init(256) }.generateKey() }
@@ -211,7 +211,43 @@ class RecordingRepositoryTest {
         assertEquals("zz", repo.uniqueBase("zz"))
         assertEquals("b (2)", RecordingRepository.uniqueBase("b", setOf("b")))
         assertEquals("00:05", RecordingRepository.formatClock(5_400))
-        assertEquals("02:02", RecordingRepository.formatClock(3_722_000)) // 1 h 02 min 02 s : heures repliées
+        assertEquals("01:02:02", RecordingRepository.formatClock(3_722_000)) // au-delà d'une heure, comme partout
+    }
+
+    @Test
+    fun editedTranscriptRealignsSegmentsOrFlagsThemStale() {
+        val f = wav("e.wav")
+        val segs = listOf(SegmentData("Bonjour à tous", 0, 4000), SegmentData("Passons aux stocks", 5000, 9000), SegmentData("Puis aux provisions", 12_000, 15_000))
+        repo.writeSidecars(f, "", SegmentsCodec.toJson(segs, listOf(1, 2, 2)))
+        repo.setSpeakerName(f, 2, "Mme Durand")
+        repo.writeTranscriptFile(f, "[Intervenant 1] [00:00] Bonjour à tous\n[Intervenant 2] [00:05] Passons aux stocks  [pause 3s] [00:12] Puis aux provisions\n\n--- Temps de parole (estimation par la voix) ---\nIntervenant 1 : 00:04 (36 %)\nIntervenant 2 : 00:07 (64 %)", 15_000)
+        // Correction ligne à ligne (un horodatage par segment) : segments et .srt suivent
+        val r = repo.saveEditedTranscript(f, "[Intervenant 1] [00:00] Bonjour à toutes et à tous\n[Mme Durand] [00:05] Passons aux stocks [⭐00:07] [pause 3s] [00:12] Puis aux provisions pour litige\n\n--- Temps de parole (estimation par la voix) ---\nIntervenant 1 : 00:04 (36 %)\nMme Durand : 00:07 (64 %)")
+        assertEquals(EditOutcome(sealed = true, segmentsStale = false), r)
+        assertEquals(listOf("Bonjour à toutes et à tous", "Passons aux stocks [⭐00:07]", "Puis aux provisions pour litige"), repo.readSegments(f).map { it.text })
+        assertEquals(listOf(1, 2, 2), repo.readSegments(f).map { it.speaker })
+        assertTrue(File(dir, "e.srt").readText().contains("Puis aux provisions pour litige"))
+        assertFalse(repo.readMeta(f).segmentsStale)
+        assertTrue("les noms ne sont pas figés dans le .txt", repo.transcriptBody(f).startsWith("[Intervenant 1] [00:00] Bonjour à toutes et à tous\n[Intervenant 2] [00:05]"))
+        // Texte réécrit sans horodatages : impossible de réaligner → segments marqués désynchronisés
+        val r2 = repo.saveEditedTranscript(f, "Résumé libre de la réunion, sans horodatage.")
+        assertEquals(EditOutcome(sealed = true, segmentsStale = true), r2)
+        assertTrue(repo.readMeta(f).segmentsStale)
+        assertTrue(repo.item(f).segmentsStale)
+        assertEquals(3, repo.readSegments(f).size)
+        // Une nouvelle transcription (segments régénérés) lève le drapeau ; les autres métadonnées survivent
+        repo.writeSidecars(f, "", SegmentsCodec.toJson(segs, listOf(1, 2, 2)))
+        assertFalse(repo.readMeta(f).segmentsStale)
+        assertEquals("Mme Durand", repo.readMeta(f).speakers[2])
+        // Entrée sans segments : rien à réaligner, rien à signaler
+        val t = File(dir, "note.txt").apply { writeText("Transcripto Stream\nDurée : 00:10\n----\n\nTexte seul") }
+        assertEquals(EditOutcome(sealed = true, segmentsStale = false), repo.saveEditedTranscript(t, "Texte seul corrigé"))
+        assertEquals("Texte seul corrigé", repo.transcriptBody(t))
+        assertEquals(10_000L, repo.item(t).durationMs)
+        // realign : un segment vidé ou un nombre d'horodatages différent → null
+        assertNull(RecordingRepository.realign("[00:00] a [00:05]  [00:12] c", repo.readSegments(f)))
+        assertNull(RecordingRepository.realign("[00:00] a [00:05] b", repo.readSegments(f)))
+        assertNull(RecordingRepository.realign("[00:00] a", emptyList()))
     }
 
     @Test

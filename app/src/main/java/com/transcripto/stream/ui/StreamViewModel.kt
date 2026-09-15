@@ -1266,8 +1266,12 @@ class StreamViewModel(
         viewModelScope.launch {
             // L'encart affiche les noms d'intervenants : le dépôt les ramène aux libellés
             // génériques avant d'écrire, le .txt ne fige jamais un nom
-            val sealed = withContext(Dispatchers.IO) { repo.saveEditedTranscript(file, newText) }
-            if (!sealed) _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
+            val r = withContext(Dispatchers.IO) { repo.saveEditedTranscript(file, newText) }
+            if (!r.sealed) _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
+            if (r.segmentsStale) {
+                _uiMessage.value = "Texte enregistré — passages horodatés non synchronisés : relance « Transcrire » pour les réaligner"
+            }
+            _transcriptVersion.value = _transcriptVersion.value + 1
             refreshRecordings()
         }
     }

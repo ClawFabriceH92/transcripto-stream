@@ -29,12 +29,33 @@ class RecordingRepository(private val root: File) {
         /** Transcription seule d'un contenu .txt (après l'en-tête). */
         fun bodyOf(content: String): String = content.substringAfter(HEADER_END).trim()
 
-        /** « mm:ss » (les heures sont repliées : horodatage compact du .txt). */
-        fun formatClock(ms: Long): String {
-            val totalSec = ms / 1000
-            val m = (totalSec % 3600) / 60
-            val s = totalSec % 60
-            return "%02d:%02d".format(m, s)
+        /** Horodatage du .txt : « mm:ss », ou « hh:mm:ss » au-delà d'une heure — le même partout. */
+        fun formatClock(ms: Long): String = TranscriptExporter.formatHms(ms)
+
+        private val SPEAKER_TAG = Regex("\\[Intervenant \\d+\\]\\s*")
+        private val PAUSE_TAG = Regex("\\s*\\[pause \\d+s\\]\\s*")
+        private const val STATS_START = "--- Temps de parole"
+
+        /**
+         * Texte de chaque segment relu dans un .txt corrigé à la main : possible seulement si le
+         * texte porte exactement un horodatage par segment (correction ligne à ligne) ; null sinon.
+         */
+        fun realign(body: String, segments: List<StoredSegment>): List<StoredSegment>? {
+            if (segments.isEmpty()) return null
+            val text = body.substringBefore(STATS_START)
+            val tags = CLOCK_TAG.findAll(text).toList()
+            if (tags.size != segments.size) return null
+            val out = ArrayList<StoredSegment>(segments.size)
+            for ((i, m) in tags.withIndex()) {
+                val end = if (i + 1 < tags.size) tags[i + 1].range.first else text.length
+                val chunk = text.substring(m.range.last + 1, end)
+                    .replace(SPEAKER_TAG, "")
+                    .replace(PAUSE_TAG, " ")
+                    .trim()
+                if (chunk.isEmpty()) return null
+                out += segments[i].copy(text = chunk)
+            }
+            return out
         }
 
         /** Base unique : suffixe « (2) », « (3) »… tant que [taken] contient le nom. */
@@ -143,6 +164,9 @@ class RecordingRepository(private val root: File) {
         if (segmentsJson.isNotBlank()) {
             try {
                 TextVault.write(RecordingNames.jsonSibling(file), segmentsJson)
+                // Segments tout juste régénérés depuis l'audio : plus rien de désynchronisé
+                val meta = readMeta(file)
+                if (meta.segmentsStale) writeMeta(file, meta.copy(segmentsStale = false))
             } catch (e: Exception) {
                 Log.e(TAG, "écriture segments : ${e.message}")
             }
@@ -217,10 +241,32 @@ class RecordingRepository(private val root: File) {
         }
     }
 
-    /** Transcription corrigée à la main : noms ramenés aux libellés génériques, .txt réécrit. */
-    fun saveEditedTranscript(file: File, displayedText: String): Boolean {
-        val raw = SpeakerNames.unapply(displayedText, readMeta(file).speakers)
-        return writeTranscriptFile(file, raw, durationMsOf(file))
+    /**
+     * Transcription corrigée à la main (écran principal) : noms ramenés aux libellés
+     * génériques, .txt réécrit ; les segments (.json) et le .srt suivent ligne à ligne
+     * quand le texte garde un horodatage par segment, sinon ils sont marqués
+     * désynchronisés (la fiche invite à relancer « Transcrire »).
+     */
+    fun saveEditedTranscript(file: File, displayedText: String): EditOutcome {
+        val meta = readMeta(file)
+        val raw = SpeakerNames.unapply(displayedText, meta.speakers)
+        val sealed = writeTranscriptFile(file, raw, durationMsOf(file))
+        val segs = readSegments(file)
+        if (segs.isEmpty()) return EditOutcome(sealed, segmentsStale = false)
+        val realigned = realign(raw, segs)
+        if (realigned == null) {
+            if (!meta.segmentsStale) writeMeta(file, meta.copy(segmentsStale = true))
+            return EditOutcome(sealed, segmentsStale = true)
+        }
+        try {
+            TextVault.write(RecordingNames.jsonSibling(file), SegmentsCodec.toJsonStored(realigned))
+            val srt = TranscriptExporter.buildSrt(realigned.map { SegmentData(it.text, it.startMs, it.endMs) })
+            if (srt.isNotBlank()) TextVault.write(RecordingNames.srtSibling(file), srt)
+            if (meta.segmentsStale) writeMeta(file, meta.copy(segmentsStale = false))
+        } catch (e: Exception) {
+            Log.e(TAG, "saveEditedTranscript: ${e.message}")
+        }
+        return EditOutcome(sealed, segmentsStale = false)
     }
 
     /**
@@ -335,16 +381,17 @@ class RecordingRepository(private val root: File) {
         return RecordingListing(list, files.sumOf { it.length() })
     }
 
-    /** Élément de liste pour un fichier (lit l'aperçu du .txt et le .meta). */
+    /** Élément de liste pour un fichier (lit le .txt une seule fois — aperçu et durée — et le .meta). */
     fun item(f: File): RecordingItem {
         // Texte scellé illisible (clé KeyStore perdue) : aperçu vide, la liste reste utilisable
-        val transcript = transcriptBody(f).take(200)
+        val content = readTranscript(f)
+        val transcript = content?.let { bodyOf(it) }?.take(200) ?: ""
         val meta = readMeta(f)
         return RecordingItem(
             file = f,
             baseName = RecordingNames.baseName(f.name),
             sizeBytes = f.length(),
-            durationMs = durationMsOf(f),
+            durationMs = if (f.name.endsWith(".txt")) content?.let { TranscriptExporter.parseDurationMs(it) } ?: 0L else durationMsOf(f),
             modifiedAt = f.lastModified(),
             encrypted = f.name.endsWith(".enc"),
             hasAudio = RecordingNames.isAudio(f.name),
@@ -353,6 +400,7 @@ class RecordingRepository(private val root: File) {
             speakerNames = meta.speakers,
             template = meta.template,
             chapters = meta.chapters,
+            segmentsStale = meta.segmentsStale,
         )
     }
 

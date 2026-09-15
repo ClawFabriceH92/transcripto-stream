@@ -15,8 +15,11 @@ data class RecordingMeta(
     val template: String = "",
     /** Chapitres (début + titre), détectés localement ou par l'IA ; vide = pas encore détectés. */
     val chapters: List<Chapter> = emptyList(),
+    /** Le .txt a été corrigé à la main sans que les segments (.json) puissent être réalignés. */
+    val segmentsStale: Boolean = false,
 ) {
-    val isEmpty: Boolean get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty()
+    val isEmpty: Boolean
+        get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty() && !segmentsStale
 }
 
 /** Un chapitre : instant de début et titre court. */
@@ -30,12 +33,13 @@ object MetaCodec {
         meta.speakers.forEach { (id, name) -> if (name.isNotBlank()) speakers.put(id.toString(), name.trim()) }
         val chapters = JSONArray()
         meta.chapters.forEach { c -> chapters.put(JSONObject().put("s", c.startMs).put("t", c.title.trim())) }
-        return JSONObject()
+        val o = JSONObject()
             .put("speakers", speakers)
             .put("dossier", meta.dossier.trim())
             .put("template", meta.template.trim())
             .put("chapters", chapters)
-            .toString()
+        if (meta.segmentsStale) o.put("stale", true)
+        return o.toString()
     }
 
     /** Métadonnées vides si le JSON est absent ou illisible. */
@@ -64,6 +68,7 @@ object MetaCodec {
                 dossier = o.optString("dossier", "").trim(),
                 template = o.optString("template", "").trim(),
                 chapters = chapters.sortedBy { it.startMs },
+                segmentsStale = o.optBoolean("stale", false),
             )
         } catch (e: Exception) {
             RecordingMeta()
