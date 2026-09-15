@@ -10,6 +10,8 @@ data class StoredSegment(
     val endMs: Long,
     val text: String,
     val speaker: Int,
+    /** Confiance du moteur (0..1) ; -1 pour les transcriptions antérieures ou sans mesure. */
+    val confidence: Float = -1f,
 )
 
 /**
@@ -24,13 +26,13 @@ object SegmentsCodec {
         for (i in segments.indices) {
             val seg = segments[i]
             if (seg.text.isBlank()) continue
-            arr.put(
-                JSONObject()
-                    .put("s", seg.startMs)
-                    .put("e", seg.endMs)
-                    .put("t", seg.text.trim())
-                    .put("sp", speakerIds.getOrElse(i) { 1 })
-            )
+            val o = JSONObject()
+                .put("s", seg.startMs)
+                .put("e", seg.endMs)
+                .put("t", seg.text.trim())
+                .put("sp", speakerIds.getOrElse(i) { 1 })
+            if (seg.confidence >= 0f) o.put("c", round3(seg.confidence))
+            arr.put(o)
         }
         return JSONObject().put("segments", arr).toString()
     }
@@ -40,16 +42,18 @@ object SegmentsCodec {
         val arr = JSONArray()
         for (seg in segments) {
             if (seg.text.isBlank()) continue
-            arr.put(
-                JSONObject()
-                    .put("s", seg.startMs)
-                    .put("e", seg.endMs)
-                    .put("t", seg.text.trim())
-                    .put("sp", seg.speaker)
-            )
+            val o = JSONObject()
+                .put("s", seg.startMs)
+                .put("e", seg.endMs)
+                .put("t", seg.text.trim())
+                .put("sp", seg.speaker)
+            if (seg.confidence >= 0f) o.put("c", round3(seg.confidence))
+            arr.put(o)
         }
         return JSONObject().put("segments", arr).toString()
     }
+
+    private fun round3(v: Float): Double = Math.round(v * 1000.0) / 1000.0
 
     /** Retourne une liste vide si le JSON est illisible (fichier corrompu). */
     fun fromJson(json: String): List<StoredSegment> {
@@ -62,6 +66,7 @@ object SegmentsCodec {
                     endMs = o.getLong("e"),
                     text = o.getString("t"),
                     speaker = o.optInt("sp", 1),
+                    confidence = o.optDouble("c", -1.0).toFloat(),
                 )
             }
         } catch (e: Exception) {

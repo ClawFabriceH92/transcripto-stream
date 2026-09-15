@@ -1,0 +1,63 @@
+name: Native
+
+# Compile whisper.cpp (sous-module épinglé) + le pont JNI pour arm64-v8a avec le NDK
+# préinstallé du runner. Indépendant de la CI applicative : une règle CMake cassée
+# n'arrête ni les builds Gradle ni la publication. Produit libwhisper.so en artefact.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "app/src/main/cpp/**"
+      - ".gitmodules"
+      - ".github/workflows/native.yml"
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure (NDK, arm64-v8a, armv8.2-a+dotprod+fp16)
+        shell: bash
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "NDK=$NDK" && cat "$NDK/source.properties"
+          cmake -S app/src/main/cpp -B build-native \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log | tail -30
+
+      - name: Build
+        shell: bash
+        run: cmake --build build-native -j"$(nproc)" 2>&1 | tee build.log | tail -40; exit ${PIPESTATUS[0]}
+
+      - name: Inspect
+        shell: bash
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          ls -l build-native/*.so
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D --defined-only build-native/libwhisper.so | grep -c "Java_com_transcripto" 
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d build-native/libwhisper.so | grep NEEDED
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-libs-arm64-v8a
+          path: build-native/libwhisper.so
+
+      - name: Publish error excerpt as commit comment
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Build natif en échec (run ${{ github.run_id }}) — extrait :"
+            echo '```'
+            grep -iE "error|Error|CMake Error|undefined|fatal" configure.log build.log 2>/dev/null | head -60
+            echo '```'
+          } > excerpt.md
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -f body="$(cat excerpt.md)" >/dev/null || true

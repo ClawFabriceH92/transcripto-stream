@@ -2,6 +2,9 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <cstdio>
+#include <algorithm>
+#include <thread>
 #include <whisper.h>
 
 extern "C" {
@@ -42,9 +45,18 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeLoadModel(
     return reinterpret_cast<jlong>(g_ctx);
 }
 
+// Nombre flottant en JSON (point décimal, indépendant de la locale)
+static std::string json_float(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.3f", v);
+    return buf;
+}
+
 /**
  * Transcrit un buffer PCM brut (int16 LE, mono, 16 kHz) et retourne un JSON :
- * {"full_text":"...","segments":[{"start_ms":..,"end_ms":..,"text":".."}],"language":"fr"}
+ * {"full_text":"...","segments":[{"start_ms":..,"end_ms":..,"text":"..","c":0.87,"nsp":0.02}],"language":"fr"}
+ * — « c » : probabilité moyenne des jetons du segment (confiance, -1 si inconnue),
+ *   « nsp » : probabilité de non-parole du segment.
  *
  * @param initial_prompt vocabulaire personnalisé injecté comme prompt initial (peut être vide)
  *                        — améliore la reconnaissance des termes métier (noms de clients, CAC, etc.)
@@ -98,8 +110,13 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
     wparams.translate = false;
     // "auto" (ou "auto-detect") -> nullptr pour la détection automatique de la langue
     wparams.language = (lang_copy == "auto" || lang_copy == "auto-detect") ? nullptr : lang;
-    wparams.n_threads = 4;
+    wparams.n_threads = std::max(1, std::min(4, static_cast<int>(std::thread::hardware_concurrency())));
     wparams.initial_prompt = effective_prompt;
+    // Direct et différé : pas de montée de température (latence stable), blancs supprimés,
+    // seuil de non-parole pour ne pas inventer de texte sur du silence
+    wparams.temperature_inc = 0.0f;
+    wparams.suppress_blank = true;
+    wparams.no_speech_thold = 0.6f;
 
     std::string result;
     int ret = whisper_full_parallel(ctx, wparams, samples.data(), nsamples, 1);
@@ -116,9 +133,23 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
             if (i > 0) result += ",";
             const int64_t t0 = whisper_full_get_segment_t0(ctx, i);
             const int64_t t1 = whisper_full_get_segment_t1(ctx, i);
+            // Confiance : moyenne des probabilités des jetons de texte (jetons spéciaux exclus)
+            const int n_tokens = whisper_full_n_tokens(ctx, i);
+            double sum_p = 0.0;
+            int n_text = 0;
+            for (int j = 0; j < n_tokens; j++) {
+                const whisper_token_data td = whisper_full_get_token_data(ctx, i, j);
+                if (td.id >= whisper_token_eot(ctx)) continue;
+                sum_p += td.p;
+                n_text++;
+            }
+            const float confidence = n_text > 0 ? static_cast<float>(sum_p / n_text) : -1.0f;
+            const float no_speech = whisper_full_get_segment_no_speech_prob(ctx, i);
             result += "{\"start_ms\":" + std::to_string(t0 * 10) + ",";
             result += "\"end_ms\":" + std::to_string(t1 * 10) + ",";
-            result += "\"text\":\"" + json_escape(whisper_full_get_segment_text(ctx, i)) + "\"}";
+            result += "\"text\":\"" + json_escape(whisper_full_get_segment_text(ctx, i)) + "\",";
+            result += "\"c\":" + json_float(confidence) + ",";
+            result += "\"nsp\":" + json_float(no_speech) + "}";
         }
         result += "],\"language\":\"" + lang_copy + "\"}";
     }

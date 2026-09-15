@@ -12,6 +12,8 @@ data class SegmentData(
     val text: String,
     val startMs: Long,
     val endMs: Long,
+    /** Probabilité moyenne des jetons du segment (0..1) ; -1 si le moteur ne la fournit pas. */
+    val confidence: Float = -1f,
 )
 
 /**
@@ -107,6 +109,7 @@ class WhisperStreamEngine {
                                 text = seg.optString("text", ""),
                                 startMs = seg.optLong("start_ms", 0L),
                                 endMs = seg.optLong("end_ms", 0L),
+                                confidence = seg.optDouble("c", -1.0).toFloat(),
                             )
                         )
                     }

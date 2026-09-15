@@ -3,6 +3,7 @@ package com.transcripto.stream.data
 import com.transcripto.stream.stt.SegmentData
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class SegmentsCodecTest {
@@ -31,5 +32,19 @@ class SegmentsCodecTest {
     fun toJson_missingSpeakerDefaultsTo1() {
         val json = SegmentsCodec.toJson(listOf(SegmentData("a", 0, 100)), emptyList())
         assertEquals(1, SegmentsCodec.fromJson(json).single().speaker)
+    }
+
+    @Test
+    fun confidenceIsStoredWhenKnownAndDefaultsOtherwise() {
+        val json = SegmentsCodec.toJson(listOf(SegmentData("sûr", 0, 1000, confidence = 0.91234f), SegmentData("ancien", 1000, 2000)), listOf(1, 1))
+        assertTrue(json, json.contains("\"c\":0.912"))
+        val back = SegmentsCodec.fromJson(json)
+        assertEquals(0.912f, back[0].confidence, 0.0005f)
+        assertEquals(-1f, back[1].confidence, 0f)
+        assertFalse(json.substringAfter("ancien").contains("\"c\""))
+        val again = SegmentsCodec.fromJson(SegmentsCodec.toJsonStored(back))
+        assertEquals(back, again)
+        // Fichiers antérieurs (sans « c ») : confiance inconnue
+        assertEquals(-1f, SegmentsCodec.fromJson("{\"segments\":[{\"s\":0,\"e\":1,\"t\":\"x\"}]}")[0].confidence, 0f)
     }
 }
