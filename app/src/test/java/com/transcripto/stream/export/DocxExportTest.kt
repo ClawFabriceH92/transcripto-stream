@@ -25,7 +25,7 @@ class DocxExportTest {
         segments = listOf(
             ExportSegment(1, 0L, 30_000L, "Bonjour à tous, on commence par les stocks."),
             ExportSegment(2, 30_000L, 60_000L, "L'inventaire a été rapproché & validé."),
-            ExportSegment(1, 60_000L, 95_000L, "Parfait, on passe aux provisions."),
+            ExportSegment(1, 60_000L, 95_000L, "Parfait, on passe aux provisions.", confidence = 0.42f),
         ),
         chapters = listOf(Chapter(0L, "Ouverture"), Chapter(30_000L, "Stocks et provisions")),
         actions = listOf(
@@ -74,6 +74,8 @@ class DocxExportTest {
         assertTrue(t.contains("H1:Transcription"))
         assertTrue(t.contains("SP:M. Martin (DG)"))
         assertTrue(t.contains("SG:00:00 Bonjour à tous, on commence par les stocks."))
+        assertTrue(t.contains("M:Passages à vérifier=1 (confiance du moteur sous 60 %, marqués « (à vérifier) »)"))
+        assertTrue(t.contains("SG:01:00 Parfait, on passe aux provisions. (à vérifier)"))
         assertTrue(t.contains("SP:Intervenant 2"))
         assertTrue(t.contains("M:Chapitres=2"))
         assertTrue(t.contains("H2:00:00 — Ouverture"))

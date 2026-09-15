@@ -67,6 +67,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,6 +78,7 @@ import com.transcripto.stream.data.ActionItem
 import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.RecordingNames
+import com.transcripto.stream.data.ReviewMarks
 import com.transcripto.stream.data.SegmentsCodec
 import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.data.SpeakerNames
@@ -149,6 +153,8 @@ fun DetailScreen(vm: StreamViewModel) {
     var dossierDialog by remember { mutableStateOf(false) }
     var speakerDialog by remember { mutableStateOf<Int?>(null) }
     var editSegment by remember { mutableStateOf<Int?>(null) }
+    var reviewMode by rememberSaveable(current.file.absolutePath) { mutableStateOf(false) }
+    var reviewCursor by remember(current.file.absolutePath) { mutableStateOf(-1) }
 
     var summary by remember { mutableStateOf<String?>(null) }
     var summaryExpanded by rememberSaveable { mutableStateOf(false) }
@@ -503,11 +509,43 @@ fun DetailScreen(vm: StreamViewModel) {
 
         // ---- Transcription ----
         if (segments.isNotEmpty()) {
+            // Relecture assistée : passages sous le seuil de confiance teintés, chiffres et dates
+            // soulignés, « Suivant » saute de passage douteux en passage douteux
+            val doubtful = remember(segments) { segments.indices.filter { ReviewMarks.isDoubtful(segments[it].confidence) } }
+            val hasConfidence = remember(segments) { segments.any { it.confidence >= 0f } }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Transcription", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.width(8.dp))
+                FilterChip(
+                    selected = reviewMode,
+                    onClick = { reviewMode = !reviewMode },
+                    label = { Text(if (doubtful.isEmpty()) "Vérifier" else "Vérifier (${doubtful.size})", maxLines = 1) },
+                )
                 Spacer(Modifier.weight(1f))
+                if (reviewMode && doubtful.isNotEmpty()) {
+                    TextButton(
+                        onClick = {
+                            val next = doubtful.firstOrNull { it > reviewCursor } ?: doubtful.first()
+                            reviewCursor = next
+                            scope.launch { listState.animateScrollToItem(next) }
+                            if (current.hasAudio) vm.playFrom(current.file, segments[next].startMs)
+                        },
+                    ) { Text("Suivant") }
+                } else {
+                    Text(
+                        "Toucher : écouter · appui long : corriger",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (reviewMode) {
                 Text(
-                    "Toucher : écouter · appui long : corriger",
+                    when {
+                        !hasConfidence -> "Confiance du moteur indisponible pour cette transcription — relance « Transcrire » pour l'obtenir."
+                        doubtful.isEmpty() -> "Aucun passage sous 60 % de confiance. Montants, pourcentages et dates soulignés : à relire."
+                        else -> "${doubtful.size} passage${if (doubtful.size > 1) "s" else ""} sous 60 % de confiance (teinté${if (doubtful.size > 1) "s" else ""}) ; montants et dates soulignés."
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -539,6 +577,8 @@ fun DetailScreen(vm: StreamViewModel) {
                     SegmentRow(
                         segment = seg,
                         isCurrent = isCurrent,
+                        doubtful = reviewMode && ReviewMarks.isDoubtful(seg.confidence),
+                        highlightFigures = reviewMode,
                         onClick = { vm.playFrom(current.file, seg.startMs) },
                         onLongClick = { editSegment = i },
                     )
@@ -1118,6 +1158,8 @@ private fun SegmentRow(
     isCurrent: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    doubtful: Boolean = false,
+    highlightFigures: Boolean = false,
 ) {
     val accent = speakerColor(segment.speaker)
     Row(
@@ -1126,7 +1168,11 @@ private fun SegmentRow(
             .padding(vertical = 2.dp)
             .clip(MaterialTheme.shapes.small)
             .background(
-                if (isCurrent) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                when {
+                    isCurrent -> MaterialTheme.colorScheme.primaryContainer
+                    doubtful -> MaterialTheme.colorScheme.errorContainer
+                    else -> Color.Transparent
+                }
             )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Corriger le passage")
             .padding(horizontal = 10.dp, vertical = 7.dp),
@@ -1137,14 +1183,23 @@ private fun SegmentRow(
             color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else accent,
             modifier = Modifier.padding(end = 10.dp, top = 3.dp),
         )
-        Text(
-            segment.text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (isCurrent) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-        )
+        val textColor = when {
+            isCurrent -> MaterialTheme.colorScheme.onPrimaryContainer
+            doubtful -> MaterialTheme.colorScheme.onErrorContainer
+            else -> MaterialTheme.colorScheme.onSurface
+        }
+        if (highlightFigures) {
+            val annotated = remember(segment.text) {
+                buildAnnotatedString {
+                    append(segment.text)
+                    ReviewMarks.figureRanges(segment.text).forEach { r ->
+                        addStyle(SpanStyle(textDecoration = TextDecoration.Underline, fontWeight = FontWeight.SemiBold), r.first, r.last + 1)
+                    }
+                }
+            }
+            Text(annotated, style = MaterialTheme.typography.bodyMedium, color = textColor)
+        } else {
+            Text(segment.text, style = MaterialTheme.typography.bodyMedium, color = textColor)
+        }
     }
 }

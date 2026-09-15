@@ -1,6 +1,7 @@
 package com.transcripto.stream.export
 
 import com.transcripto.stream.data.Chapter
+import com.transcripto.stream.data.ReviewMarks
 import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.MdBlock
@@ -14,7 +15,7 @@ enum class ExportFormat(val label: String, val mime: String, val extension: Stri
 }
 
 /** Segment horodaté attribué à un intervenant (numéro brut, le nom vient de [ExportDocument.speakerNames]). */
-data class ExportSegment(val speaker: Int, val startMs: Long, val endMs: Long, val text: String)
+data class ExportSegment(val speaker: Int, val startMs: Long, val endMs: Long, val text: String, val confidence: Float = -1f)
 
 /** Une action à mener telle qu'imprimée : texte, responsable, échéance, état. */
 data class ExportAction(val text: String, val owner: String = "", val due: String = "", val done: Boolean = false)
@@ -144,6 +145,8 @@ object ExportComposer {
         if (speakers.isNotEmpty()) out += DocBlock.Meta("Intervenants", speakers.joinToString(", "))
         speakingShares(doc)?.let { out += DocBlock.Meta("Temps de parole", it) }
         if (doc.chapters.isNotEmpty()) out += DocBlock.Meta("Chapitres", doc.chapters.size.toString())
+        val doubtful = doc.segments.count { ReviewMarks.isDoubtful(it.confidence) }
+        if (doubtful > 0) out += DocBlock.Meta("Passages à vérifier", "$doubtful (confiance du moteur sous 60 %, marqués « (à vérifier) »)")
         if (doc.encrypted) out += DocBlock.Meta("Audio", "chiffré sur l'appareil (AES-256-GCM)")
         doc.sha256?.takeIf { it.isNotBlank() }?.let { out += DocBlock.Meta("Empreinte SHA-256 (PCM)", it) }
         return out
@@ -220,7 +223,8 @@ object ExportComposer {
                         out += DocBlock.Speaker(SpeakerNames.label(seg.speaker, doc.speakerNames), seg.speaker)
                     }
                     val clock = if (doc.timestamps) TranscriptExporter.formatHms(seg.startMs) else null
-                    out += DocBlock.Segment(clock, seg.text.trim())
+                    val text = if (ReviewMarks.isDoubtful(seg.confidence)) seg.text.trim() + " (à vérifier)" else seg.text.trim()
+                    out += DocBlock.Segment(clock, text)
                 }
                 // Chapitres situés après le dernier passage : listés quand même (jamais perdus)
                 while (nextChapter < chapters.size) {

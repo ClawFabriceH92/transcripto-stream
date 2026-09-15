@@ -42,7 +42,7 @@ class DocumentExporter(
             sha256 = RecordingRepository.HASH_LINE.find(content)?.groupValues?.get(1),
             encrypted = file.name.endsWith(".enc"),
             summaryMarkdown = repo.readSummary(file),
-            segments = repo.readSegments(file).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) },
+            segments = repo.readSegments(file).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text, it.confidence) },
             chapters = meta.chapters,
             actions = meta.actions.map { ExportAction(it.text, it.owner, it.dueLabel, it.done) },
             transcriptText = SpeakerNames.apply(raw, meta.speakers),
