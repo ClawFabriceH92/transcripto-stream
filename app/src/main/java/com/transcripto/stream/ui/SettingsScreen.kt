@@ -519,6 +519,25 @@ fun SettingsScreen(vm: StreamViewModel) {
                     "(les WAV chiffrés y sont inclus). Sans la phrase de passe, la sauvegarde est " +
                     "illisible : note-la précieusement.",
             )
+            Spacer(Modifier.height(12.dp))
+            Text("Me rappeler de sauvegarder", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.height(6.dp))
+            var reminderDays by remember { mutableStateOf(vm.settings.backupReminderDays.toString()) }
+            SegmentedChoice(
+                options = listOf("0" to "Jamais", "7" to "7 jours", "30" to "30 jours"),
+                selected = reminderDays,
+                onSelect = { reminderDays = it; vm.setBackupReminderDays(it.toInt()) },
+            )
+            Spacer(Modifier.height(4.dp))
+            val lastBackup = vm.lastBackupAt()
+            HintText(
+                if (lastBackup > 0) {
+                    "Dernière sauvegarde : " + SimpleDateFormat("d MMMM yyyy 'à' HH:mm", Locale.FRANCE).format(Date(lastBackup)) +
+                        ". Un bandeau apparaît en haut de la liste quand le délai est dépassé — rien ne tourne en arrière-plan."
+                } else {
+                    "Aucune sauvegarde exportée pour l'instant. Un bandeau apparaît en haut de la liste quand le délai est dépassé — rien ne tourne en arrière-plan."
+                },
+            )
 
             backupMode?.let { mode ->
                 PassphraseDialog(

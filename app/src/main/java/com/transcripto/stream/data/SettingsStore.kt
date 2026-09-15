@@ -30,6 +30,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt("retention_days", 0)
         set(v) = prefs.edit().putInt("retention_days", v).apply()
 
+    // ---- Rappel de sauvegarde : 0 = jamais, sinon nombre de jours entre deux sauvegardes ----
+    var backupReminderDays: Int
+        get() = prefs.getInt("backup_reminder_days", 0)
+        set(v) = prefs.edit().putInt("backup_reminder_days", v).apply()
+
+    // ---- Date (ms) du dernier export de sauvegarde ; 0 = jamais ----
+    var lastBackupAt: Long
+        get() = prefs.getLong("last_backup_at", 0L)
+        set(v) = prefs.edit().putLong("last_backup_at", v).apply()
+
     // ---- PIN (hash SHA-256, vide = désactivé) ----
     var pinHash: String
         get() = prefs.getString("pin_hash", "") ?: ""
