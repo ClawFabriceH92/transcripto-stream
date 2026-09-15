@@ -417,21 +417,21 @@ class RecordingRepository(private val root: File) {
      * Actions encore ouvertes des autres enregistrements du même [dossier] (base du fichier →
      * action), du plus récent au plus ancien — contexte des synthèses IA et fiche dossier.
      */
-    fun openActionsInDossier(dossier: String, except: File? = null): List<Pair<String, ActionItem>> {
+    fun openActionsInDossier(dossier: String, except: File? = null): List<DossierAction> {
         val d = dossier.trim()
         if (d.isEmpty()) return emptyList()
         val files = (dir.listFiles() ?: return emptyList())
             .filter { it.isFile && (RecordingNames.isAudio(it.name) || RecordingNames.isTextOnly(it.name)) }
             .filter { except == null || RecordingNames.baseName(it.name) != RecordingNames.baseName(except.name) }
             .sortedByDescending { it.lastModified() }
-        val out = ArrayList<Pair<String, ActionItem>>()
+        val out = ArrayList<DossierAction>()
         val seenBases = HashSet<String>()
         for (f in files) {
             val base = RecordingNames.baseName(f.name)
             if (!seenBases.add(base)) continue // « a.wav » et « a.txt » partagent le .meta
             val meta = readMeta(f)
             if (!meta.dossier.equals(d, ignoreCase = true)) continue
-            meta.openActions.forEach { out += base to it }
+            meta.openActions.forEach { out += DossierAction(f, base, it) }
         }
         return out
     }

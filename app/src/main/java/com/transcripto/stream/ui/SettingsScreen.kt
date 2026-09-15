@@ -51,6 +51,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -79,12 +81,15 @@ import java.util.Locale
 @Composable
 fun SettingsScreen(vm: StreamViewModel) {
     val scrollState = rememberScrollState()
-    // Ouverture depuis le bandeau de rappel : défiler jusqu'à la section Sauvegarde (vers le bas)
+    // Ouverture depuis le bandeau de rappel : défiler jusqu'à la carte Sauvegarde, dont la
+    // position dans la colonne est relevée à la mise en page
     val settingsTarget by vm.settingsTarget.collectAsStateWithLifecycle()
-    LaunchedEffect(settingsTarget, scrollState.maxValue) {
-        if (settingsTarget == "backup" && scrollState.maxValue > 0) {
+    var backupCardY by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(settingsTarget, backupCardY) {
+        val y = backupCardY
+        if (settingsTarget == "backup" && y != null) {
             vm.consumeSettingsTarget()
-            scrollState.animateScrollTo((scrollState.maxValue * 0.62f).toInt())
+            scrollState.animateScrollTo((y - 16).coerceAtLeast(0))
         }
     }
     val settings = vm.settings
@@ -476,7 +481,11 @@ fun SettingsScreen(vm: StreamViewModel) {
         }
 
         // ================= SAUVEGARDE =================
-        SectionCard(title = "Sauvegarde", icon = AppIcons.Backup) {
+        SectionCard(
+            title = "Sauvegarde",
+            icon = AppIcons.Backup,
+            modifier = Modifier.onGloballyPositioned { backupCardY = it.positionInParent().y.toInt() },
+        ) {
             val backupBusy by vm.backupBusy.collectAsStateWithLifecycle()
             var backupMode by remember { mutableStateOf<String?>(null) } // "export" | "restore"
             var backupUri by remember { mutableStateOf<Uri?>(null) }

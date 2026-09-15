@@ -19,10 +19,12 @@ data class RecordingMeta(
     val segmentsStale: Boolean = false,
     /** Actions à mener issues de la synthèse (ou saisies), avec leur état. */
     val actions: List<ActionItem> = emptyList(),
+    /** Clés (texte replié) des actions supprimées à la main : une nouvelle synthèse ne les recrée pas. */
+    val dismissedActions: List<String> = emptyList(),
 ) {
     val isEmpty: Boolean
         get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty() &&
-            !segmentsStale && actions.isEmpty()
+            !segmentsStale && actions.isEmpty() && dismissedActions.isEmpty()
 
     /** Actions non faites, dans l'ordre. */
     val openActions: List<ActionItem> get() = actions.filter { !it.done }
@@ -73,6 +75,7 @@ object MetaCodec {
             }
             o.put("actions", actions)
         }
+        if (meta.dismissedActions.isNotEmpty()) o.put("dismissed", JSONArray(meta.dismissedActions))
         return o.toString()
     }
 
@@ -122,6 +125,7 @@ object MetaCodec {
                 chapters = chapters.sortedBy { it.startMs },
                 segmentsStale = o.optBoolean("stale", false),
                 actions = actions,
+                dismissedActions = o.optJSONArray("dismissed")?.let { arr -> (0 until arr.length()).map { arr.optString(it, "") }.filter { it.isNotBlank() } } ?: emptyList(),
             )
         } catch (e: Exception) {
             RecordingMeta()

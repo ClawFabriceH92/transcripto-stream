@@ -20,6 +20,11 @@ object ActionExtractor {
     private val SPLIT = Regex("\\s+[—–]\\s+")
     private val NOT_SPECIFIED = Regex("^(non précisée?|à préciser|non défini[e]?|\\?|n/?a|aucune?)$", RegexOption.IGNORE_CASE)
     private val OWNER_PREFIX = Regex("^([A-ZÀ-Ý][\\p{L}.'’\\- ]{1,40}?)\\s*:\\s+(.+)$")
+    /** Statut signalé par le modèle sur une action déjà suivie (« traitée », « reconduite »…). */
+    private const val STATUS_WORDS = "traitée?|faite?|terminée?|réalisée?|réglée?|close|reconduite?|à reconduire|en cours|reportée?"
+    private val STATUS_PART = Regex("^(?:$STATUS_WORDS)$", RegexOption.IGNORE_CASE)
+    private val STATUS_SUFFIX = Regex("\\s*[\\(\\[]\\s*(?:$STATUS_WORDS)\\s*[\\)\\]]\\s*$", RegexOption.IGNORE_CASE)
+    private val DONE_WORDS = Regex("^(?:traitée?|faite?|terminée?|réalisée?|réglée?|close)$", RegexOption.IGNORE_CASE)
     private val BOLD = Regex("\\*\\*(.+?)\\*\\*")
 
     private val MONTHS = listOf(
@@ -60,9 +65,20 @@ object ActionExtractor {
 
     /** Une puce → action ; null si elle est vide ou ne dit rien. */
     fun parseBullet(raw: String, reference: Long): ActionItem? {
-        val bullet = BOLD.replace(raw.trim()) { it.groupValues[1] }
+        var bullet = BOLD.replace(raw.trim()) { it.groupValues[1] }
         if (bullet.isEmpty()) return null
-        val parts = bullet.split(SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
+        // Statut en fin de puce : « … (traitée) » ou « … — reconduite »
+        var status = ""
+        STATUS_SUFFIX.find(bullet)?.let { m ->
+            status = m.value.trim().trim('(', ')', '[', ']', ' ')
+            bullet = bullet.substring(0, m.range.first).trim()
+        }
+        var parts = bullet.split(SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size >= 2 && STATUS_PART.matches(parts.last())) {
+            status = parts.last()
+            parts = parts.dropLast(1)
+        }
+        val done = DONE_WORDS.matches(status)
         var owner = ""
         var text: String
         var due: Due? = null
@@ -102,6 +118,7 @@ object ActionExtractor {
             owner = owner,
             dueLabel = due?.label ?: "",
             dueAt = due?.at ?: 0L,
+            done = done,
             createdAt = reference,
         )
     }
@@ -194,14 +211,23 @@ object ActionExtractor {
      * conservés) avec celles extraites d'une nouvelle synthèse : une action est reconnue
      * par son texte replié ; les nouvelles sont ajoutées à la fin.
      */
-    fun merge(existing: List<ActionItem>, extracted: List<ActionItem>): List<ActionItem> {
+    fun merge(existing: List<ActionItem>, extracted: List<ActionItem>, dismissed: Collection<String> = emptyList()): List<ActionItem> {
+        val byKey = extracted.associateBy { TextFold.fold(it.text) }
+        // Une action déjà suivie signalée « traitée » par la nouvelle synthèse est cochée
+        val kept = existing.map { a -> if (!a.done && byKey[TextFold.fold(a.text)]?.done == true) a.copy(done = true) else a }
         val known = existing.map { TextFold.fold(it.text) }.toHashSet()
-        return existing + extracted.filter { known.add(TextFold.fold(it.text)) }
+        known += dismissed.map { TextFold.fold(it) }
+        return kept + extracted.filter { known.add(TextFold.fold(it.text)) }
     }
 
+    /** Clé de reconnaissance d'une action (texte replié : accents et casse ignorés). */
+    fun key(text: String): String = TextFold.fold(text)
+
     private fun monthIndex(name: String): Int? {
+        // Jeton complet (« juil » ≠ « juin ») : les abréviations font au moins trois lettres
         val n = TextFold.fold(name).trimEnd('.')
-        return MONTHS.indexOfFirst { TextFold.fold(it).startsWith(n.take(3)) }.takeIf { it >= 0 }
+        if (n.length < 3) return null
+        return MONTHS.indexOfFirst { TextFold.fold(it).startsWith(n) }.takeIf { it >= 0 }
     }
 
     /** Sans année : la prochaine occurrence du mois (ou le mois courant), jamais un mois déjà passé. */

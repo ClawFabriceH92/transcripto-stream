@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -89,12 +90,37 @@ class RecordingService : Service() {
                 if (!BatchState.active) stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_BATCH -> startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-            else -> startForeground(NOTIF_ID, buildNotification())
+            ACTION_BATCH -> {
+                startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                handler.removeCallbacks(ticker)
+                handler.post(ticker)
+                // Le lot vit dans le ViewModel : après une mort du process, rien à reprendre
+                return START_NOT_STICKY
+            }
+            else -> {
+                // Redémarrage système (intent nul) sans enregistrement en cours : rien à porter
+                if (intent == null && !RecordingState.isActive && !BatchState.active) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                // Type explicite : le manifeste déclare aussi dataSync, réservé au lot
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                } else {
+                    startForeground(NOTIF_ID, buildNotification())
+                }
+            }
         }
         handler.removeCallbacks(ticker)
         handler.post(ticker)
         return START_STICKY
+    }
+
+    /** Android 15 : plafond de temps des services dataSync — le lot s'arrête après le fichier en cours. */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        BatchState.cancelRequested = true
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {
