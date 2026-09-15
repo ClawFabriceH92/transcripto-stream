@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -21,18 +23,43 @@ object RecordingState {
     @Volatile var elapsedSec: Long = 0L
 }
 
+/** Progression d'un import par lots (notification et bandeau), annulation demandée depuis la notification. */
+object BatchState {
+    @Volatile var active: Boolean = false
+    @Volatile var done: Int = 0
+    @Volatile var total: Int = 0
+    @Volatile var label: String = ""
+    @Volatile var cancelRequested: Boolean = false
+
+    fun reset() {
+        active = false
+        done = 0
+        total = 0
+        label = ""
+        cancelRequested = false
+    }
+}
+
 /**
  * Service foreground : maintient l'enregistrement actif quand l'écran est éteint
- * ou que l'app passe en arrière-plan. Notification avec chrono.
+ * ou que l'app passe en arrière-plan (notification avec chrono), ou porte un import
+ * par lots (notification de progression « 3 sur 10 » avec bouton Annuler).
  */
 class RecordingService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "recording"
         private const val NOTIF_ID = 1001
+        private const val ACTION_BATCH = "com.transcripto.stream.action.BATCH"
+        const val ACTION_CANCEL_BATCH = "com.transcripto.stream.action.CANCEL_BATCH"
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, RecordingService::class.java))
+        }
+
+        /** Import par lots : même service, type « synchronisation de données ». */
+        fun startBatch(context: Context) {
+            context.startForegroundService(Intent(context, RecordingService::class.java).setAction(ACTION_BATCH))
         }
 
         fun stop(context: Context) {
@@ -54,7 +81,17 @@ class RecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createChannel()
-        startForeground(NOTIF_ID, buildNotification())
+        when (intent?.action) {
+            ACTION_CANCEL_BATCH -> {
+                // Bouton « Annuler » de la notification : le lot s'arrête après le fichier en cours
+                BatchState.cancelRequested = true
+                startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                if (!BatchState.active) stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_BATCH -> startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            else -> startForeground(NOTIF_ID, buildNotification())
+        }
         handler.removeCallbacks(ticker)
         handler.post(ticker)
         return START_STICKY
@@ -63,6 +100,7 @@ class RecordingService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(ticker)
         RecordingState.isActive = false
+        BatchState.active = false
         super.onDestroy()
     }
 
@@ -83,6 +121,38 @@ class RecordingService : Service() {
         val pi = PendingIntent.getActivity(
             this, 0, intent, PendingIntent.FLAG_IMMUTABLE
         )
+        if (BatchState.active && !RecordingState.isActive) {
+            val cancel = PendingIntent.getForegroundService(
+                this, 1,
+                Intent(this, RecordingService::class.java).setAction(ACTION_CANCEL_BATCH),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            val total = BatchState.total
+            val done = BatchState.done
+            val text = if (BatchState.cancelRequested) {
+                "Arrêt après le fichier en cours…"
+            } else {
+                "${minOf(done + 1, total)} sur $total — ${BatchState.label}"
+            }
+            val builder = Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("Import en cours")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setProgress(total, done, total == 0)
+            if (!BatchState.cancelRequested) {
+                builder.addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                        "Annuler",
+                        cancel,
+                    ).build()
+                )
+            }
+            return builder.build()
+        }
         val mm = RecordingState.elapsedSec / 60
         val ss = RecordingState.elapsedSec % 60
         val label = if (RecordingState.isPaused) "⏸ En pause" else "● Enregistrement en cours"

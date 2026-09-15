@@ -179,10 +179,16 @@ fun StreamScreen() {
 
                 val snackbarHostState = remember { SnackbarHostState() }
 
-                // Sélecteur de fichier pour l'import d'audio externe (FAB de la liste)
+                // Sélecteur de fichiers pour l'import d'audio externe (FAB de la liste) : un ou plusieurs
                 val importLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.GetContent()
-                ) { uri -> if (uri != null) vm.importAudio(uri) }
+                    ActivityResultContracts.GetMultipleContents()
+                ) { uris ->
+                    when (uris.size) {
+                        0 -> Unit
+                        1 -> vm.importAudio(uris[0])
+                        else -> vm.requestBatch(uris)
+                    }
+                }
 
                 // Audio partagé vers l'app (WhatsApp, Fichiers…) — consommé une fois déverrouillé
                 val importRequested by MainActivity.importRequest.collectAsStateWithLifecycle()
@@ -193,6 +199,14 @@ fun StreamScreen() {
                         vm.importAudio(uri)
                     }
                 }
+                val importsRequested by MainActivity.importRequests.collectAsStateWithLifecycle()
+                LaunchedEffect(importsRequested) {
+                    if (importsRequested.isNotEmpty()) {
+                        MainActivity.importRequests.value = emptyList()
+                        vm.requestBatch(importsRequested)
+                    }
+                }
+                val pendingBatch by vm.pendingBatch.collectAsStateWithLifecycle()
 
                 // Messages ponctuels du ViewModel (résultat d'import/export)
                 val uiMessage by vm.uiMessage.collectAsStateWithLifecycle()
@@ -308,6 +322,16 @@ fun StreamScreen() {
                     }
                 }
 
+                // Import par lots : dossier et gabarit choisis une fois pour tout le lot
+                if (pendingBatch.isNotEmpty()) {
+                    BatchImportDialog(
+                        count = pendingBatch.size,
+                        dossiers = dossiers,
+                        onConfirm = { dossier, template -> vm.startBatch(dossier, template) },
+                        onDismiss = { vm.dismissBatch() },
+                    )
+                }
+
                 // Proposition de nommage à l'arrêt d'un enregistrement
                 if (pendingName != null) {
                     NameRecordingDialog(
@@ -320,6 +344,63 @@ fun StreamScreen() {
             }
         }
     }
+}
+
+/** Import de plusieurs fichiers : dossier et type de mission communs, puis décodage, transcription et synthèse à la file. */
+@Composable
+private fun BatchImportDialog(
+    count: Int,
+    dossiers: List<String>,
+    onConfirm: (String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var dossier by remember { mutableStateOf("") }
+    var template by remember { mutableStateOf(SummaryTemplates.DEFAULT_ID) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Importer $count fichiers") },
+        text = {
+            Column {
+                Text(
+                    "Chaque fichier sera décodé, transcrit puis synthétisé, l'un après l'autre (notification de progression, annulable). " +
+                        "Le dossier et le type de mission ci-dessous s'appliquent à tout le lot.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = dossier,
+                    onValueChange = { dossier = it },
+                    singleLine = true,
+                    label = { Text("Dossier / client (facultatif)") },
+                )
+                if (dossiers.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        dossiers.forEach { d ->
+                            AssistChip(onClick = { dossier = d }, label = { Text(d, maxLines = 1) })
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("Type de mission (oriente la synthèse) :", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    SummaryTemplates.ALL.forEach { t ->
+                        FilterChip(selected = t.id == template, onClick = { template = t.id }, label = { Text(t.label, maxLines = 1) })
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(dossier, template) }) { Text("Importer") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
+    )
 }
 
 @Composable

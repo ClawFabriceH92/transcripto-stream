@@ -99,6 +99,8 @@ fun RecordingListScreen(
     val dossierFilter by vm.dossierFilter.collectAsStateWithLifecycle()
     val hits by vm.searchHits.collectAsStateWithLifecycle()
     val hitFiles by vm.searchFiles.collectAsStateWithLifecycle()
+    val backupReminder by vm.backupReminder.collectAsStateWithLifecycle()
+    val batch by vm.batch.collectAsStateWithLifecycle()
     var renameTarget by remember { mutableStateOf<RecordingItem?>(null) }
     var deleteTarget by remember { mutableStateOf<RecordingItem?>(null) }
     // rememberSaveable : le picker SAF peut tuer le process ; au retour, le callback
@@ -152,6 +154,29 @@ fun RecordingListScreen(
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(6.dp))
+        batch?.let { b ->
+            InlineBanner(
+                text = if (b.cancelling) "Import : arrêt après le fichier en cours…" else "Import ${minOf(b.done + 1, b.total)} sur ${b.total} — ${b.label}",
+                icon = AppIcons.Upload,
+                progress = if (b.total > 0) b.done.toFloat() / b.total else null,
+                action = if (b.cancelling) null else ({ TextButton(onClick = { vm.cancelBatch() }) { Text("Annuler") } }),
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        backupReminder?.let { days ->
+            InlineBanner(
+                text = if (days == Int.MAX_VALUE) {
+                    "Aucune sauvegarde exportée — pense à sauvegarder tes enregistrements."
+                } else {
+                    "Dernière sauvegarde il y a $days jour${if (days > 1) "s" else ""} — pense à sauvegarder."
+                },
+                icon = AppIcons.Backup,
+                container = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                action = { TextButton(onClick = { vm.openBackupSettings() }) { Text("Sauvegarder") } },
+            )
+            Spacer(Modifier.height(8.dp))
+        }
         OutlinedTextField(
             value = query,
             onValueChange = { vm.setSearchQuery(it) },

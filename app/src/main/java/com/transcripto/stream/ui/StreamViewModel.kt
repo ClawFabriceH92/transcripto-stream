@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.transcripto.stream.BatchState
 import com.transcripto.stream.RecordingService
 import com.transcripto.stream.RecordingState
 import com.transcripto.stream.audio.AudioFocusGuard
@@ -244,6 +245,14 @@ class StreamViewModel(
     private val _backupBusy = MutableStateFlow(false)
     val backupBusy: StateFlow<Boolean> = _backupBusy.asStateFlow()
 
+    /** Jours écoulés depuis la dernière sauvegarde quand le rappel est dû (Int.MAX_VALUE = jamais sauvegardé) ; null sinon. */
+    private val _backupReminder = MutableStateFlow<Int?>(null)
+    val backupReminder: StateFlow<Int?> = _backupReminder.asStateFlow()
+
+    /** Section à montrer en ouvrant les Réglages (« backup » : défiler jusqu'à la sauvegarde), consommée par l'écran. */
+    private val _settingsTarget = MutableStateFlow<String?>(null)
+    val settingsTarget: StateFlow<String?> = _settingsTarget.asStateFlow()
+
     // ---- Nommage proposé à l'arrêt de l'enregistrement ----
     private val _pendingName = MutableStateFlow<File?>(null)
     val pendingName: StateFlow<File?> = _pendingName.asStateFlow()
@@ -349,6 +358,37 @@ class StreamViewModel(
         refreshRecordings()
         models.refreshDownloaded()
         models.resumePendingDownload()
+        refreshBackupReminder()
+    }
+
+    // ---- Rappel de sauvegarde (aucune tâche planifiée : évalué à l'ouverture et après chaque liste) ----
+
+    fun refreshBackupReminder() {
+        val days = settings.backupReminderDays
+        if (days <= 0) {
+            _backupReminder.value = null
+            return
+        }
+        val last = settings.lastBackupAt
+        val elapsed = if (last <= 0) Int.MAX_VALUE else ((System.currentTimeMillis() - last) / 86_400_000L).toInt()
+        _backupReminder.value = if (elapsed >= days) elapsed else null
+    }
+
+    fun setBackupReminderDays(days: Int) {
+        settings.backupReminderDays = days
+        refreshBackupReminder()
+    }
+
+    fun lastBackupAt(): Long = settings.lastBackupAt
+
+    /** Bandeau de rappel : ouvre les Réglages sur la section Sauvegarde. */
+    fun openBackupSettings() {
+        _settingsTarget.value = "backup"
+        navigate(2)
+    }
+
+    fun consumeSettingsTarget() {
+        _settingsTarget.value = null
     }
 
     /** Bouton « Réessayer » de la bannière d'erreur du modèle. */
@@ -1330,6 +1370,10 @@ class StreamViewModel(
             _lastError.value = "Sauvegarde en cours — réessaie quand elle est terminée"
             return
         }
+        if (_isImporting.value) {
+            _lastError.value = "Import en cours — réessaie quand il est terminé"
+            return
+        }
         if (!RecordingNames.isAudio(file.name)) return
         val engineRef = (modelState.value as? ModelState.Ready)?.engine
         if (engineRef == null) {
@@ -1339,40 +1383,166 @@ class StreamViewModel(
         viewModelScope.launch {
             _isTranscribingFile.value = true
             _fileTranscript.value = ""
-            val clear = withContext(Dispatchers.IO) { resolvedAudioFile(file, "_tr") }
-            val pcm = if (clear != null) {
-                withContext(Dispatchers.IO) { WavPcm.read(clear) }
-            } else null
-            if (clear != null && clear != file) clear.delete()
-            if (pcm == null) {
-                _lastError.value = "Fichier audio illisible"
-            } else {
-                val res = whisperLock.withLock {
-                    engineRef.transcribeBuffer(pcm, settings.language, settings.vocabularyList.joinToString(", "))
+            val error = transcribeStored(file, engineRef, showInMain = true)
+            if (error != null) _lastError.value = error else refreshRecordings()
+            _isTranscribingFile.value = false
+        }
+    }
+
+    /**
+     * Transcription différée d'un fichier audio (déchiffré au besoin) : .txt, .srt et
+     * segments .json écrits à côté. Retourne le message d'erreur, ou null si tout est écrit.
+     * [showInMain] : l'encart de l'écran principal reflète le texte produit.
+     */
+    private suspend fun transcribeStored(file: File, engineRef: WhisperStreamEngine, showInMain: Boolean): String? {
+        val clear = withContext(Dispatchers.IO) { resolvedAudioFile(file, "_tr") }
+        val pcm = if (clear != null) withContext(Dispatchers.IO) { WavPcm.read(clear) } else null
+        if (clear != null && clear != file) clear.delete()
+        if (pcm == null) return "Fichier audio illisible"
+        val res = whisperLock.withLock {
+            engineRef.transcribeBuffer(pcm, settings.language, settings.vocabularyList.joinToString(", "))
+        }
+        if (res.error != null) return res.error
+        val (text, srt, segmentsJson) = withContext(Dispatchers.IO) {
+            val shorts = PitchDiarizer.toShorts(pcm)
+            val speakerIds = PitchDiarizer.detectSpeakers(shorts, res.segments)
+            Triple(
+                repo.buildSpeakerMarkedTranscript(res, speakerIds, settings.useTimestamps),
+                TranscriptExporter.buildSrt(res.segments),
+                if (res.segments.isEmpty()) "" else SegmentsCodec.toJson(res.segments, speakerIds),
+            )
+        }
+        if (showInMain) {
+            _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { repo.readMeta(file).speakers })
+        }
+        // Sauvegarde .txt auto + .srt + segments .json à côté du fichier
+        val durationMs = pcm.size / 32L // 16 kHz × 2 octets = 32 octets/ms
+        withContext(Dispatchers.IO) {
+            writeTranscript(file, text, durationMs)
+            repo.writeSidecars(file, srt, segmentsJson)
+        }
+        return null
+    }
+
+    // ---- Import par lots : décodage, transcription différée puis synthèse, un fichier à la fois ----
+
+    /** Progression d'un lot (bandeau de la liste) : fichiers terminés, total, fichier en cours. */
+    data class BatchProgress(val done: Int, val total: Int, val label: String, val cancelling: Boolean)
+
+    private val _pendingBatch = MutableStateFlow<List<Uri>>(emptyList())
+    /** Fichiers en attente du choix de dossier/gabarit (dialogue), vide sinon. */
+    val pendingBatch: StateFlow<List<Uri>> = _pendingBatch.asStateFlow()
+
+    private val _batch = MutableStateFlow<BatchProgress?>(null)
+    val batch: StateFlow<BatchProgress?> = _batch.asStateFlow()
+
+    /** Plusieurs fichiers choisis ou partagés : ouvre le dialogue du lot (refusé pendant un enregistrement). */
+    fun requestBatch(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (_isStreaming.value) {
+            _uiMessage.value = "Import impossible pendant un enregistrement"
+            return
+        }
+        if (_isImporting.value || _isTranscribingFile.value || _backupBusy.value) {
+            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            return
+        }
+        _pendingBatch.value = uris
+    }
+
+    fun dismissBatch() {
+        _pendingBatch.value = emptyList()
+    }
+
+    /** Bouton Annuler (bandeau ou notification) : le lot s'arrête après le fichier en cours. */
+    fun cancelBatch() {
+        if (_batch.value == null) return
+        BatchState.cancelRequested = true
+        _batch.value = _batch.value?.copy(cancelling = true)
+    }
+
+    fun startBatch(dossier: String, template: String) {
+        val uris = _pendingBatch.value
+        _pendingBatch.value = emptyList()
+        if (uris.isEmpty()) return
+        if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value || _backupBusy.value) {
+            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            return
+        }
+        viewModelScope.launch {
+            _isImporting.value = true
+            BatchState.reset()
+            BatchState.active = true
+            BatchState.total = uris.size
+            RecordingService.startBatch(appContext)
+            val errors = ArrayList<String>()
+            var imported = 0
+            var transcribed = 0
+            var summarized = 0
+            try {
+                for ((i, uri) in uris.withIndex()) {
+                    if (BatchState.cancelRequested) break
+                    BatchState.done = i
+                    BatchState.label = "fichier ${i + 1}"
+                    _batch.value = BatchProgress(i, uris.size, BatchState.label, false)
+                    _importProgress.value = 0f
+                    val r = withContext(Dispatchers.IO) { transfer.import(uri) { p -> _importProgress.value = p } }
+                    val file = r.file
+                    if (file == null) {
+                        errors += "fichier ${i + 1} : ${r.error ?: "import impossible"}"
+                        continue
+                    }
+                    imported++
+                    if (r.unsealed) errors += "${RecordingNames.baseName(file.name)} : chiffrement impossible, WAV conservé en clair"
+                    val base = RecordingNames.baseName(file.name)
+                    BatchState.label = base
+                    _batch.value = BatchProgress(i, uris.size, base, BatchState.cancelRequested)
+                    // Le lot hérite du dossier et du gabarit choisis une fois au départ
+                    if (dossier.isNotBlank() || template.isNotBlank()) {
+                        withContext(Dispatchers.IO) {
+                            repo.updateMeta(file) { it.copy(dossier = dossier.trim().ifBlank { it.dossier }, template = template.trim().ifBlank { it.template }) }
+                        }
+                    }
+                    if (BatchState.cancelRequested) break
+                    val engineRef = (modelState.value as? ModelState.Ready)?.engine
+                    if (engineRef == null) {
+                        errors += "$base : modèle Whisper non chargé, importé sans transcription"
+                        continue
+                    }
+                    val err = transcribeStored(file, engineRef, showInMain = false)
+                    if (err != null) {
+                        errors += "$base : $err"
+                        continue
+                    }
+                    transcribed++
+                    if (BatchState.cancelRequested) break
+                    try {
+                        withContext(Dispatchers.IO) { ai.summarize(file) }
+                        summarized++
+                    } catch (t: Throwable) {
+                        errors += "$base : synthèse impossible (${t.message})"
+                    }
+                    _summaryVersion.value = _summaryVersion.value + 1
                 }
-                if (res.error != null) {
-                    _lastError.value = res.error
-                } else {
-                    val (text, srt, segmentsJson) = withContext(Dispatchers.IO) {
-                        val shorts = PitchDiarizer.toShorts(pcm)
-                        val speakerIds = PitchDiarizer.detectSpeakers(shorts, res.segments)
-                        Triple(
-                            repo.buildSpeakerMarkedTranscript(res, speakerIds, settings.useTimestamps),
-                            TranscriptExporter.buildSrt(res.segments),
-                            if (res.segments.isEmpty()) "" else SegmentsCodec.toJson(res.segments, speakerIds),
-                        )
-                    }
-                    _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { repo.readMeta(file).speakers })
-                    // Sauvegarde .txt auto + .srt + segments .json à côté du fichier
-                    val durationMs = pcm.size / 32L // 16 kHz × 2 octets = 32 octets/ms
-                    withContext(Dispatchers.IO) {
-                        writeTranscript(file, text, durationMs)
-                        repo.writeSidecars(file, srt, segmentsJson)
-                    }
-                    refreshRecordings()
+            } finally {
+                BatchState.active = false
+                if (!RecordingState.isActive) RecordingService.stop(appContext)
+                _importProgress.value = null
+                _isImporting.value = false
+                _batch.value = null
+            }
+            val cancelled = BatchState.cancelRequested
+            BatchState.reset()
+            refreshRecordings()
+            _uiMessage.value = buildString {
+                append(if (cancelled) "Lot interrompu : " else "Lot terminé : ")
+                append("$imported importé${if (imported > 1) "s" else ""}, $transcribed transcrit${if (transcribed > 1) "s" else ""}, $summarized synthèse${if (summarized > 1) "s" else ""}")
+                if (errors.isNotEmpty()) {
+                    append(" — ${errors.size} erreur${if (errors.size > 1) "s" else ""} : ")
+                    append(errors.take(3).joinToString(" ; "))
+                    if (errors.size > 3) append(" ; …")
                 }
             }
-            _isTranscribingFile.value = false
         }
     }
 
@@ -1555,6 +1725,7 @@ class StreamViewModel(
                         appContext.contentResolver.openOutputStream(destUri)
                     } ?: return@withContext "Impossible d'écrire la sauvegarde"
                     val r = backup.export(out, passphrase.toCharArray())
+                    settings.lastBackupAt = System.currentTimeMillis()
                     "Sauvegarde exportée (${r.count} fichiers) — garde précieusement la phrase de passe" +
                         (if (r.unreadable > 0) " (${r.unreadable} texte(s) illisible(s) ignoré(s))" else "")
                 } catch (e: Exception) {
@@ -1564,6 +1735,7 @@ class StreamViewModel(
             }
             _uiMessage.value = message
             _backupBusy.value = false
+            refreshBackupReminder()
         }
     }
 

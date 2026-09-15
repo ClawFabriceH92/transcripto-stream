@@ -28,6 +28,9 @@ class MainActivity : FragmentActivity() {
          * consommée par StreamScreen (après déverrouillage PIN le cas échéant).
          */
         val importRequest = MutableStateFlow<Uri?>(null)
+
+        /** Plusieurs audios partagés vers l'app (ACTION_SEND_MULTIPLE) : import par lots. */
+        val importRequests = MutableStateFlow<List<Uri>>(emptyList())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,6 +67,15 @@ class MainActivity : FragmentActivity() {
             Intent.ACTION_VIEW -> {
                 val uri = intent.data
                 if (uri != null) importRequest.value = uri
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val uris = IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                    ?.filterNotNull().orEmpty()
+                when (uris.size) {
+                    0 -> Unit
+                    1 -> importRequest.value = uris[0]
+                    else -> importRequests.value = uris
+                }
             }
         }
     }
