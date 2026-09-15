@@ -4,18 +4,15 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.media.AudioFocusRequest
-import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
-import android.provider.OpenableColumns
 import android.util.Log
-import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.transcripto.stream.RecordingService
 import com.transcripto.stream.RecordingState
-import com.transcripto.stream.audio.AudioImporter
+import com.transcripto.stream.audio.AudioFocusGuard
+import com.transcripto.stream.audio.AudioTransfer
 import com.transcripto.stream.audio.LiveSettings
 import com.transcripto.stream.audio.LiveTranscriber
 import com.transcripto.stream.audio.PcmAudioRecorder
@@ -42,6 +39,7 @@ import com.transcripto.stream.data.SettingsStore
 import com.transcripto.stream.data.TextVault
 import com.transcripto.stream.export.DocumentExporter
 import com.transcripto.stream.export.ExportFormat
+import com.transcripto.stream.export.ShareComposer
 import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.ModelManager
@@ -50,7 +48,6 @@ import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.summary.AiAnswer
 import com.transcripto.stream.summary.AiAssistant
 import com.transcripto.stream.summary.AiSettings
-import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.QaTurn
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
@@ -103,6 +100,10 @@ class StreamViewModel(
 
     /** Archive chiffrée par phrase de passe (export/restauration). */
     private val backup = BackupManager(repo, appContext.cacheDir, CryptoManager) { settings.encryptWav }
+
+    /** Partage (intent avec .txt, audio, .srt, .md) et import/export d'audio via SAF. */
+    private val share = ShareComposer(appContext, repo, CryptoManager)
+    private val transfer = AudioTransfer(appContext, repo, CryptoManager) { settings.encryptWav }
 
     /** Document Word/PDF d'un enregistrement (page de garde, synthèse, transcription). */
     private val documents = DocumentExporter(
@@ -697,7 +698,7 @@ class StreamViewModel(
             // Focus audio en mode Whisper seulement : c'est notre AudioRecord qui capte.
             // En mode Google, le SpeechRecognizer gère lui-même le micro — demander le
             // focus en plus déclenche des boucles pause/reprise sur certains OEM.
-            requestAudioFocus()
+            focus.request()
         }
         _isStreaming.value = true
 
@@ -707,7 +708,7 @@ class StreamViewModel(
             } else if (settings.muteWhileListening) {
                 // Le SpeechRecognizer système émet des bips à chaque cycle d'écoute :
                 // on coupe les flux sonores concernés le temps de la session.
-                muteSystemSounds()
+                focus.muteSystemSounds()
             }
         } else {
             startWhisperStreaming()
@@ -716,99 +717,29 @@ class StreamViewModel(
 
     // ---- Résilience audio : pause automatique quand le micro est interrompu ----
     // (appel entrant, autre app qui prend le focus), reprise à la fin.
-    private var audioFocusRequest: AudioFocusRequest? = null
     private var pausedByFocusLoss = false
 
-    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
-        when (change) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                // Perte DÉFINITIVE : aucun AUDIOFOCUS_GAIN ne suivra — on ne promet
-                // pas une reprise automatique qui n'arrivera jamais.
-                if (_isStreaming.value && !_isPaused.value) {
-                    togglePause()
+    private val focus = AudioFocusGuard(
+        appContext,
+        onLoss = { transient ->
+            if (_isStreaming.value && !_isPaused.value) {
+                togglePause() // remet pausedByFocusLoss à false : le drapeau se pose après
+                if (transient) {
+                    pausedByFocusLoss = true
+                    _lastError.value = "Micro interrompu (appel en cours ?) — reprise automatique à la fin"
+                } else {
                     _lastError.value = "Micro interrompu — enregistrement en pause, appuie sur Reprendre"
                 }
             }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                if (_isStreaming.value && !_isPaused.value) {
-                    togglePause() // remet pausedByFocusLoss à false : le drapeau se pose après
-                    pausedByFocusLoss = true
-                    _lastError.value = "Micro interrompu (appel en cours ?) — reprise automatique à la fin"
-                }
+        },
+        onGain = {
+            if (_isStreaming.value && _isPaused.value && pausedByFocusLoss) {
+                pausedByFocusLoss = false
+                togglePause()
+                _lastError.value = null
             }
-            // CAN_DUCK (bip de notification…) : les autres apps baissent le volume,
-            // le micro n'est pas préempté — on continue d'enregistrer sans coupure.
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                if (_isStreaming.value && _isPaused.value && pausedByFocusLoss) {
-                    pausedByFocusLoss = false
-                    togglePause()
-                    _lastError.value = null
-                }
-            }
-        }
-    }
-
-    private fun requestAudioFocus() {
-        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-        try {
-            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setOnAudioFocusChangeListener(audioFocusListener)
-                .build()
-            am.requestAudioFocus(request)
-            audioFocusRequest = request
-        } catch (e: Exception) {
-            Log.e(TAG, "requestAudioFocus : ${e.message}")
-        }
-    }
-
-    private fun abandonAudioFocus() {
-        val request = audioFocusRequest ?: return
-        audioFocusRequest = null
-        pausedByFocusLoss = false
-        try {
-            (appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
-                ?.abandonAudioFocusRequest(request)
-        } catch (e: Exception) {
-            Log.e(TAG, "abandonAudioFocus : ${e.message}")
-        }
-    }
-
-    // ---- Écoute silencieuse : coupe les bips du SpeechRecognizer Google ----
-    // On mémorise les flux réellement coupés pour ne rétablir que ceux-là.
-    private val mutedStreams = mutableListOf<Int>()
-
-    private fun muteSystemSounds() {
-        if (mutedStreams.isNotEmpty()) return
-        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-        for (stream in intArrayOf(
-            AudioManager.STREAM_MUSIC,
-            AudioManager.STREAM_NOTIFICATION,
-            AudioManager.STREAM_SYSTEM,
-        )) {
-            try {
-                am.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0)
-                mutedStreams.add(stream)
-            } catch (e: Exception) {
-                // NOTIFICATION/SYSTEM peuvent exiger l'accès « Ne pas déranger » :
-                // on coupe ce qu'on peut, sans planter
-            }
-        }
-    }
-
-    private fun unmuteSystemSounds() {
-        if (mutedStreams.isEmpty()) return
-        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        if (am != null) {
-            for (stream in mutedStreams) {
-                try {
-                    am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
-                } catch (e: Exception) {
-                    Log.e(TAG, "unmute stream $stream : ${e.message}")
-                }
-            }
-        }
-        mutedStreams.clear()
-    }
+        },
+    )
 
     /** Crée le fichier WAV + le recorder (commun aux deux moteurs). */
     private fun startAudioCapture(): Boolean {
@@ -902,8 +833,9 @@ class StreamViewModel(
         _isPaused.value = false
         RecordingState.isActive = false
         RecordingState.isPaused = false
-        unmuteSystemSounds()
-        abandonAudioFocus()
+        focus.unmuteSystemSounds()
+        focus.abandon()
+        pausedByFocusLoss = false
         RecordingService.stop(appContext)
         chronoJob?.cancel()
         chronoJob = null
@@ -1346,78 +1278,14 @@ class StreamViewModel(
     /** Intent de partage pour le dernier enregistrement : texte + .txt + audio + .srt. */
     suspend fun buildEmailIntent(): Intent? = withContext(Dispatchers.IO) {
         val file = _lastRecording.value ?: return@withContext null
-        buildShareIntent(file, _fileTranscript.value.ifBlank { liveText.value })
+        share.intentFor(file, _fileTranscript.value.ifBlank { liveText.value })
     }
 
     /** Partage direct d'un élément de la liste, sans passer par l'écran principal. */
     suspend fun buildShareIntentFor(item: RecordingItem): Intent? = withContext(Dispatchers.IO) {
         // .txt absent ou scellé illisible : on partage au moins l'aperçu
         val text = repo.readTranscript(item.file)?.let { RecordingRepository.bodyOf(it) } ?: item.transcript
-        buildShareIntent(item.file, SpeakerNames.apply(text, item.speakerNames))
-    }
-
-    /**
-     * Construit l'intent de partage : transcription en corps de message, .txt joint,
-     * audio (déchiffré à la volée) si l'entrée en a, sous-titres .srt s'ils existent.
-     */
-    private fun buildShareIntent(file: File, transcriptText: String): Intent? {
-        return try {
-            val base = RecordingNames.baseName(file.name)
-            val exportDir = File(appContext.cacheDir, "exports").apply { mkdirs() }
-            val txt = File(exportDir, "$base.txt")
-            txt.writeText(
-                if (transcriptText.isBlank()) "Transcripto Stream — enregistrement sans transcription\n" else transcriptText
-            )
-
-            val attachments = arrayListOf<Uri>()
-            attachments.add(
-                FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", txt)
-            )
-            if (RecordingNames.isAudio(file.name)) {
-                val clear = resolvedAudioFile(file)
-                if (clear != null) {
-                    attachments.add(
-                        FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", clear)
-                    )
-                }
-            }
-            // .srt et .md : copies en clair dans le cache (les originaux peuvent être scellés)
-            val srt = RecordingNames.srtSibling(file)
-            if (srt.exists()) {
-                val srtCopy = File(exportDir, "$base.srt")
-                srtCopy.writeText(TextVault.read(srt))
-                attachments.add(
-                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", srtCopy)
-                )
-            }
-            // Synthèse : en corps de message (la transcription complète reste jointe) + .md joint
-            val summaryText = readSummary(file)
-            if (summaryText != null) {
-                val mdCopy = File(exportDir, "$base.md")
-                mdCopy.writeText(summaryText)
-                attachments.add(
-                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", mdCopy)
-                )
-            }
-            val body = if (summaryText != null) {
-                MarkdownLite.toPlainText(summaryText) +
-                    "\n\n— Transcription complète en pièce jointe (.txt)."
-            } else {
-                transcriptText
-            }
-
-            Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_EMAIL, arrayOf(""))
-                putExtra(Intent.EXTRA_SUBJECT, if (summaryText != null) "Synthèse — $base" else "Transcription $base")
-                putExtra(Intent.EXTRA_TEXT, body)
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, attachments)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "buildShareIntent: ${e.message}")
-            null
-        }
+        share.intentFor(item.file, SpeakerNames.apply(text, item.speakerNames))
     }
 
     // ================= IMPORT / EXPORT AUDIO =================
@@ -1447,39 +1315,12 @@ class StreamViewModel(
         viewModelScope.launch {
             _isImporting.value = true
             _importProgress.value = 0f
-            val (err, file) = withContext(Dispatchers.IO) {
-                val base = importBaseName(uri)
-                // Décodage vers un temporaire du cache : pas de WAV partiel (et en clair)
-                // dans recordings/ si le process meurt en plein import
-                val tmp = File(appContext.cacheDir, "import_${System.currentTimeMillis()}.wav")
-                var lastPct = -1
-                val e = AudioImporter.importToWav(appContext, uri, tmp) { p ->
-                    val pct = (p * 100).toInt()
-                    if (pct != lastPct) { // limite les recompositions à 1 par % affiché
-                        lastPct = pct
-                        _importProgress.value = pct / 100f
-                    }
-                }
-                if (e != null) {
-                    tmp.delete()
-                    e to null
-                } else {
-                    val dest = File(repo.dir, "$base.wav")
-                    val moved = tmp.renameTo(dest) || try {
-                        tmp.copyTo(dest, overwrite = true)
-                        tmp.delete()
-                        true
-                    } catch (ex: Exception) {
-                        false
-                    }
-                    if (!moved) {
-                        tmp.delete()
-                        "Impossible d'enregistrer le fichier importé" to null
-                    } else {
-                        null to maybeEncrypt(dest)
-                    }
-                }
+            val r = withContext(Dispatchers.IO) {
+                transfer.import(uri) { p -> _importProgress.value = p }
             }
+            val err = r.error
+            val file = r.file
+            if (r.unsealed) _lastError.value = "Chiffrement impossible — WAV conservé en clair"
             if (err != null || file == null) {
                 _uiMessage.value = err ?: "Import impossible"
             } else {
@@ -1497,54 +1338,10 @@ class StreamViewModel(
         }
     }
 
-    /** Nom de base unique pour un import, dérivé du nom d'origine du fichier. */
-    private fun importBaseName(uri: Uri): String {
-        val display = try {
-            appContext.contentResolver.query(
-                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
-            )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-        } catch (e: Exception) {
-            null
-        }
-        var base = RecordingNames.sanitize(display?.substringBeforeLast('.') ?: "")
-        if (base.isEmpty()) base = "import_${REC_DATE_FORMAT.format(Date())}"
-        return repo.uniqueBase(base)
-    }
-
     /** Copie l'audio (déchiffré à la volée) vers l'emplacement choisi via SAF. */
     fun exportAudio(file: File, destUri: Uri) {
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                // Temp de déchiffrement propre à l'export : ne pas réutiliser le temp
-                // « _dec » que le partage peut encore servir via FileProvider
-                val clear = if (file.extension == "enc") {
-                    CryptoManager.decryptToTemp(
-                        file, appContext.cacheDir, "_exp_${System.currentTimeMillis()}"
-                    )
-                } else {
-                    file
-                }
-                if (clear == null || !clear.exists()) return@withContext false
-                try {
-                    // « wt » tronque un document existant ; le mode par défaut « w » des
-                    // DocumentsProviders ne tronque pas — remplacer un WAV plus long
-                    // laisserait des octets résiduels après le flux copié
-                    val out = try {
-                        appContext.contentResolver.openOutputStream(destUri, "wt")
-                    } catch (e: Exception) {
-                        appContext.contentResolver.openOutputStream(destUri)
-                    } ?: return@withContext false
-                    out.use { o ->
-                        clear.inputStream().use { it.copyTo(o, 64 * 1024) }
-                    }
-                    true
-                } catch (e: Exception) {
-                    Log.e(TAG, "exportAudio: ${e.message}")
-                    false
-                } finally {
-                    if (clear != file) clear.delete()
-                }
-            }
+            val ok = withContext(Dispatchers.IO) { transfer.export(file, destUri) }
             _uiMessage.value = if (ok) {
                 "Audio « ${RecordingNames.baseName(file.name)} » exporté"
             } else {
