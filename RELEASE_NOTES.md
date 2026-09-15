@@ -1,10 +1,21 @@
-# Transcripto Stream v0.10.0
+# Transcripto Stream v0.11.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Nouveautés v0.10.0 — recherche dans les passages, chapitres, détection de parole neuronale
+## Nouveautés v0.11.0 — refonte du code, corrections synchronisées, APK allégé
+
+- **Correction depuis l'écran principal synchronisée avec les passages** : quand le texte corrigé garde un horodatage par passage, les passages horodatés de la fiche (et les sous-titres) suivent la correction ligne à ligne ; sinon la fiche signale « passages non synchronisés » et propose de relancer « Transcrire ».
+- **Horodatages homogènes au-delà d'une heure** (`hh:mm:ss`) sur l'écran principal, la fiche, les transcriptions et les exports — plus d'heures repliées dans le `.txt` des réunions longues.
+- **Transcription en direct (seuil de volume)** : l'audio neuf est vérifié avant chaque prélèvement, comme avec la détection neuronale — plus de fenêtres perdues quand un tic tombe trop tôt.
+- **Questions et synthèses IA plus réactives** : une seule connexion HTTP à l'API pour toute la session (recréée si la clé change), au lieu d'une poignée TLS à chaque appel.
+- **Fiabilité** : une transcription ou des passages illisibles (clé perdue, fichier altéré) donnent un message explicite au lieu d'un appel à vide ou d'un « enregistrement trop court » ; le repli en clair d'une correction est signalé ; le modèle natif est bien libéré à la fermeture.
+- **APK plus léger et plus rapide** : réduction et obscurcissement du code (R8) et retrait des ressources inutilisées sur la version publiée, avec les règles de conservation pour whisper.cpp, ONNX Runtime et le SDK Anthropic.
+
+Sous le capot : le ViewModel de 3 300 lignes est découpé en collaborateurs testables (dépôt des enregistrements, transcription en direct, lecture, sauvegarde, assistant IA, modèles, exports) ; un seul chemin d'appel Claude avec transport injectable ; 111 tests JVM (dont Robolectric pour le journal des plantages) ; guide du dépôt `CLAUDE.md` pour les sessions suivantes.
+
+## v0.10.0 — recherche dans les passages, chapitres, détection de parole neuronale
 
 - **Recherche instantanée dans tous les passages** : la recherche de la liste trouve désormais les passages eux-mêmes, dans toutes les transcriptions (accents et casse ignorés, tous les termes exigés). Une section « Passages » affiche l'extrait avec les termes en gras, l'horodatage, l'intervenant et le dossier ; toucher un passage ouvre la fiche et cale la lecture dessus. L'index est en mémoire, reconstruit seulement pour les enregistrements modifiés : rien n'est stocké en clair, même avec le chiffrement des textes.
 - **Chapitres automatiques** : sur la fiche, « Détecter les chapitres » découpe un long enregistrement en parties titrées — par Claude si l'IA est configurée, sinon sur l'appareil par bascule de vocabulaire (frontières espacées d'au moins deux minutes). Toucher un chapitre lance la lecture et fait défiler la transcription ; les chapitres figurent en sous-titres dans les exports Word et PDF.

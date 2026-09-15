@@ -24,6 +24,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Refonte du code, corrections synchronisées, R8** (v0.11.0) : ViewModel découpé en collaborateurs testables (`RecordingRepository`, `LiveTranscriber`, `PlaybackController`, `BackupManager`, `AiAssistant`, `ModelManager`, `DocumentExporter`…), un seul chemin d'appel Claude (`ClaudeTransport`) avec client HTTP partagé, **correction depuis l'écran principal synchronisée avec les passages** (ou signalée non synchronisée), horodatages `hh:mm:ss` homogènes, **R8** en release avec compilation de la release non signée en CI, 111 tests JVM + Robolectric, `CLAUDE.md`.
 - **Recherche dans les passages, chapitres, VAD neuronale** (v0.10.0) : **index en mémoire de tous les passages** (section « Passages » dans la liste, extrait en gras, lecture calée sur le passage ; rien n'est persisté en clair), **chapitres automatiques** titrés (bascule de vocabulaire sur l'appareil ou Claude ; navigation sur la fiche, sous-titres dans les exports), **Silero VAD** (ONNX Runtime) pour transcrire chaque phrase dès qu'elle se termine et ignorer silences et bruits, avec repli sur le seuil de volume.
 - **Organisation** (v0.9.0) : **intervenants nommés** (toucher l'étiquette sur la fiche ; les noms s'appliquent à l'affichage, au partage, à la synthèse et aux exports, le `.txt` garde « [Intervenant N] »), **dossiers / clients** (proposés à la fin de l'enregistrement, filtres dans la liste), **correction d'un passage** par appui long sur la fiche (`.txt`/`.srt`/segments mis à jour, ajout au vocabulaire).
 - **Gabarits de synthèse par mission** (v0.9.0) : Réunion, Clôture / révision, Contrôle interne, AG / Conseil, Entretien client, Dictée / note — rubriques de l'extraction locale et consigne envoyée à Claude adaptées ; **questions à l'IA** sur un enregistrement (transcription + synthèse en contexte mis en cache côté API).
@@ -45,34 +46,48 @@ app/src/main/
     ├── MainActivity.kt             # Point d'entrée + actions RECORD (tuile/raccourci) et SEND/VIEW (import)
     ├── RecordTileService.kt        # Tuile de réglages rapides « Transcrire »
     ├── RecordingService.kt         # Foreground service (écran éteint)
-    ├── audio/PcmAudioRecorder.kt   # AudioRecord → ring buffer
+    ├── audio/PcmAudioRecorder.kt   # AudioRecord → callback PCM
+    ├── audio/LiveTranscriber.kt    # Ring buffer, VAD, fenêtres, boucle, fusion du texte (testé, moteur factice)
+    ├── audio/FrameVad.kt           # Interface VAD trame par trame (Silero en production)
+    ├── audio/PlaybackController.kt # Lecture MediaPlayer, position, vitesse, temp déchiffré
+    ├── audio/AudioFocusGuard.kt    # Focus audio (pause/reprise) + écoute silencieuse
+    ├── audio/AudioTransfer.kt      # Import (MediaCodec → WAV) et export SAF d'un audio
+    ├── audio/PitchDiarizer.kt      # Diarisation approximative par hauteur de voix (pur)
+    ├── audio/PcmDigest.kt          # Empreinte SHA-256 du flux PCM
     ├── audio/WavFileWriter.kt      # PCM → WAV conservé
     ├── audio/AudioImporter.kt      # Import externe : MediaCodec → WAV 16 kHz mono
     ├── audio/PcmResampler.kt       # Downmix + rééchantillonnage linéaire (pur, testé)
     ├── audio/SileroVad.kt          # Silero VAD v5 via ONNX Runtime (modèle dans assets/vad)
     ├── audio/SpeechGate.kt         # Hystérésis début/fin de phrase sur les probabilités VAD (pur, testé)
     ├── CrashLog.kt / TranscriptoApp.kt # Journal local des plantages (Application)
+    ├── data/RecordingRepository.kt # Dépôt des enregistrements : liste, .meta, renommage, rétention, .txt (testé)
+    ├── data/BackupManager.kt       # Archive .tsbk chiffrée par phrase de passe (testé, WavCipher factice)
     ├── data/RecordingNames.kt      # Conventions de nommage (.wav / .wav.enc / .txt / .srt / .md / .meta)
     ├── data/RecordingMeta.kt       # Métadonnées (.meta) : intervenants nommés, dossier, gabarit (pur, testé)
-    ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore)
-    ├── data/TextSealer.kt / TextVault.kt # Chiffrement des textes au repos (scellement pur testé + coffre Android)
+    ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore) — KeyProvider + WavCipher
+    ├── data/TextSealer.kt / TextVault.kt # Chiffrement des textes au repos (scellement + coffre, testés avec clé injectée)
     ├── data/SearchIndex.kt         # Index en mémoire des passages, recherche sans accents (pur, testé)
     ├── data/SettingsStore.kt       # Réglages (SharedPreferences)
     ├── export/TranscriptExporter.kt # SRT + stats temps de parole (pur, testé)
     ├── export/ExportDocument.kt    # Composition des exports en blocs (pur, testé)
     ├── export/DocxWriter.kt        # Word .docx : OOXML écrit à la main (pur, testé)
     ├── export/PdfWriter.kt         # PDF A4 : PdfDocument + StaticLayout
+    ├── export/DocumentExporter.kt  # Assemblage du document Word/PDF d'un enregistrement
+    ├── export/ShareComposer.kt     # Intent de partage (.txt, audio, .srt, .md)
     ├── summary/SummaryTemplate.kt  # Gabarits par type de mission (pur, testé)
     ├── summary/LocalSummarizer.kt  # Synthèse locale extractive (pur, testé)
-    ├── summary/ClaudeSummarizer.kt # Synthèse IA via le SDK Java Anthropic (opt-in)
+    ├── summary/AiAssistant.kt      # Synthèse, questions, chapitres : Claude ou repli local (testé, transport factice)
+    ├── summary/ClaudeCall.kt       # ClaudeRequest / ClaudeTransport / SdkClaudeTransport (client HTTP partagé)
+    ├── summary/ClaudeSummarizer.kt # Prompt de synthèse IA (opt-in)
     ├── summary/ClaudeQa.kt         # Questions sur un enregistrement (prompt caching)
     ├── summary/ChapterDetector.kt  # Chapitres par bascule de vocabulaire (pur, testé)
     ├── summary/ClaudeChapters.kt   # Chapitrage par Claude (JSON tolérant, testé)
     ├── summary/MarkdownLite.kt     # Markdown minimal : parsing + texte brut (pur, testé)
     ├── stt/WhisperStreamEngine.kt  # Pont JNI
     ├── stt/ModelCatalog.kt         # Modèles Whisper embarqué/téléchargeables
+    ├── stt/ModelManager.kt         # Modèle actif, extraction, téléchargements, sélection
     ├── stt/GoogleSpeechEngine.kt   # SpeechRecognizer système
-    └── ui/StreamViewModel.kt       # Fenêtre glissante + dédup + diarisation + exports
+    └── ui/StreamViewModel.kt       # Navigation, verrouillage, réglages, flux d'état, capture ; délègue aux classes ci-dessus
         StreamScreen.kt             # Écran principal Compose (Scaffold, navigation, session, contrôles)
         RecordingListScreen.kt      # Liste/recherche/partage/renommage (en-têtes de jour épinglés)
         DetailScreen.kt             # Fiche : lecteur synchronisé, segments par intervenant
@@ -124,7 +139,7 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 - [x] Synthèse de fin d'enregistrement (locale + IA Claude en option)
 - [x] Intervenants nommés, dossiers, correction sur la fiche, gabarits de synthèse par mission, questions à l'IA, exports Word/PDF, chiffrement des textes, biométrie, verrouillage automatique, journal des incidents (v0.9.0)
 - [x] Recherche instantanée dans tous les passages (index en mémoire, sans base persistée en clair), chapitres automatiques, Silero VAD (v0.10.0)
-- [ ] Export Word (.docx)/PDF structuré (page de garde, sections par intervenant)
-- [ ] Sauvegarde chiffrée exportable (migration d'appareil — la clé AndroidKeyStore ne quitte pas le téléphone)
-- [ ] Résilience audio : focus audio, appels entrants, préemption micro signalée dans l'UI
-- [ ] Diarisation v2 par embeddings de locuteurs (ONNX)
+- [x] Refonte du code en collaborateurs testables, un seul chemin d'appel Claude, R8 en release, tests Robolectric, corrections synchronisées avec les passages (v0.11.0)
+- [ ] Chaînes de l'interface externalisées dans `strings.xml` (préparation d'une version anglaise)
+- [ ] Suivi des actions, fiche dossier, import par lots, rappel de sauvegarde (vague B)
+- [ ] Compilation native en CI, relecture assistée par la confiance, diarisation v2 par embeddings de locuteurs (vague C)
