@@ -44,6 +44,7 @@ class DocumentExporter(
             summaryMarkdown = repo.readSummary(file),
             segments = repo.readSegments(file).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) },
             chapters = meta.chapters,
+            actions = meta.actions.map { ExportAction(it.text, it.owner, it.dueLabel, it.done) },
             transcriptText = SpeakerNames.apply(raw, meta.speakers),
             timestamps = if (raw.isEmpty()) useTimestamps() else RecordingRepository.CLOCK_TAG.containsMatchIn(raw),
             appVersion = appVersion,

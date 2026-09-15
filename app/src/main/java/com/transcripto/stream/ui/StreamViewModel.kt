@@ -22,6 +22,7 @@ import com.transcripto.stream.audio.PlaybackController
 import com.transcripto.stream.audio.SileroVad
 import com.transcripto.stream.audio.WavPcm
 import com.transcripto.stream.audio.WavFileWriter
+import com.transcripto.stream.data.ActionItem
 import com.transcripto.stream.data.BackupCrypto
 import com.transcripto.stream.data.BackupManager
 import com.transcripto.stream.data.Chapter
@@ -45,6 +46,7 @@ import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.ModelManager
 import com.transcripto.stream.stt.ModelState
 import com.transcripto.stream.stt.SegmentData
+import com.transcripto.stream.summary.ActionExtractor
 import com.transcripto.stream.summary.AiAnswer
 import com.transcripto.stream.summary.AiAssistant
 import com.transcripto.stream.summary.AiSettings
@@ -66,6 +68,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /** Questions posées à l'IA sur un enregistrement : fil d'échanges, en mémoire seulement. */
 data class QaState(
@@ -1063,6 +1066,58 @@ class StreamViewModel(
                 _summaryBusy.value = false
                 _summaryVersion.value = _summaryVersion.value + 1
             }
+        }
+    }
+
+    // ---- Actions à mener (suivies dans le .meta) ----
+
+    /** Coche/décoche une action ; la fiche et la liste se mettent à jour. */
+    fun setActionDone(file: File, id: String, done: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                repo.updateMeta(file) { m -> m.copy(actions = m.actions.map { if (it.id == id) it.copy(done = done) else it }) }
+            }
+            refreshRecordings()
+        }
+    }
+
+    /** Ajoute (identifiant vide) ou modifie une action saisie sur la fiche. */
+    fun saveAction(file: File, action: ActionItem) {
+        val text = action.text.trim()
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                repo.updateMeta(file) { m ->
+                    val cleaned = action.copy(text = text, owner = action.owner.trim(), dueLabel = action.dueLabel.trim())
+                    if (cleaned.id.isBlank() || m.actions.none { it.id == cleaned.id }) {
+                        val due = ActionExtractor.findDue(cleaned.dueLabel, System.currentTimeMillis())
+                        m.copy(
+                            actions = m.actions + cleaned.copy(
+                                id = cleaned.id.ifBlank { UUID.randomUUID().toString() },
+                                dueAt = due?.at ?: 0L,
+                                createdAt = if (cleaned.createdAt > 0) cleaned.createdAt else System.currentTimeMillis(),
+                            ),
+                        )
+                    } else {
+                        m.copy(
+                            actions = m.actions.map {
+                                if (it.id != cleaned.id) it else {
+                                    val dueAt = if (it.dueLabel == cleaned.dueLabel) it.dueAt else ActionExtractor.findDue(cleaned.dueLabel, System.currentTimeMillis())?.at ?: 0L
+                                    it.copy(text = cleaned.text, owner = cleaned.owner, dueLabel = cleaned.dueLabel, dueAt = dueAt)
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+            refreshRecordings()
+        }
+    }
+
+    fun deleteAction(file: File, id: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { repo.updateMeta(file) { m -> m.copy(actions = m.actions.filter { it.id != id }) } }
+            refreshRecordings()
         }
     }
 

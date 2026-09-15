@@ -84,6 +84,32 @@ class AiAssistantTest {
         assertTrue("noms appliqués pour l'IA", req.messages.single().text.contains("[M. Martin] [00:00] Bonjour"))
         assertTrue(req.messages.single().text.contains("Durée : 00:01"))
 
+        // Les actions de la synthèse deviennent des objets suivis
+        transport.reply = { ClaudeText("## Actions à mener\n- M. Martin — envoyer la convention signée — avant le 30 septembre\n- Relancer la banque", "claude-opus-5", "end_turn", 1, 1) }
+        assertEquals("Synthèse IA prête", ai.summarize(file))
+        val tracked = repo.readMeta(file).actions
+        assertEquals(listOf("envoyer la convention signée", "Relancer la banque"), tracked.map { it.text })
+        assertEquals("M. Martin", tracked[0].owner)
+        assertEquals("avant le 30 septembre", tracked[0].dueLabel)
+        assertTrue(tracked[0].dueAt > 0)
+        // Une action cochée reste cochée après une nouvelle synthèse ; les doublons ne s'ajoutent pas
+        repo.updateMeta(file) { m -> m.copy(actions = m.actions.map { if (it.text == "Relancer la banque") it.copy(done = true) else it }) }
+        assertEquals("Synthèse IA prête", ai.summarize(file))
+        assertEquals(listOf(false, true), repo.readMeta(file).actions.map { it.done })
+        assertEquals(2, repo.readMeta(file).actions.size)
+        // Les actions ouvertes des autres enregistrements du dossier sont passées en contexte
+        repo.updateMeta(file) { it.copy(dossier = "SARL X") }
+        val other = File(dir, "Precedente.wav").apply { writeBytes(ByteArray(44)) } // nom ASCII : indépendant de la locale du système de fichiers
+        repo.updateMeta(other) { it.copy(dossier = "sarl x", actions = listOf(
+            com.transcripto.stream.data.ActionItem("p1", "Obtenir l'attestation bancaire", owner = "Mme Durand", dueLabel = "fin juin"),
+            com.transcripto.stream.data.ActionItem("p2", "Déjà faite", done = true),
+        )) }
+        ai.summarize(file)
+        val ctx = transport.calls.last().third.messages.single().text
+        assertTrue(ctx, ctx.contains("Actions encore ouvertes dans ce dossier"))
+        assertTrue(ctx, ctx.contains("- Obtenir l'attestation bancaire (Mme Durand), échéance fin juin — Precedente"))
+        assertFalse(ctx, ctx.contains("Déjà faite"))
+
         // Refus des filtres : synthèse locale à la place, noms appliqués, pas de mention IA
         transport.reply = { throw ClaudeRefusal() }
         assertEquals("Synthèse IA refusée par les filtres de sécurité du modèle — synthèse locale générée à la place", ai.summarize(file))

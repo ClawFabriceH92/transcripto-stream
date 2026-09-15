@@ -28,6 +28,10 @@ class DocxExportTest {
             ExportSegment(1, 60_000L, 95_000L, "Parfait, on passe aux provisions."),
         ),
         chapters = listOf(Chapter(0L, "Ouverture"), Chapter(30_000L, "Stocks et provisions")),
+        actions = listOf(
+            ExportAction("Envoyer la convention signée", owner = "M. Martin (DG)", due = "avant le 30 septembre"),
+            ExportAction("Relancer la banque", done = true),
+        ),
         appVersion = "0.9.0",
         generatedLabel = "13 sept. 2026 09:00",
     )
@@ -61,6 +65,11 @@ class DocxExportTest {
         assertFalse(t.any { it.startsWith("H1:Synthèse — x") }) // titre de niveau 1 de la synthèse ignoré
         assertTrue(t.contains("H2:Points clés"))
         assertTrue(t.contains("B:Provision de 12 000 € à passer."))
+        assertTrue(t.contains("H1:Actions à mener"))
+        assertTrue(t.contains("M:Suivi=1 à faire sur 2"))
+        assertTrue(t.contains("B:☐ Envoyer la convention signée — M. Martin (DG) · échéance avant le 30 septembre"))
+        assertTrue(t.contains("B:☑ Relancer la banque — fait"))
+        assertTrue("les actions précèdent la transcription", t.indexOf("H1:Actions à mener") < t.indexOf("PB"))
         assertTrue(t.contains("PB"))
         assertTrue(t.contains("H1:Transcription"))
         assertTrue(t.contains("SP:M. Martin (DG)"))
@@ -81,9 +90,10 @@ class DocxExportTest {
         assertTrue(t.contains("P:[M. Martin (DG)] Bonjour."))
         assertTrue(t.contains("P:Suite."))
         assertFalse(t.any { it.startsWith("M:Temps de parole") })
-        val empty = texts(ExportComposer.compose(doc.copy(segments = emptyList(), transcriptText = "", summaryMarkdown = null)))
+        val empty = texts(ExportComposer.compose(doc.copy(segments = emptyList(), transcriptText = "", summaryMarkdown = null, actions = emptyList())))
         assertTrue(empty.contains("N:Pas de transcription pour cet enregistrement."))
         assertFalse(empty.contains("H1:Synthèse"))
+        assertFalse(empty.contains("H1:Actions à mener"))
     }
 
     @Test

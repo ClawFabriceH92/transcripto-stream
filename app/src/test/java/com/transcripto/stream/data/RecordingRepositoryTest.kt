@@ -257,6 +257,24 @@ class RecordingRepositoryTest {
     }
 
     @Test
+    fun openActionsOfADossierComeFromOtherRecordings() {
+        val now = System.currentTimeMillis()
+        val a = wav("a.wav", modified = now - 3000)
+        val b = wav("b.wav", modified = now - 2000)
+        val c = text("c.txt", "Transcripto Stream\n----\n\nx", modified = now - 1000)
+        val other = wav("d.wav", modified = now)
+        repo.updateMeta(a) { it.copy(dossier = "SARL X", actions = listOf(ActionItem("1", "Une", done = false), ActionItem("2", "Deux", done = true))) }
+        repo.updateMeta(b) { it.copy(dossier = "sarl x", actions = listOf(ActionItem("3", "Trois"))) }
+        repo.updateMeta(c) { it.copy(dossier = "SARL X", actions = listOf(ActionItem("4", "Quatre"))) }
+        repo.updateMeta(other) { it.copy(dossier = "Autre", actions = listOf(ActionItem("5", "Cinq"))) }
+        assertEquals(listOf("c" to "Quatre", "b" to "Trois", "a" to "Une"), repo.openActionsInDossier("SARL X").map { it.first to it.second.text })
+        assertEquals(listOf("c" to "Quatre", "a" to "Une"), repo.openActionsInDossier("SARL X", except = b).map { it.first to it.second.text })
+        assertTrue(repo.openActionsInDossier("").isEmpty())
+        assertTrue(repo.openActionsInDossier("Inconnu").isEmpty())
+        assertEquals(1, repo.item(a).openActionCount)
+    }
+
+    @Test
     fun indexSourcesReadSegmentsOrTextLines() {
         val f = wav("i.wav")
         repo.writeTranscriptFile(f, "[Intervenant 1] [00:05] Ligne un.\nLigne deux.", 10_000)

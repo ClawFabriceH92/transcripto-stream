@@ -19,7 +19,11 @@ data class RecordingItem(
     val chapters: List<Chapter> = emptyList(),
     /** Segments horodatés non synchronisés avec le texte corrigé (relancer « Transcrire »). */
     val segmentsStale: Boolean = false,
-)
+    /** Actions suivies (issues de la synthèse ou saisies). */
+    val actions: List<ActionItem> = emptyList(),
+) {
+    val openActionCount: Int get() = actions.count { !it.done }
+}
 
 /** Résultat d'une correction manuelle de la transcription. */
 data class EditOutcome(

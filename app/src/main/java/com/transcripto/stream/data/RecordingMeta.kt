@@ -17,13 +17,34 @@ data class RecordingMeta(
     val chapters: List<Chapter> = emptyList(),
     /** Le .txt a été corrigé à la main sans que les segments (.json) puissent être réalignés. */
     val segmentsStale: Boolean = false,
+    /** Actions à mener issues de la synthèse (ou saisies), avec leur état. */
+    val actions: List<ActionItem> = emptyList(),
 ) {
     val isEmpty: Boolean
-        get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty() && !segmentsStale
+        get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty() &&
+            !segmentsStale && actions.isEmpty()
+
+    /** Actions non faites, dans l'ordre. */
+    val openActions: List<ActionItem> get() = actions.filter { !it.done }
 }
 
 /** Un chapitre : instant de début et titre court. */
 data class Chapter(val startMs: Long, val title: String)
+
+/**
+ * Une action à mener suivie : texte, responsable et échéance (libellé tel que repéré,
+ * plus l'instant si la date a pu être résolue), état, date de création.
+ */
+data class ActionItem(
+    val id: String,
+    val text: String,
+    val owner: String = "",
+    val dueLabel: String = "",
+    /** Échéance résolue en millisecondes (0 = inconnue). */
+    val dueAt: Long = 0L,
+    val done: Boolean = false,
+    val createdAt: Long = 0L,
+)
 
 /** Sérialisation JSON des métadonnées — pur (org.json), testable en JVM. */
 object MetaCodec {
@@ -39,6 +60,19 @@ object MetaCodec {
             .put("template", meta.template.trim())
             .put("chapters", chapters)
         if (meta.segmentsStale) o.put("stale", true)
+        if (meta.actions.isNotEmpty()) {
+            val actions = JSONArray()
+            meta.actions.forEach { a ->
+                val j = JSONObject().put("id", a.id).put("t", a.text.trim())
+                if (a.owner.isNotBlank()) j.put("o", a.owner.trim())
+                if (a.dueLabel.isNotBlank()) j.put("d", a.dueLabel.trim())
+                if (a.dueAt > 0) j.put("da", a.dueAt)
+                if (a.done) j.put("done", true)
+                if (a.createdAt > 0) j.put("c", a.createdAt)
+                actions.put(j)
+            }
+            o.put("actions", actions)
+        }
         return o.toString()
     }
 
@@ -63,12 +97,31 @@ object MetaCodec {
                     if (title.isNotEmpty()) chapters += Chapter(c.optLong("s", 0L).coerceAtLeast(0L), title)
                 }
             }
+            val actions = ArrayList<ActionItem>()
+            o.optJSONArray("actions")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val a = arr.optJSONObject(i) ?: continue
+                    val text = a.optString("t", "").trim()
+                    val id = a.optString("id", "").trim()
+                    if (text.isEmpty() || id.isEmpty()) continue
+                    actions += ActionItem(
+                        id = id,
+                        text = text,
+                        owner = a.optString("o", "").trim(),
+                        dueLabel = a.optString("d", "").trim(),
+                        dueAt = a.optLong("da", 0L).coerceAtLeast(0L),
+                        done = a.optBoolean("done", false),
+                        createdAt = a.optLong("c", 0L).coerceAtLeast(0L),
+                    )
+                }
+            }
             RecordingMeta(
                 speakers = speakers,
                 dossier = o.optString("dossier", "").trim(),
                 template = o.optString("template", "").trim(),
                 chapters = chapters.sortedBy { it.startMs },
                 segmentsStale = o.optBoolean("stale", false),
+                actions = actions,
             )
         } catch (e: Exception) {
             RecordingMeta()

@@ -37,6 +37,7 @@ object ClaudeSummarizer {
     fun modelLabel(id: String): String = MODELS.firstOrNull { it.first == id }?.second ?: id
 
     private const val MAX_TOKENS = 16_000L
+    private const val MAX_OPEN_ACTIONS = 30
 
     private const val PREAMBLE = """
         Tu es l'assistant de rédaction d'un cabinet d'expertise comptable et de commissariat aux comptes.
@@ -57,8 +58,12 @@ object ClaudeSummarizer {
     fun systemPrompt(template: SummaryTemplate): String =
         PREAMBLE.trimIndent().trim() + "\n\n" + template.aiTask.trim() + "\n\n" + RULES.trimIndent().trim()
 
-    /** Requête envoyée au modèle (visible pour les tests). */
-    fun request(input: SummaryInput, template: SummaryTemplate): ClaudeRequest {
+    /**
+     * Requête envoyée au modèle (visible pour les tests). [openActions] : actions encore
+     * ouvertes du dossier, issues d'enregistrements précédents — le modèle signale celles
+     * qui sont traitées ou reconduites dans « Actions à mener ».
+     */
+    fun request(input: SummaryInput, template: SummaryTemplate, openActions: List<String> = emptyList()): ClaudeRequest {
         val (body, truncated) = ClaudeSupport.truncate(input.transcript.trim())
         val user = buildString {
             append("Titre : ").append(input.title.ifBlank { "Enregistrement" }).append('\n')
@@ -67,6 +72,11 @@ object ClaudeSummarizer {
                 append("Durée : ").append(TranscriptExporter.formatHms(input.durationMs)).append('\n')
             }
             if (truncated) append("(Transcription tronquée : seule la première partie est fournie.)\n")
+            if (openActions.isNotEmpty()) {
+                append("\nActions encore ouvertes dans ce dossier (enregistrements précédents) — dans « Actions à mener », ")
+                append("indique celles que cet enregistrement traite (« traitée ») ou reconduit (« reconduite »), sans les réinventer :\n")
+                openActions.take(MAX_OPEN_ACTIONS).forEach { append("- ").append(it.trim()).append('\n') }
+            }
             append("\nTranscription :\n<<<\n").append(body).append("\n>>>")
         }
         // Effort « medium » : synthèse = tâche de rédaction, pas de raisonnement long
@@ -79,10 +89,11 @@ object ClaudeSummarizer {
         input: SummaryInput,
         template: SummaryTemplate = SummaryTemplates.REUNION,
         transport: ClaudeTransport,
+        openActions: List<String> = emptyList(),
     ): AiSummaryResult {
         if (input.transcript.isBlank()) return AiSummaryResult.Failed("Transcription vide")
         return try {
-            val r = transport.run(apiKey, modelId, request(input, template))
+            val r = transport.run(apiKey, modelId, request(input, template, openActions))
             AiSummaryResult.Ok(
                 markdown = r.text,
                 model = r.model,

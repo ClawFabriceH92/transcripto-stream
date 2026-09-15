@@ -74,7 +74,16 @@ class AiAssistant(
         val markdown = if (key != null) {
             // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
             val named = input.copy(transcript = SpeakerNames.apply(text, names))
-            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template, transport)) {
+            // Actions encore ouvertes du dossier : le modèle signale celles traitées ou reconduites
+            val open = repo.openActionsInDossier(meta.dossier, except = file).map { (base, a) ->
+                buildString {
+                    append(a.text)
+                    if (a.owner.isNotBlank()) append(" (").append(a.owner).append(')')
+                    if (a.dueLabel.isNotBlank()) append(", échéance ").append(a.dueLabel)
+                    append(" — ").append(base)
+                }
+            }
+            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template, transport, open)) {
                 is AiSummaryResult.Ok -> wrapAiSummary(input, r)
                 is AiSummaryResult.Failed -> {
                     failure = r.message
@@ -86,6 +95,12 @@ class AiAssistant(
         }
         return try {
             repo.writeSummary(file, markdown)
+            // Les actions de la rubrique « Actions à mener » deviennent des objets suivis ;
+            // celles déjà suivies gardent leur état, les nouvelles s'ajoutent
+            val extracted = ActionExtractor.extract(markdown, file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis())
+            if (extracted.isNotEmpty()) {
+                repo.updateMeta(file) { it.copy(actions = ActionExtractor.merge(it.actions, extracted)) }
+            }
             when {
                 failure != null -> "$failure — synthèse locale générée à la place"
                 key != null -> "Synthèse IA prête"

@@ -29,10 +29,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.FilterChip
@@ -65,9 +67,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.data.ActionItem
 import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.RecordingNames
@@ -470,6 +474,16 @@ fun DetailScreen(vm: StreamViewModel) {
             Spacer(Modifier.height(12.dp))
         }
 
+        // ---- Actions à mener (issues de la synthèse ou saisies) ----
+        ActionsCard(
+            actions = current.actions,
+            enabled = !summaryBusy,
+            onToggle = { a, done -> vm.setActionDone(current.file, a.id, done) },
+            onSave = { vm.saveAction(current.file, it) },
+            onDelete = { vm.deleteAction(current.file, it.id) },
+        )
+        Spacer(Modifier.height(12.dp))
+
         // ---- Chapitres (segments horodatés requis) ----
         if (segments.isNotEmpty()) {
             ChaptersCard(
@@ -846,6 +860,131 @@ private fun ChaptersCard(
             }
         }
     }
+}
+
+/**
+ * Actions à mener : case à cocher, responsable et échéance, modification par touche,
+ * ajout manuel. Les actions viennent de la synthèse (rubrique « Actions à mener ») ou de la saisie.
+ */
+@Composable
+private fun ActionsCard(
+    actions: List<ActionItem>,
+    enabled: Boolean,
+    onToggle: (ActionItem, Boolean) -> Unit,
+    onSave: (ActionItem) -> Unit,
+    onDelete: (ActionItem) -> Unit,
+) {
+    var editing by remember { mutableStateOf<ActionItem?>(null) }
+    var showDone by rememberSaveable { mutableStateOf(false) }
+    val open = actions.filter { !it.done }
+    val done = actions.filter { it.done }
+    SectionCard(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconAvatar(
+                icon = Icons.Filled.Check,
+                size = 30.dp,
+                iconSize = 17.dp,
+                shape = CircleShape,
+                container = MaterialTheme.colorScheme.tertiaryContainer,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                when {
+                    actions.isEmpty() -> "Actions"
+                    open.isEmpty() -> "Actions (toutes faites)"
+                    else -> "Actions (${open.size} à faire)"
+                },
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { editing = ActionItem(id = "", text = "") }, enabled = enabled) { Text("Ajouter") }
+        }
+        if (actions.isEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            HintText("Les actions de la rubrique « Actions à mener » de la synthèse apparaissent ici, à cocher au fil du dossier.")
+        } else {
+            Spacer(Modifier.height(4.dp))
+            open.forEach { a -> ActionRow(a, enabled, onToggle = { onToggle(a, it) }, onEdit = { editing = a }) }
+            if (done.isNotEmpty()) {
+                TextButton(onClick = { showDone = !showDone }) {
+                    Text(if (showDone) "Masquer les actions faites (${done.size})" else "Actions faites (${done.size})")
+                }
+                if (showDone) done.forEach { a -> ActionRow(a, enabled, onToggle = { onToggle(a, it) }, onEdit = { editing = a }) }
+            }
+        }
+    }
+    editing?.let { a ->
+        ActionDialog(
+            initial = a,
+            onDismiss = { editing = null },
+            onSave = { onSave(it); editing = null },
+            onDelete = if (a.id.isBlank()) null else ({ onDelete(a); editing = null }),
+        )
+    }
+}
+
+@Composable
+private fun ActionRow(a: ActionItem, enabled: Boolean, onToggle: (Boolean) -> Unit, onEdit: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .clickable(enabled = enabled, onClick = onEdit)
+            .padding(end = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = a.done, onCheckedChange = { onToggle(it) }, enabled = enabled)
+        Column(modifier = Modifier.weight(1f).padding(vertical = 6.dp)) {
+            Text(
+                a.text,
+                style = MaterialTheme.typography.bodyMedium,
+                textDecoration = if (a.done) TextDecoration.LineThrough else null,
+                color = if (a.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+            )
+            val details = listOfNotNull(a.owner.takeIf { it.isNotBlank() }, a.dueLabel.takeIf { it.isNotBlank() }?.let { "échéance $it" })
+            if (details.isNotEmpty()) {
+                Text(details.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionDialog(initial: ActionItem, onDismiss: () -> Unit, onSave: (ActionItem) -> Unit, onDelete: (() -> Unit)?) {
+    var text by rememberSaveable(initial.id) { mutableStateOf(initial.text) }
+    var owner by rememberSaveable(initial.id) { mutableStateOf(initial.owner) }
+    var due by rememberSaveable(initial.id) { mutableStateOf(initial.dueLabel) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial.id.isBlank()) "Nouvelle action" else "Modifier l'action") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("Quoi") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = owner, onValueChange = { owner = it }, label = { Text("Qui (facultatif)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = due,
+                    onValueChange = { due = it },
+                    label = { Text("Échéance (facultatif)") },
+                    placeholder = { Text("avant le 30 septembre, fin juin, T2 2026…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(initial.copy(text = text, owner = owner, dueLabel = due)) },
+                enabled = text.isNotBlank(),
+            ) { Text("Enregistrer") }
+        },
+        dismissButton = {
+            Row {
+                if (onDelete != null) TextButton(onClick = onDelete) { Text("Supprimer", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = onDismiss) { Text("Annuler") }
+            }
+        },
+    )
 }
 
 /** Choix du gabarit de synthèse (type de mission) + description du gabarit courant. */

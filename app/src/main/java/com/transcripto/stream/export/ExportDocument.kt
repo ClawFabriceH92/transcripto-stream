@@ -16,6 +16,9 @@ enum class ExportFormat(val label: String, val mime: String, val extension: Stri
 /** Segment horodaté attribué à un intervenant (numéro brut, le nom vient de [ExportDocument.speakerNames]). */
 data class ExportSegment(val speaker: Int, val startMs: Long, val endMs: Long, val text: String)
 
+/** Une action à mener telle qu'imprimée : texte, responsable, échéance, état. */
+data class ExportAction(val text: String, val owner: String = "", val due: String = "", val done: Boolean = false)
+
 /**
  * Tout ce qu'un export structuré (Word, PDF) doit contenir. Assemblé par le
  * ViewModel à partir des fichiers de l'enregistrement, puis composé en blocs
@@ -35,6 +38,8 @@ data class ExportDocument(
     val segments: List<ExportSegment> = emptyList(),
     /** Chapitres (début + titre) insérés comme sous-titres dans la transcription. */
     val chapters: List<Chapter> = emptyList(),
+    /** Actions suivies (section « Actions à mener » avec état), vide = pas de section. */
+    val actions: List<ExportAction> = emptyList(),
     /** Transcription texte (noms appliqués) — utilisée quand il n'y a pas de segments. */
     val transcriptText: String = "",
     val timestamps: Boolean = true,
@@ -96,6 +101,24 @@ object ExportComposer {
                     is MdBlock.Paragraph -> out += DocBlock.Para(MarkdownLite.spans(block.text))
                     MdBlock.Blank -> Unit
                 }
+            }
+        }
+
+        if (doc.actions.isNotEmpty()) {
+            out += DocBlock.Heading(1, "Actions à mener")
+            val open = doc.actions.count { !it.done }
+            out += DocBlock.Meta("Suivi", "$open à faire sur ${doc.actions.size}")
+            for (a in doc.actions) {
+                val spans = ArrayList<MdSpan>()
+                spans += MdSpan(if (a.done) "☑ " else "☐ ")
+                spans += MdSpan(a.text, bold = !a.done)
+                val details = listOfNotNull(
+                    a.owner.takeIf { it.isNotBlank() },
+                    a.due.takeIf { it.isNotBlank() }?.let { "échéance $it" },
+                    if (a.done) "fait" else null,
+                )
+                if (details.isNotEmpty()) spans += MdSpan(" — " + details.joinToString(" · "), italic = true)
+                out += DocBlock.Para(spans, bullet = true)
             }
         }
 
