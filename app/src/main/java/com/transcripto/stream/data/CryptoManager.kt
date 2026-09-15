@@ -20,7 +20,7 @@ import javax.crypto.spec.GCMParameterSpec
  * Format : [IV 12 octets][données chiffrées] — le fichier chiffré porte l'extension .enc
  * et le IV est conservé en tête pour permettre le déchiffrement.
  */
-object CryptoManager : KeyProvider {
+object CryptoManager : KeyProvider, WavCipher {
 
     private const val TAG = "CryptoManager"
     private const val ALIAS = "transcripto_stream_wav_key"
@@ -47,7 +47,7 @@ object CryptoManager : KeyProvider {
         return kg.generateKey()
     }
 
-    fun encryptFile(src: File, dest: File): Boolean {
+    override fun encryptFile(src: File, dest: File): Boolean {
         return try {
             val key = getOrCreateKey()
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -103,7 +103,7 @@ object CryptoManager : KeyProvider {
      * [suffix] distingue les usages simultanés (lecture/partage vs export) pour
      * qu'une suppression n'invalide pas le temp d'un autre flux.
      */
-    fun decryptToTemp(encFile: File, cacheDir: File, suffix: String = "_dec"): File? {
+    override fun decryptToTemp(encFile: File, cacheDir: File, suffix: String): File? {
         return try {
             val key = getOrCreateKey()
             val bytes = encFile.readBytes()

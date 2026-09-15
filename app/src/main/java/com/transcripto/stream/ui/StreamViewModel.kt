@@ -27,6 +27,7 @@ import com.transcripto.stream.audio.SileroVad
 import com.transcripto.stream.audio.WavPcm
 import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.BackupCrypto
+import com.transcripto.stream.data.BackupManager
 import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.CryptoManager
 import com.transcripto.stream.data.RecordingItem
@@ -79,9 +80,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
 import java.util.Date
 import java.util.Locale
 
@@ -124,6 +122,9 @@ class StreamViewModel(
 
     /** Dossier des enregistrements et de leurs fichiers frères (E/S bloquantes). */
     private val repo = RecordingRepository(File(appContext.filesDir, "recordings"))
+
+    /** Archive chiffrée par phrase de passe (export/restauration). */
+    private val backup = BackupManager(repo, appContext.cacheDir, CryptoManager) { settings.encryptWav }
 
     init {
         // Avant toute écriture : les textes suivent le réglage de chiffrement au repos
@@ -2067,65 +2068,9 @@ class StreamViewModel(
                     } catch (e: Exception) {
                         appContext.contentResolver.openOutputStream(destUri)
                     } ?: return@withContext "Impossible d'écrire la sauvegarde"
-                    var count = 0
-                    var unreadable = 0
-                    // out.use englobe tout : même un échec avant le flux chiffrant ferme le SAF
-                    out.use { rawOut ->
-                    BackupCrypto.encryptingStream(rawOut, passphrase.toCharArray()).use { enc ->
-                        ZipOutputStream(enc).use { zip ->
-                            val files = repo.dir.listFiles()?.sortedBy { it.name }
-                                ?: emptyList()
-                            // « a.wav » et « a.wav.enc » donneraient la même entrée
-                            // « a.wav » — un doublon ferait planter tout l'export (ZipException)
-                            val usedNames = HashSet<String>()
-                            for (f in files) {
-                                if (!f.isFile) continue
-                                if (f.name.endsWith(".enc")) {
-                                    val entryName = RecordingNames.baseName(f.name) + ".wav"
-                                    if (!usedNames.add(entryName)) continue
-                                    // Ré-encodé en clair DANS l'archive (elle-même chiffrée
-                                    // par la phrase de passe) : la clé KeyStore ne voyage pas
-                                    val clear = CryptoManager.decryptToTemp(
-                                        f, appContext.cacheDir, "_bak_${System.currentTimeMillis()}"
-                                    ) ?: continue
-                                    try {
-                                        zip.putNextEntry(ZipEntry(entryName))
-                                        clear.inputStream().use { it.copyTo(zip, 64 * 1024) }
-                                        zip.closeEntry()
-                                    } finally {
-                                        clear.delete()
-                                    }
-                                } else {
-                                    if (!usedNames.add(f.name)) continue
-                                    // Textes scellés (chiffrement au repos) : en clair DANS l'archive,
-                                    // comme les WAV — la clé KeyStore ne voyage pas. Un texte scellé
-                                    // illisible (clé perdue) est ignoré : il ne serait lisible nulle part.
-                                    val sealed = TextVault.isTextFile(f.name) && TextVault.isSealed(f)
-                                    val plain = if (sealed) {
-                                        try {
-                                            TextVault.read(f)
-                                        } catch (e: Exception) {
-                                            unreadable++
-                                            continue
-                                        }
-                                    } else {
-                                        null
-                                    }
-                                    zip.putNextEntry(ZipEntry(f.name))
-                                    if (plain != null) {
-                                        zip.write(plain.toByteArray(Charsets.UTF_8))
-                                    } else {
-                                        f.inputStream().use { it.copyTo(zip, 64 * 1024) }
-                                    }
-                                    zip.closeEntry()
-                                }
-                                count++
-                            }
-                        }
-                    }
-                    } // out.use
-                    "Sauvegarde exportée ($count fichiers) — garde précieusement la phrase de passe" +
-                        (if (unreadable > 0) " ($unreadable texte(s) illisible(s) ignoré(s))" else "")
+                    val r = backup.export(out, passphrase.toCharArray())
+                    "Sauvegarde exportée (${r.count} fichiers) — garde précieusement la phrase de passe" +
+                        (if (r.unreadable > 0) " (${r.unreadable} texte(s) illisible(s) ignoré(s))" else "")
                 } catch (e: Exception) {
                     Log.e(TAG, "exportBackup", e)
                     "Sauvegarde échouée : ${e.message}"
@@ -2135,8 +2080,6 @@ class StreamViewModel(
             _backupBusy.value = false
         }
     }
-
-    private val allowedBackupSuffixes = setOf(".wav", ".txt", ".srt", ".json", ".md", ".meta")
 
     /** Restaure une archive .tsbk : jamais destructif (les doublons sont suffixés). */
     fun restoreBackup(srcUri: Uri, passphrase: String) {
@@ -2151,53 +2094,9 @@ class StreamViewModel(
                 try {
                     val inp = appContext.contentResolver.openInputStream(srcUri)
                         ?: return@withContext "Impossible de lire ce fichier"
-                    var count = 0
-                    val renames = HashMap<String, String>() // base d'origine → base locale
-                    val dir = repo.dir
-                    // inp.use englobe tout : un en-tête invalide (exception AVANT la
-                    // création du flux déchiffrant) ferme quand même le flux SAF
-                    inp.use { rawIn ->
-                    BackupCrypto.decryptingStream(rawIn, passphrase.toCharArray()).use { dec ->
-                        ZipInputStream(dec).use { zip ->
-                            var entry = zip.nextEntry
-                            while (entry != null) {
-                                val rawName = entry.name
-                                if (!entry.isDirectory &&
-                                    !rawName.contains('/') && !rawName.contains('\\')
-                                ) {
-                                    val base = RecordingNames.sanitize(
-                                        RecordingNames.baseName(rawName)
-                                    )
-                                    val suffixPart = rawName.substring(
-                                        RecordingNames.baseName(rawName).length
-                                    )
-                                    if (base.isNotEmpty() && suffixPart in allowedBackupSuffixes) {
-                                        val target = renames.getOrPut(base) {
-                                            repo.uniqueBase(base, renames.values)
-                                        }
-                                        val destFile = File(dir, target + suffixPart)
-                                        destFile.outputStream().use { zip.copyTo(it, 64 * 1024) }
-                                        if (suffixPart == ".wav") {
-                                            maybeEncrypt(destFile)
-                                        } else if (TextVault.enabled) {
-                                            // Textes restaurés en clair : scellés si le réglage est actif
-                                            try {
-                                                TextVault.write(destFile, TextVault.read(destFile))
-                                            } catch (e: Exception) {
-                                                Log.e(TAG, "restore seal ${destFile.name}: ${e.message}")
-                                            }
-                                        }
-                                        count++
-                                    }
-                                }
-                                zip.closeEntry()
-                                entry = zip.nextEntry
-                            }
-                        }
-                    }
-                    } // inp.use
-                    refreshRecordings()
-                    "Restauration terminée : $count fichiers"
+                    val r = backup.restore(inp, passphrase.toCharArray())
+                    "Restauration terminée : ${r.count} fichiers" +
+                        (if (r.unsealed > 0) " — ${r.unsealed} WAV conservé(s) en clair (chiffrement impossible)" else "")
                 } catch (e: BackupCrypto.InvalidBackupException) {
                     e.message ?: "Fichier de sauvegarde invalide"
                 } catch (e: Exception) {
@@ -2205,6 +2104,7 @@ class StreamViewModel(
                     "Restauration échouée — phrase de passe incorrecte ou fichier corrompu"
                 }
             }
+            refreshRecordings()
             _uiMessage.value = message
             _backupBusy.value = false
         }

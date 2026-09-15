@@ -79,6 +79,12 @@ android {
         }
     }
 
+    testOptions {
+        // Les tests JVM traversent des chemins qui journalisent (android.util.Log) :
+        // valeurs par défaut plutôt que « Method not mocked »
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
