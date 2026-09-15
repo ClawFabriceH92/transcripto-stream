@@ -2,6 +2,15 @@ package com.transcripto.stream.data
 
 import android.util.Log
 import java.io.File
+import javax.crypto.SecretKey
+
+/**
+ * Fournit la clé AES-256 des textes scellés : AndroidKeyStore en production
+ * ([CryptoManager]), clé de test en JVM. Injectée dans [TextVault.keyProvider].
+ */
+fun interface KeyProvider {
+    fun key(): SecretKey
+}
 
 /** Bilan d'une migration : fichiers réécrits, fichiers illisibles laissés tels quels. */
 data class VaultMigration(val rewritten: Int, val unreadable: Int)
@@ -27,13 +36,19 @@ object TextVault {
     @Volatile
     var enabled: Boolean = false
 
+    /** Source de la clé de scellement — configurée au démarrage de l'application (voir TranscriptoApp). */
+    @Volatile
+    var keyProvider: KeyProvider = KeyProvider { throw IllegalStateException("TextVault.keyProvider non configuré") }
+
+    private fun key(): SecretKey = keyProvider.key()
+
     fun isTextFile(name: String): Boolean = TEXT_SUFFIXES.any { name.endsWith(it) }
 
     /** Contenu en clair du fichier (déchiffré si scellé). Lève en cas d'erreur d'E/S ou de clé. */
     fun read(file: File): String {
         val bytes = file.readBytes()
         if (!TextSealer.isSealed(bytes)) return String(bytes, Charsets.UTF_8)
-        return TextSealer.open(bytes, CryptoManager.key())
+        return TextSealer.open(bytes, key())
     }
 
     /**
@@ -44,7 +59,7 @@ object TextVault {
     fun write(file: File, text: String): Boolean {
         if (enabled) {
             val sealed = try {
-                TextSealer.seal(text, CryptoManager.key())
+                TextSealer.seal(text, key())
             } catch (e: Exception) {
                 Log.e(TAG, "seal ${file.name}: ${e.message}")
                 null
@@ -86,8 +101,8 @@ object TextVault {
                 val bytes = f.readBytes()
                 val sealed = TextSealer.isSealed(bytes)
                 if (sealed == seal) continue
-                val plain = if (sealed) TextSealer.open(bytes, CryptoManager.key()) else String(bytes, Charsets.UTF_8)
-                val out = if (seal) TextSealer.seal(plain, CryptoManager.key()) else plain.toByteArray(Charsets.UTF_8)
+                val plain = if (sealed) TextSealer.open(bytes, key()) else String(bytes, Charsets.UTF_8)
+                val out = if (seal) TextSealer.seal(plain, key()) else plain.toByteArray(Charsets.UTF_8)
                 val stamp = f.lastModified()
                 atomicWrite(f, out)
                 if (stamp > 0) f.setLastModified(stamp)

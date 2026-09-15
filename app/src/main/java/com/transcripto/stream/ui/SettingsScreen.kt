@@ -58,6 +58,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.CrashLog
 import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.summary.ClaudeSummarizer

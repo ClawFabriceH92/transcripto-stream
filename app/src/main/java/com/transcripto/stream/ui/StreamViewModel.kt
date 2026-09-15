@@ -26,13 +26,13 @@ import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.BackupCrypto
 import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.CryptoManager
+import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.RecordingNames
+import com.transcripto.stream.data.RecordingRepository
+import com.transcripto.stream.data.RenameResult
 import com.transcripto.stream.data.StoredSegment
 import com.transcripto.stream.data.SpeakerNames
-import com.transcripto.stream.data.RecordingMeta
-import com.transcripto.stream.data.MetaCodec
 import com.transcripto.stream.data.SegmentsCodec
-import com.transcripto.stream.data.IndexSource
 import com.transcripto.stream.data.SearchHit
 import com.transcripto.stream.data.SearchIndex
 import com.transcripto.stream.data.SettingsStore
@@ -97,23 +97,6 @@ sealed interface ModelState {
     data class Error(val message: String) : ModelState
 }
 
-/** Un enregistrement listé : WAV, .enc chiffré, ou .txt seul (transcription Google). */
-data class RecordingItem(
-    val file: File,
-    val baseName: String,
-    val sizeBytes: Long,
-    val durationMs: Long,
-    val modifiedAt: Long,
-    val encrypted: Boolean,
-    val hasAudio: Boolean,
-    val transcript: String,
-    val dossier: String = "",
-    val speakerNames: Map<Int, String> = emptyMap(),
-    /** Identifiant du gabarit de synthèse (vide = Réunion). */
-    val template: String = "",
-    val chapters: List<Chapter> = emptyList(),
-)
-
 /** Questions posées à l'IA sur un enregistrement : fil d'échanges, en mémoire seulement. */
 data class QaState(
     val file: File? = null,
@@ -134,8 +117,6 @@ class StreamViewModel(
 ) : ViewModel() {
 
     companion object {
-        /** Horodatage « [mm:ss] » (ou « [h:mm:ss] ») tel qu'écrit par formatClock. */
-        private val CLOCK_TAG = Regex("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\] ")
         private const val TAG = "StreamVM"
         private const val SAMPLE_RATE = 16000
         private const val SEARCH_DEBOUNCE_MS = 150L
@@ -151,15 +132,15 @@ class StreamViewModel(
         private const val MODEL_ASSET = "models/ggml-base.bin"
         private const val MIN_NEW_MS = 500L // minimum de nouvel audio pour transcrire
         private const val VAD_THRESHOLD = 120.0 // RMS int16 : silence ~<50, parole >300 — seuil volontairement bas pour ne rien perdre
-        private const val REC_DIR = "recordings"
         private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         private val REC_START_END_FORMAT = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
-        private val TXT_DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
         private val SUMMARY_DATE_FORMAT = SimpleDateFormat("d MMMM yyyy 'à' HH:mm", Locale.FRANCE)
-        private val HASH_LINE = Regex("SHA-256 \\(PCM\\) : ([0-9a-f]{64})")
     }
 
     val settings = SettingsStore(appContext)
+
+    /** Dossier des enregistrements et de leurs fichiers frères (E/S bloquantes). */
+    private val repo = RecordingRepository(File(appContext.filesDir, "recordings"))
 
     init {
         // Avant toute écriture : les textes suivent le réglage de chiffrement au repos
@@ -397,9 +378,9 @@ class StreamViewModel(
             // Copies en clair du cache (partage, écoute, export) et temporaires d'écriture :
             // purgés au démarrage — rien ne doit survivre en clair à côté des textes scellés
             purgeClearCopies()
-            TextVault.purgeTemporaries(recordingsDir())
+            TextVault.purgeTemporaries(repo.dir)
             // Migration interrompue par une mort du process : reprise (idempotente)
-            if (settings.encryptTexts) TextVault.migrate(recordingsDir(), true)
+            if (settings.encryptTexts) TextVault.migrate(repo.dir, true)
         }
         if (settings.vadSilero) loadVad()
         loadWhisperModel()
@@ -535,17 +516,6 @@ class StreamViewModel(
         _pinError.value = e
     }
 
-    /**
-     * .txt d'un enregistrement, avec repli sur l'ancienne convention v0.2.x
-     * (« base.wav.enc » accompagné d'un « base.wav.txt »).
-     */
-    private fun transcriptFileFor(audioFile: File): File {
-        val txt = RecordingNames.txtSibling(audioFile)
-        if (txt.exists()) return txt
-        val legacy = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".txt")
-        return if (legacy.exists()) legacy else txt
-    }
-
     /** Sélectionne un enregistrement de la liste pour l'écran principal. */
     fun selectRecording(item: RecordingItem) {
         // Pendant un enregistrement, on ne touche pas au fichier actif : l'arrêt doit
@@ -563,46 +533,13 @@ class StreamViewModel(
     private fun refreshFileTranscript(file: File, fallback: String = "") {
         viewModelScope.launch {
             _fileTranscript.value = withContext(Dispatchers.IO) {
-                val txt = transcriptFileFor(file)
-                val raw = try {
-                    if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else fallback
-                } catch (e: Exception) {
-                    fallback
-                }
-                SpeakerNames.apply(raw, readMeta(file).speakers)
+                val raw = repo.readTranscript(file)?.let { RecordingRepository.bodyOf(it) } ?: fallback
+                SpeakerNames.apply(raw, repo.readMeta(file).speakers)
             }
         }
     }
 
     // ================= MÉTADONNÉES (intervenants, dossier) =================
-
-    /** Nombre d'occurrences littérales de [needle] dans [text] (au plus 2 : seule l'unicité importe). */
-    private fun countOccurrences(text: String, needle: String): Int {
-        var count = 0
-        var i = text.indexOf(needle)
-        while (i >= 0 && count < 2) {
-            count++
-            i = text.indexOf(needle, i + needle.length)
-        }
-        return count
-    }
-
-    /** Lecture du fichier .meta (I/O légère : quelques centaines d'octets). */
-    fun readMeta(file: File): RecordingMeta = try {
-        val f = RecordingNames.metaSibling(file)
-        if (f.exists()) MetaCodec.fromJson(TextVault.read(f)) else RecordingMeta()
-    } catch (e: Exception) {
-        RecordingMeta()
-    }
-
-    private fun writeMeta(file: File, meta: RecordingMeta) {
-        val f = RecordingNames.metaSibling(file)
-        try {
-            if (meta.isEmpty) f.delete() else TextVault.write(f, MetaCodec.toJson(meta))
-        } catch (e: Exception) {
-            Log.e(TAG, "writeMeta: ${e.message}")
-        }
-    }
 
     fun setDossierFilter(dossier: String?) {
         _dossierFilter.value = dossier
@@ -611,12 +548,7 @@ class StreamViewModel(
     /** Nomme (ou dé-nomme si vide) un intervenant ; le .txt garde « [Intervenant N] ». */
     fun setSpeakerName(file: File, speaker: Int, name: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                val meta = readMeta(file)
-                val speakers = meta.speakers.toMutableMap()
-                if (name.isBlank()) speakers.remove(speaker) else speakers[speaker] = name.trim()
-                writeMeta(file, meta.copy(speakers = speakers))
-            }
+            withContext(Dispatchers.IO) { repo.setSpeakerName(file, speaker, name) }
             if (_lastRecording.value == file) refreshFileTranscript(file)
             refreshRecordings()
         }
@@ -624,9 +556,7 @@ class StreamViewModel(
 
     fun setDossier(file: File, dossier: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                writeMeta(file, readMeta(file).copy(dossier = dossier.trim()))
-            }
+            withContext(Dispatchers.IO) { repo.updateMeta(file) { it.copy(dossier = dossier.trim()) } }
             refreshRecordings()
         }
     }
@@ -643,7 +573,7 @@ class StreamViewModel(
 
     /**
      * Correction d'un passage sur la fiche : met à jour les segments (.json), puis
-     * reconstruit le .txt (horodatages, intervenants, temps de parole) et le .srt.
+     * le .txt (horodatages, intervenants, temps de parole) et le .srt.
      */
     fun updateSegmentText(file: File, index: Int, newText: String) {
         if (_isTranscribingFile.value || _summaryBusy.value || _backupBusy.value) {
@@ -652,39 +582,7 @@ class StreamViewModel(
         }
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) {
-                try {
-                    val json = RecordingNames.jsonSibling(file)
-                    if (!json.exists()) return@withContext false
-                    val segs = SegmentsCodec.fromJson(TextVault.read(json)).toMutableList()
-                    if (index !in segs.indices) return@withContext false
-                    val cleaned = newText.trim()
-                    if (cleaned.isEmpty()) return@withContext false
-                    val oldText = segs[index].text.trim()
-                    segs[index] = segs[index].copy(text = cleaned)
-                    TextVault.write(json, SegmentsCodec.toJsonStored(segs))
-                    val data = segs.map { SegmentData(it.text, it.startMs, it.endMs) }
-                    // .txt : remplacement ciblé quand l'ancien passage s'y trouve une seule fois
-                    // (les corrections manuelles antérieures sont préservées) ; sinon, reconstruction
-                    // complète depuis les segments, en gardant l'horodatage tel qu'il était
-                    val txt = transcriptFileFor(file)
-                    val body = if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else ""
-                    val text = if (oldText.isNotEmpty() && countOccurrences(body, oldText) == 1) {
-                        body.replaceFirst(oldText, cleaned)
-                    } else {
-                        buildSpeakerMarkedTranscript(
-                            StreamResult(fullText = segs.joinToString(" ") { it.text }, segments = data),
-                            segs.map { it.speaker },
-                            timestamps = if (body.isEmpty()) settings.useTimestamps else CLOCK_TAG.containsMatchIn(body),
-                        )
-                    }
-                    writeTranscriptFile(file, text, durationMsOf(file))
-                    val srt = TranscriptExporter.buildSrt(data)
-                    if (srt.isNotBlank()) TextVault.write(RecordingNames.srtSibling(file), srt)
-                    true
-                } catch (e: Exception) {
-                    Log.e(TAG, "updateSegmentText: ${e.message}")
-                    false
-                }
+                repo.updateSegmentText(file, index, newText, settings.useTimestamps)
             }
             if (ok) {
                 if (_lastRecording.value == file) refreshFileTranscript(file)
@@ -750,7 +648,7 @@ class StreamViewModel(
         viewModelScope.launch {
             _backupBusy.value = true // aucune écriture concurrente pendant la migration
             val r = try {
-                withContext(Dispatchers.IO) { TextVault.migrate(recordingsDir(), enabled) }
+                withContext(Dispatchers.IO) { TextVault.migrate(repo.dir, enabled) }
             } finally {
                 _backupBusy.value = false
             }
@@ -841,22 +739,6 @@ class StreamViewModel(
         openDetailForFile(hit.file)
         if (hit.hasAudio && hit.startMs >= 0) playFrom(hit.file, hit.startMs)
     }
-
-    /** Segments à indexer : ceux du .json, sinon les lignes du .txt (texte seul). */
-    private fun loadSegmentsForIndex(file: File): List<StoredSegment> {
-        val json = RecordingNames.jsonSibling(file)
-        if (json.exists()) {
-            val segs = SegmentsCodec.fromJson(TextVault.read(json))
-            if (segs.isNotEmpty()) return segs
-        }
-        val txt = transcriptFileFor(file)
-        if (!txt.exists()) return emptyList()
-        return SearchIndex.segmentsFromText(TextVault.read(txt).substringAfter("----\n"))
-    }
-
-    /** Date du contenu textuel d'un enregistrement (max des fichiers texte). */
-    private fun contentStamp(file: File): Long =
-        maxOf(transcriptFileFor(file).lastModified(), RecordingNames.jsonSibling(file).lastModified())
 
     // ================= STREAMING =================
 
@@ -1084,7 +966,7 @@ class StreamViewModel(
         vadHealthy = true
         activeStartTime = System.currentTimeMillis()
 
-        val recDir = recordingsDir()
+        val recDir = repo.dir
         // Contrôle d'espace : mieux vaut refuser avant la réunion qu'échouer en silence pendant
         val usableMb = recDir.usableSpace / (1024L * 1024L)
         if (usableMb < 10) {
@@ -1288,7 +1170,7 @@ class StreamViewModel(
             pcmDigest = null
             // .txt auto à côté du WAV — rien ne se perd, même sans transcription différée
             if (_liveText.value.isNotBlank() || pcmHash != null) {
-                writeTranscriptFile(finalFile, _liveText.value, _elapsedSec.value * 1000, pcmHash)
+                writeTranscript(finalFile, _liveText.value, _elapsedSec.value * 1000, pcmHash)
             }
             // L'encart transcription doit refléter CE fichier : consulter le détail d'un
             // autre enregistrement pendant la captation laissait ici son texte —
@@ -1303,14 +1185,14 @@ class StreamViewModel(
             // Mode Google : pas de WAV (conflit micro), mais la transcription ne se perd
             // plus — sauvegardée en entrée « texte seul », visible dans la liste.
             var name = buildDefaultName(null)
-            var txtFile = File(recordingsDir(), "$name.txt")
+            var txtFile = File(repo.dir, "$name.txt")
             var suffix = 2
             while (txtFile.exists()) { // deux enregistrements dans la même minute
                 name = "${buildDefaultName(null)} ($suffix)"
-                txtFile = File(recordingsDir(), "$name.txt")
+                txtFile = File(repo.dir, "$name.txt")
                 suffix++
             }
-            writeTranscriptFile(txtFile, _liveText.value, _elapsedSec.value * 1000)
+            writeTranscript(txtFile, _liveText.value, _elapsedSec.value * 1000)
             if (txtFile.exists()) {
                 _lastRecording.value = txtFile
                 _fileTranscript.value = _liveText.value
@@ -1344,20 +1226,17 @@ class StreamViewModel(
     fun confirmPendingName(newName: String, dossier: String = "", template: String = "") {
         val f = _pendingName.value ?: return
         _pendingName.value = null
-        val renamed = renameFile(f, newName)
         // Cible du .meta : le fichier renommé si le renommage a abouti, sinon l'original
-        val target = if (renamed) RecordingNames.renamed(f, RecordingNames.sanitize(newName)) else f
+        val target = renameFile(f, newName) ?: f
         viewModelScope.launch {
             if (dossier.isNotBlank() || template.isNotBlank()) {
                 withContext(Dispatchers.IO) {
-                    val meta = readMeta(target)
-                    writeMeta(
-                        target,
+                    repo.updateMeta(target) { meta ->
                         meta.copy(
                             dossier = dossier.trim().ifBlank { meta.dossier },
                             template = template.trim().ifBlank { meta.template },
-                        ),
-                    )
+                        )
+                    }
                 }
             }
             // Après l'écriture du .meta : la synthèse proposée lit le gabarit choisi
@@ -1368,41 +1247,29 @@ class StreamViewModel(
 
     /**
      * Renommage commun (dialog de fin d'enregistrement + liste) : conserve le
-     * suffixe (.wav / .wav.enc / .txt) et renomme les fichiers frères .txt/.srt.
+     * suffixe (.wav / .wav.enc / .txt) et renomme les fichiers frères.
+     * Retourne le fichier renommé, ou null si rien n'a changé (message d'erreur posé).
      */
-    private fun renameFile(f: File, newName: String): Boolean {
+    private fun renameFile(f: File, newName: String): File? {
         if (_summaryBusy.value) {
             _lastError.value = "Synthèse en cours — renommage possible ensuite"
-            return false
+            return null
         }
-        val name = RecordingNames.sanitize(newName)
-        if (name.isEmpty() || name == RecordingNames.baseName(f.name)) return false
-        val dest = RecordingNames.renamed(f, name)
-        // Collision sur le nom de base, tous types confondus (.wav, .wav.enc, .txt seul) :
-        // un renameTo POSIX écraserait silencieusement la cible homonyme.
-        val clash = f.parentFile?.listFiles()?.any { other ->
-            other != f && RecordingNames.baseName(other.name) == name
-        } == true
-        if (clash || dest.exists()) {
-            _lastError.value = "Un enregistrement porte déjà ce nom"
-            return false
+        return when (val r = repo.rename(f, newName)) {
+            is RenameResult.Renamed -> {
+                if (_lastRecording.value == f) _lastRecording.value = r.dest
+                r.dest
+            }
+            RenameResult.Unchanged -> null
+            RenameResult.Clash -> {
+                _lastError.value = "Un enregistrement porte déjà ce nom"
+                null
+            }
+            RenameResult.Failed -> {
+                _lastError.value = "Renommage impossible"
+                null
+            }
         }
-        val oldTxt = RecordingNames.txtSibling(f)
-        val oldSrt = RecordingNames.srtSibling(f)
-        val oldJson = RecordingNames.jsonSibling(f)
-        val oldMd = RecordingNames.mdSibling(f)
-        val oldMeta = RecordingNames.metaSibling(f)
-        if (!f.renameTo(dest)) {
-            _lastError.value = "Renommage impossible"
-            return false
-        }
-        if (oldTxt.exists()) oldTxt.renameTo(RecordingNames.txtSibling(dest))
-        if (oldSrt.exists()) oldSrt.renameTo(RecordingNames.srtSibling(dest))
-        if (oldJson.exists()) oldJson.renameTo(RecordingNames.jsonSibling(dest))
-        if (oldMd.exists()) oldMd.renameTo(RecordingNames.mdSibling(dest))
-        if (oldMeta.exists()) oldMeta.renameTo(RecordingNames.metaSibling(dest))
-        if (_lastRecording.value == f) _lastRecording.value = dest
-        return true
     }
 
     fun dismissPendingName() {
@@ -1459,12 +1326,7 @@ class StreamViewModel(
      * appeler hors du thread principal. Une synthèse rédigée avant le nommage suit
      * ainsi les noms choisis ensuite.
      */
-    fun readSummary(file: File): String? = try {
-        val md = RecordingNames.mdSibling(file)
-        if (md.exists()) SpeakerNames.apply(TextVault.read(md), readMeta(file).speakers) else null
-    } catch (e: Exception) {
-        null
-    }
+    fun readSummary(file: File): String? = repo.readSummary(file)
 
     /**
      * Génère la synthèse d'un enregistrement — par Claude si l'option est active et
@@ -1498,20 +1360,15 @@ class StreamViewModel(
 
     /** Lit la meilleure transcription disponible, génère, écrit le .md ; retourne le message. */
     private fun buildSummaryFor(file: File): String {
-        val txt = transcriptFileFor(file)
-        val text = try {
-            if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else ""
-        } catch (e: Exception) {
-            ""
-        }
+        val text = repo.transcriptBody(file)
         if (text.isBlank()) return "Pas de transcription à synthétiser — lance d'abord « Transcrire »"
-        val meta = readMeta(file)
+        val meta = repo.readMeta(file)
         val names = meta.speakers
         val template = SummaryTemplates.byId(meta.template)
         val input = SummaryInput(
             title = RecordingNames.baseName(file.name),
             transcript = text,
-            durationMs = durationMsOf(file),
+            durationMs = repo.durationMsOf(file),
             dateLabel = SUMMARY_DATE_FORMAT.format(Date(file.lastModified())),
         )
         val key = if (settings.aiSummaryEnabled) aiApiKey() else null
@@ -1534,7 +1391,7 @@ class StreamViewModel(
             SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
         }
         return try {
-            TextVault.write(RecordingNames.mdSibling(file), markdown)
+            repo.writeSummary(file, markdown)
             when {
                 failure != null -> "$failure — synthèse locale générée à la place"
                 key != null -> "Synthèse IA prête"
@@ -1559,9 +1416,7 @@ class StreamViewModel(
     /** Gabarit de synthèse de l'enregistrement (stocké dans le .meta) ; la fiche se met à jour. */
     fun setSummaryTemplate(file: File, templateId: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                writeMeta(file, readMeta(file).copy(template = templateId.trim()))
-            }
+            withContext(Dispatchers.IO) { repo.updateMeta(file) { it.copy(template = templateId.trim()) } }
             refreshRecordings()
         }
     }
@@ -1602,9 +1457,8 @@ class StreamViewModel(
                         }
                         return@withContext AiAnswer.Failed(why)
                     }
-                    val txt = transcriptFileFor(file)
-                    val raw = if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else ""
-                    val names = readMeta(file).speakers
+                    val raw = repo.transcriptBody(file)
+                    val names = repo.readMeta(file).speakers
                     ClaudeQa.ask(
                         apiKey = key,
                         modelId = settings.aiModel,
@@ -1649,11 +1503,10 @@ class StreamViewModel(
             _chaptersBusy.value = true
             try {
                 val message = withContext(Dispatchers.IO) {
-                    val json = RecordingNames.jsonSibling(file)
-                    if (!json.exists()) return@withContext "Chapitres : lance d'abord « Transcrire » (segments horodatés requis)"
-                    val segs = SegmentsCodec.fromJson(TextVault.read(json))
+                    if (!repo.hasSegments(file)) return@withContext "Chapitres : lance d'abord « Transcrire » (segments horodatés requis)"
+                    val segs = repo.readSegments(file)
                     if (segs.size < 8) return@withContext "Enregistrement trop court pour des chapitres"
-                    val meta = readMeta(file)
+                    val meta = repo.readMeta(file)
                     var failure: String? = null
                     val key = if (settings.aiSummaryEnabled) aiApiKey() else null
                     val detected = if (key != null) {
@@ -1682,7 +1535,7 @@ class StreamViewModel(
                     }
                     // Relu au moment d'écrire : un nom d'intervenant ou un dossier saisi pendant
                     // l'appel (jusqu'à plusieurs minutes) n'est pas écrasé
-                    writeMeta(file, readMeta(file).copy(chapters = chapters))
+                    repo.updateMeta(file) { it.copy(chapters = chapters) }
                     when {
                         failure != null -> "$failure — ${chapters.size} chapitres détectés localement"
                         key != null -> "${chapters.size} chapitres (IA)"
@@ -1910,30 +1763,17 @@ class StreamViewModel(
                         val shorts = byteArrayToShorts(pcm)
                         val speakerIds = detectSpeakers(shorts, res.segments)
                         Triple(
-                            buildSpeakerMarkedTranscript(res, speakerIds),
+                            repo.buildSpeakerMarkedTranscript(res, speakerIds, settings.useTimestamps),
                             TranscriptExporter.buildSrt(res.segments),
                             if (res.segments.isEmpty()) "" else SegmentsCodec.toJson(res.segments, speakerIds),
                         )
                     }
-                    _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { readMeta(file).speakers })
+                    _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { repo.readMeta(file).speakers })
                     // Sauvegarde .txt auto + .srt + segments .json à côté du fichier
                     val durationMs = pcm.size / 32L // 16 kHz × 2 octets = 32 octets/ms
                     withContext(Dispatchers.IO) {
-                        writeTranscriptFile(file, text, durationMs)
-                        if (srt.isNotBlank()) {
-                            try {
-                                TextVault.write(RecordingNames.srtSibling(file), srt)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "écriture SRT : ${e.message}")
-                            }
-                        }
-                        if (segmentsJson.isNotBlank()) {
-                            try {
-                                TextVault.write(RecordingNames.jsonSibling(file), segmentsJson)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "écriture segments : ${e.message}")
-                            }
-                        }
+                        writeTranscript(file, text, durationMs)
+                        repo.writeSidecars(file, srt, segmentsJson)
                     }
                     refreshRecordings()
                 }
@@ -1942,71 +1782,10 @@ class StreamViewModel(
         }
     }
 
-    /**
-     * Durée en ms sans déchiffrement (la liste ne déchiffre plus chaque .enc à chaque
-     * rafraîchissement) : header WAV en clair ; taille moins l'overhead AES-GCM
-     * (IV 12 + tag 16) et le header WAV (44) pour les .enc ; en-tête « Durée : »
-     * du .txt pour les entrées texte seul.
-     */
-    private fun durationMsOf(file: File): Long = when {
-        file.name.endsWith(".enc") ->
-            ((file.length() - 12 - 16 - 44).coerceAtLeast(0) * 1000L) / 32000L
-        file.name.endsWith(".txt") ->
-            try {
-                TranscriptExporter.parseDurationMs(TextVault.read(file))
-            } catch (e: Exception) {
-                0L
-            }
-        else -> readWavDuration(file)
-    }
-
-    private fun readWavDuration(file: File): Long {
-        return try {
-            val raf = file.inputStream().use { inp ->
-                val header = ByteArray(44)
-                val n = inp.read(header)
-                if (n < 44) return 0L
-                header
-            }
-            val dataSize = (raf[40].toInt() and 0xFF) or
-                ((raf[41].toInt() and 0xFF) shl 8) or
-                ((raf[42].toInt() and 0xFF) shl 16) or
-                ((raf[43].toInt() and 0xFF) shl 24)
-            (dataSize.toLong() * 1000L) / 32000L
-        } catch (e: Exception) {
-            0L
-        }
-    }
-
-    private fun recordingsDir(): File = File(appContext.filesDir, REC_DIR).apply { mkdirs() }
-
-    /**
-     * Écrit (ou écrase) le .txt d'un enregistrement : métadonnées + transcription.
-     */
-    fun writeTranscriptFile(audioFile: File, text: String, durationMs: Long, sha256: String? = null) {
-        try {
-            val txt = RecordingNames.txtSibling(audioFile)
-            // L'empreinte PCM n'est calculée qu'à l'enregistrement : on la préserve
-            // quand le .txt est réécrit (transcription différée, édition manuelle).
-            val hash = sha256 ?: try {
-                if (txt.exists()) HASH_LINE.find(TextVault.read(txt))?.groupValues?.get(1) else null
-            } catch (e: Exception) {
-                null // ancien .txt illisible (clé perdue, fichier altéré) : on réécrit sans empreinte
-            }
-            val date = if (audioFile.exists()) audioFile.lastModified() else System.currentTimeMillis()
-            val sb = StringBuilder()
-            sb.append("Transcripto Stream\n")
-            sb.append("Date : ").append(TXT_DATE_FORMAT.format(Date(date))).append("\n")
-            sb.append("Durée : ").append(formatHms(durationMs)).append("\n")
-            if (audioFile.extension == "enc") sb.append("Chiffré : oui\n")
-            if (hash != null) sb.append("SHA-256 (PCM) : ").append(hash).append("\n")
-            sb.append("----\n\n")
-            sb.append(text)
-            if (!TextVault.write(txt, sb.toString())) {
-                _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "writeTranscriptFile: ${e.message}")
+    /** Écrit le .txt d'un enregistrement ; signale un scellement impossible (texte gardé en clair). */
+    private fun writeTranscript(audioFile: File, text: String, durationMs: Long, sha256: String? = null) {
+        if (!repo.writeTranscriptFile(audioFile, text, durationMs, sha256)) {
+            _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
         }
     }
 
@@ -2017,58 +1796,12 @@ class StreamViewModel(
         val file = _lastRecording.value ?: return
         _fileTranscript.value = newText
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                // L'encart affiche les noms d'intervenants : on les ramène aux libellés
-                // génériques avant d'écrire, le .txt ne fige jamais un nom
-                val raw = SpeakerNames.unapply(newText, readMeta(file).speakers)
-                writeTranscriptFile(file, raw, durationMsOf(file))
-            }
+            // L'encart affiche les noms d'intervenants : le dépôt les ramène aux libellés
+            // génériques avant d'écrire, le .txt ne fige jamais un nom
+            val sealed = withContext(Dispatchers.IO) { repo.saveEditedTranscript(file, newText) }
+            if (!sealed) _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
             refreshRecordings()
         }
-    }
-
-    /**
-     * Reconstruction avec horodatage [mm:ss], attribution [Intervenant N]
-     * (variation de pitch F0 > 20 %), pauses > 1,2 s, et bloc « temps de parole »
-     * par intervenant en fin de transcription (réunions, entretiens d'audit).
-     */
-    private fun buildSpeakerMarkedTranscript(
-        res: StreamResult,
-        speakerIds: List<Int>,
-        timestamps: Boolean = settings.useTimestamps,
-    ): String {
-        val segments = res.segments
-        if (segments.isEmpty()) return res.fullText.trim()
-        val sb = StringBuilder()
-        var currentSpeaker = 0
-        for ((i, seg) in segments.withIndex()) {
-            if (seg.text.isBlank()) continue
-            if (i > 0) {
-                val gap = seg.startMs - segments[i - 1].endMs
-                if (gap > 1200) {
-                    sb.append(" [pause ${gap / 1000}s] ")
-                }
-            }
-            if (speakerIds[i] != currentSpeaker) {
-                currentSpeaker = speakerIds[i]
-                if (sb.isNotEmpty()) sb.append('\n')
-                sb.append("[Intervenant $currentSpeaker] ")
-            }
-            if (timestamps) {
-                sb.append("[").append(formatClock(seg.startMs)).append("] ")
-            }
-            sb.append(seg.text.trim()).append(" ")
-        }
-        // Stats sur les seuls segments affichés (les blancs sautés plus haut fausseraient les %)
-        val kept = segments.indices.filter { segments[it].text.isNotBlank() }
-        val stats = TranscriptExporter.buildSpeakingStats(
-            kept.map { segments[it] },
-            kept.map { speakerIds[it] },
-        )
-        if (stats.isNotBlank()) {
-            sb.append("\n\n").append(stats)
-        }
-        return sb.toString().trim()
     }
 
     /**
@@ -2094,13 +1827,6 @@ class StreamViewModel(
         return ids
     }
 
-    private fun formatClock(ms: Long): String {
-        val totalSec = ms / 1000
-        val m = (totalSec % 3600) / 60
-        val s = totalSec % 60
-        return "%02d:%02d".format(m, s)
-    }
-
     // ================= PRESSE-PAPIERS + EMAIL =================
 
     fun copyText(text: String): Boolean {
@@ -2118,12 +1844,8 @@ class StreamViewModel(
 
     /** Partage direct d'un élément de la liste, sans passer par l'écran principal. */
     suspend fun buildShareIntentFor(item: RecordingItem): Intent? = withContext(Dispatchers.IO) {
-        val txt = transcriptFileFor(item.file)
-        val text = try {
-            if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim() else item.transcript
-        } catch (e: Exception) {
-            item.transcript // .txt scellé illisible : on partage au moins l'aperçu
-        }
+        // .txt absent ou scellé illisible : on partage au moins l'aperçu
+        val text = repo.readTranscript(item.file)?.let { RecordingRepository.bodyOf(it) } ?: item.transcript
         buildShareIntent(item.file, SpeakerNames.apply(text, item.speakerNames))
     }
 
@@ -2235,7 +1957,7 @@ class StreamViewModel(
                     tmp.delete()
                     e to null
                 } else {
-                    val dest = File(recordingsDir(), "$base.wav")
+                    val dest = File(repo.dir, "$base.wav")
                     val moved = tmp.renameTo(dest) || try {
                         tmp.copyTo(dest, overwrite = true)
                         tmp.delete()
@@ -2279,13 +2001,7 @@ class StreamViewModel(
         }
         var base = RecordingNames.sanitize(display?.substringBeforeLast('.') ?: "")
         if (base.isEmpty()) base = "import_${REC_DATE_FORMAT.format(Date())}"
-        val taken = recordingsDir().listFiles()
-            ?.map { RecordingNames.baseName(it.name) }
-            ?.toSet() ?: emptySet()
-        if (base !in taken) return base
-        var i = 2
-        while ("$base ($i)" in taken) i++
-        return "$base ($i)"
+        return repo.uniqueBase(base)
     }
 
     /** Copie l'audio (déchiffré à la volée) vers l'emplacement choisi via SAF. */
@@ -2334,24 +2050,10 @@ class StreamViewModel(
 
     /** Assemble le document d'un enregistrement : page de garde, synthèse, transcription (I/O). */
     private fun buildExportDocument(file: File): ExportDocument {
-        val meta = readMeta(file)
-        val txt = transcriptFileFor(file)
-        val content = try {
-            if (txt.exists()) TextVault.read(txt) else ""
-        } catch (e: Exception) {
-            ""
-        }
-        val raw = content.substringAfter("----\n").trim()
-        val json = RecordingNames.jsonSibling(file)
-        val segments = if (json.exists()) {
-            try {
-                SegmentsCodec.fromJson(TextVault.read(json)).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) }
-            } catch (e: Exception) {
-                emptyList()
-            }
-        } else {
-            emptyList()
-        }
+        val meta = repo.readMeta(file)
+        val content = repo.readTranscript(file) ?: ""
+        val raw = RecordingRepository.bodyOf(content)
+        val segments = repo.readSegments(file).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) }
         val version = try {
             appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName ?: ""
         } catch (e: Exception) {
@@ -2360,17 +2062,17 @@ class StreamViewModel(
         return ExportDocument(
             title = RecordingNames.baseName(file.name),
             dateLabel = SUMMARY_DATE_FORMAT.format(Date(file.lastModified())),
-            durationMs = durationMsOf(file),
+            durationMs = repo.durationMsOf(file),
             dossier = meta.dossier,
             missionLabel = SummaryTemplates.ALL.firstOrNull { it.id == meta.template }?.label ?: "",
             speakerNames = meta.speakers,
-            sha256 = HASH_LINE.find(content)?.groupValues?.get(1),
+            sha256 = RecordingRepository.HASH_LINE.find(content)?.groupValues?.get(1),
             encrypted = file.name.endsWith(".enc"),
             summaryMarkdown = readSummary(file),
             segments = segments,
             chapters = meta.chapters,
             transcriptText = SpeakerNames.apply(raw, meta.speakers),
-            timestamps = if (raw.isEmpty()) settings.useTimestamps else CLOCK_TAG.containsMatchIn(raw),
+            timestamps = if (raw.isEmpty()) settings.useTimestamps else RecordingRepository.CLOCK_TAG.containsMatchIn(raw),
             appVersion = version,
             generatedLabel = SUMMARY_DATE_FORMAT.format(Date()),
         )
@@ -2655,7 +2357,7 @@ class StreamViewModel(
                     out.use { rawOut ->
                     BackupCrypto.encryptingStream(rawOut, passphrase.toCharArray()).use { enc ->
                         ZipOutputStream(enc).use { zip ->
-                            val files = recordingsDir().listFiles()?.sortedBy { it.name }
+                            val files = repo.dir.listFiles()?.sortedBy { it.name }
                                 ?: emptyList()
                             // « a.wav » et « a.wav.enc » donneraient la même entrée
                             // « a.wav » — un doublon ferait planter tout l'export (ZipException)
@@ -2735,7 +2437,7 @@ class StreamViewModel(
                         ?: return@withContext "Impossible de lire ce fichier"
                     var count = 0
                     val renames = HashMap<String, String>() // base d'origine → base locale
-                    val dir = recordingsDir()
+                    val dir = repo.dir
                     // inp.use englobe tout : un en-tête invalide (exception AVANT la
                     // création du flux déchiffrant) ferme quand même le flux SAF
                     inp.use { rawIn ->
@@ -2755,7 +2457,7 @@ class StreamViewModel(
                                     )
                                     if (base.isNotEmpty() && suffixPart in allowedBackupSuffixes) {
                                         val target = renames.getOrPut(base) {
-                                            uniqueRestoreBase(dir, base, renames.values)
+                                            repo.uniqueBase(base, renames.values)
                                         }
                                         val destFile = File(dir, target + suffixPart)
                                         destFile.outputStream().use { zip.copyTo(it, 64 * 1024) }
@@ -2792,53 +2494,17 @@ class StreamViewModel(
         }
     }
 
-    /** Base unique pour une restauration : ni collision locale, ni collision d'archive. */
-    private fun uniqueRestoreBase(dir: File, base: String, taken: Collection<String>): String {
-        val existing = dir.listFiles()?.map { RecordingNames.baseName(it.name) }?.toMutableSet()
-            ?: mutableSetOf()
-        existing.addAll(taken)
-        if (base !in existing) return base
-        var i = 2
-        while ("$base ($i)" in existing) i++
-        return "$base ($i)"
-    }
-
     // ================= LISTE DES ENREGISTREMENTS =================
 
     fun refreshRecordings() {
         viewModelScope.launch {
-            val (items, totalBytes) = withContext(Dispatchers.IO) {
-                val files = recordingsDir().listFiles()?.toList() ?: emptyList()
-                val audio = files.filter { RecordingNames.isAudio(it.name) }
-                val audioBases = audio.map { RecordingNames.baseName(it.name) }.toSet()
-                // .txt hérités v0.2.x (« base.wav.txt » à côté de « base.wav.enc »)
-                val legacyTxtNames = audio.map { it.nameWithoutExtension + ".txt" }.toSet()
-                // Entrées « texte seul » : .txt sans audio associé (transcriptions Google)
-                val textOnly = files.filter {
-                    RecordingNames.isTextOnly(it.name) &&
-                        RecordingNames.baseName(it.name) !in audioBases &&
-                        it.name !in legacyTxtNames
-                }
-                val list = (audio + textOnly).map { f -> buildItem(f) }
-                    .sortedByDescending { it.modifiedAt }
-                list to files.sumOf { it.length() }
-            }
+            val listing = withContext(Dispatchers.IO) { repo.list() }
+            val items = listing.items
+            val totalBytes = listing.totalBytes
             _recordings.value = items
             // Index de recherche APRÈS publication de la liste (relecture des seuls textes modifiés)
             withContext(Dispatchers.IO) {
-                searchIndex.sync(
-                    items.map { item ->
-                        IndexSource(
-                            file = item.file,
-                            contentStamp = contentStamp(item.file),
-                            baseName = item.baseName,
-                            dossier = item.dossier,
-                            hasAudio = item.hasAudio,
-                            speakerNames = item.speakerNames,
-                            modifiedAt = item.modifiedAt,
-                        )
-                    },
-                ) { f -> loadSegmentsForIndex(f) }
+                searchIndex.sync(items.map { repo.indexSource(it) }) { f -> repo.segmentsForIndex(f) }
             }
             val q = _searchQuery.value
             if (q.isNotBlank()) runSearch(q)
@@ -2855,36 +2521,11 @@ class StreamViewModel(
         }
     }
 
-    /** Élément de liste pour un fichier (I/O : lit l'aperçu du .txt — appeler hors du main thread). */
-    private fun buildItem(f: File): RecordingItem {
-        val txt = transcriptFileFor(f)
-        val transcript = try {
-            if (txt.exists()) TextVault.read(txt).substringAfter("----\n").trim().take(200) else ""
-        } catch (e: Exception) {
-            "" // texte scellé illisible (clé KeyStore perdue) : la liste reste utilisable
-        }
-        val meta = readMeta(f)
-        return RecordingItem(
-            file = f,
-            baseName = RecordingNames.baseName(f.name),
-            sizeBytes = f.length(),
-            durationMs = durationMsOf(f),
-            modifiedAt = f.lastModified(),
-            encrypted = f.name.endsWith(".enc"),
-            hasAudio = RecordingNames.isAudio(f.name),
-            transcript = SpeakerNames.apply(transcript, meta.speakers),
-            dossier = meta.dossier,
-            speakerNames = meta.speakers,
-            template = meta.template,
-            chapters = meta.chapters,
-        )
-    }
-
     /** Ouvre la fiche d'un fichier (écran principal → détail du dernier enregistrement). */
     fun openDetailForFile(file: File) {
         viewModelScope.launch {
             val item = _recordings.value.firstOrNull { it.file == file }
-                ?: withContext(Dispatchers.IO) { if (file.exists()) buildItem(file) else null }
+                ?: withContext(Dispatchers.IO) { if (file.exists()) repo.item(file) else null }
             if (item != null) openDetail(item)
         }
     }
@@ -2894,25 +2535,13 @@ class StreamViewModel(
         refreshRecordings()
     }
 
-    /** Supprime un enregistrement et ses fichiers frères (.txt, .srt + .txt hérité v0.2.x). */
-    private fun deleteWithSiblings(f: File) {
-        f.delete()
-        RecordingNames.txtSibling(f).delete()
-        RecordingNames.srtSibling(f).delete()
-        RecordingNames.jsonSibling(f).delete()
-        RecordingNames.mdSibling(f).delete()
-        RecordingNames.metaSibling(f).delete()
-        // Ancienne convention (v0.2.x) : « base.wav.enc » avait parfois « base.wav.txt »
-        File(f.parentFile, f.nameWithoutExtension + ".txt").delete()
-    }
-
     fun deleteRecording(item: RecordingItem) {
         if (_summaryBusy.value) {
             _uiMessage.value = "Synthèse en cours — suppression possible ensuite"
             return
         }
         if (_summaryProposal.value == item.file) _summaryProposal.value = null
-        deleteWithSiblings(item.file)
+        repo.delete(item.file)
         if (_lastRecording.value == item.file) {
             _lastRecording.value = null
             _fileTranscript.value = ""
@@ -2929,7 +2558,7 @@ class StreamViewModel(
         }
         val f = _lastRecording.value ?: return
         if (_summaryProposal.value == f) _summaryProposal.value = null
-        deleteWithSiblings(f)
+        repo.delete(f)
         _lastRecording.value = null
         activeRecordingFile = null
         _fileTranscript.value = ""
@@ -2940,40 +2569,8 @@ class StreamViewModel(
     fun cleanupExpired() {
         val days = settings.retentionDays
         if (days <= 0) return
-        val cutoff = System.currentTimeMillis() - days * 86_400_000L
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                val files = recordingsDir().listFiles()?.toList() ?: emptyList()
-                val audioBases = files.filter { RecordingNames.isAudio(it.name) }
-                    .map { RecordingNames.baseName(it.name) }
-                    .toSet()
-                // Synthèses / métadonnées orphelines (sans audio ni .txt du même nom) : purgées
-                files.filter { it.name.endsWith(".md") || it.name.endsWith(".meta") }.forEach { md ->
-                    val base = RecordingNames.baseName(md.name)
-                    val hasOwner = files.any {
-                        it != md && !it.name.endsWith(".md") && !it.name.endsWith(".meta") &&
-                            RecordingNames.baseName(it.name) == base &&
-                            (RecordingNames.isAudio(it.name) || RecordingNames.isTextOnly(it.name))
-                    }
-                    if (!hasOwner) md.delete()
-                }
-                files.forEach { f ->
-                    val expired = f.lastModified() < cutoff
-                    if (!expired) return@forEach
-                    if (RecordingNames.isAudio(f.name)) {
-                        deleteWithSiblings(f)
-                    } else if (
-                        RecordingNames.isTextOnly(f.name) &&
-                        RecordingNames.baseName(f.name) !in audioBases
-                    ) {
-                        // Entrée texte seul (Google) : soumise à la même rétention
-                        f.delete()
-                        RecordingNames.srtSibling(f).delete()
-                        RecordingNames.mdSibling(f).delete()
-                        RecordingNames.metaSibling(f).delete()
-                    }
-                }
-            }
+            withContext(Dispatchers.IO) { repo.cleanupExpired(days) }
             refreshRecordings()
         }
     }

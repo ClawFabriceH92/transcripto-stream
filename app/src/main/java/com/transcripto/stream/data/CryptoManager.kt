@@ -20,7 +20,7 @@ import javax.crypto.spec.GCMParameterSpec
  * Format : [IV 12 octets][données chiffrées] — le fichier chiffré porte l'extension .enc
  * et le IV est conservé en tête pour permettre le déchiffrement.
  */
-object CryptoManager {
+object CryptoManager : KeyProvider {
 
     private const val TAG = "CryptoManager"
     private const val ALIAS = "transcripto_stream_wav_key"
@@ -28,7 +28,7 @@ object CryptoManager {
     private const val TAG_BITS = 128
 
     /** Clé AES-256 de l'app (AndroidKeyStore), créée au premier usage — partagée avec [TextVault]. */
-    internal fun key(): SecretKey = getOrCreateKey()
+    override fun key(): SecretKey = getOrCreateKey()
 
     private fun getOrCreateKey(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

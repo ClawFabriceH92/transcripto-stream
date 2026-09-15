@@ -101,6 +101,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.MainActivity
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.summary.SummaryTemplates

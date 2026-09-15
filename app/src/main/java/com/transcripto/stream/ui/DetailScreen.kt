@@ -68,6 +68,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.Chapter
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.SegmentsCodec

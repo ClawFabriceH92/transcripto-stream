@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.SearchHit
 import com.transcripto.stream.data.SpeakerNames
 import com.transcripto.stream.data.TextFold
