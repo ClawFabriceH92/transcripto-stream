@@ -269,6 +269,10 @@ class StreamViewModel(
     private val _dossierFilter = MutableStateFlow<String?>(null)
     val dossierFilter: StateFlow<String?> = _dossierFilter.asStateFlow()
 
+    /** Dossier ouvert sur la fiche dossier (écran 4). */
+    private val _openDossier = MutableStateFlow<String?>(null)
+    val openDossier: StateFlow<String?> = _openDossier.asStateFlow()
+
     /** Incrémenté quand le .txt/.json d'un enregistrement change hors transcription (correction). */
     private val _transcriptVersion = MutableStateFlow(0)
     val transcriptVersion: StateFlow<Int> = _transcriptVersion.asStateFlow()
@@ -367,7 +371,7 @@ class StreamViewModel(
 
     fun navigate(screenIndex: Int) {
         if (_screen.value == screenIndex) return
-        if (screenIndex == 1) refreshRecordings()
+        if (screenIndex == 1 || screenIndex == 4) refreshRecordings()
         if (screenIndex == 2) models.refreshDownloaded()
         _screen.value = screenIndex
     }
@@ -422,6 +426,72 @@ class StreamViewModel(
 
     fun setDossierFilter(dossier: String?) {
         _dossierFilter.value = dossier
+    }
+
+    // ---- Fiche dossier ----
+
+    /** Ouvre la fiche d'un dossier (puce de dossier sur une carte, filtre de la liste). */
+    fun openDossier(name: String) {
+        val n = name.trim()
+        if (n.isEmpty()) return
+        _openDossier.value = n
+        _dossierFilter.value = n // le filtre de la liste suit le dossier consulté
+        navigate(4)
+    }
+
+    /** Renomme le dossier ouvert (réécrit le .meta de chacun de ses enregistrements). */
+    fun renameDossier(oldName: String, newName: String) {
+        if (_backupBusy.value || _summaryBusy.value) {
+            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            return
+        }
+        val target = newName.trim()
+        if (target.isEmpty() || target == oldName) return
+        val merging = _dossiers.value.any { it.equals(target, ignoreCase = true) && !it.equals(oldName, ignoreCase = true) }
+        viewModelScope.launch {
+            val n = withContext(Dispatchers.IO) { repo.renameDossier(oldName, target) }
+            if (n > 0) {
+                if (_openDossier.value == oldName) _openDossier.value = target
+                if (_dossierFilter.value == oldName) _dossierFilter.value = target
+                _uiMessage.value = if (merging) {
+                    "Dossiers fusionnés : $n enregistrement${if (n > 1) "s" else ""} déplacé${if (n > 1) "s" else ""} vers « $target »"
+                } else {
+                    "Dossier renommé ($n enregistrement${if (n > 1) "s" else ""})"
+                }
+            } else {
+                _uiMessage.value = "Aucun enregistrement à renommer"
+            }
+            refreshRecordings()
+        }
+    }
+
+    /** Fusionne le dossier ouvert dans [target] (même mécanisme que le renommage). */
+    fun mergeDossier(source: String, target: String) = renameDossier(source, target)
+
+    /** Écrit le document Word ou PDF d'un dossier entier dans [destUri]. */
+    fun exportDossier(name: String, destUri: Uri, format: ExportFormat, includeTranscripts: Boolean) {
+        if (_isTranscribingFile.value) {
+            _uiMessage.value = "Transcription en cours — exporte ensuite"
+            return
+        }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    val doc = documents.buildDossier(name, includeTranscripts)
+                    val out = try {
+                        appContext.contentResolver.openOutputStream(destUri, "wt")
+                    } catch (e: Exception) {
+                        appContext.contentResolver.openOutputStream(destUri)
+                    } ?: return@withContext false
+                    documents.writeDossier(doc, out, format)
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "exportDossier: ${e.message}")
+                    false
+                }
+            }
+            _uiMessage.value = if (ok) "${format.label} du dossier « $name » exporté" else "Export ${format.label} impossible"
+        }
     }
 
     /** Nomme (ou dé-nomme si vide) un intervenant ; le .txt garde « [Intervenant N] ». */

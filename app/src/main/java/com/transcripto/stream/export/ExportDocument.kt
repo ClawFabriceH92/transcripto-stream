@@ -47,6 +47,16 @@ data class ExportDocument(
     val generatedLabel: String = "",
 )
 
+/** Document d'un dossier : ses enregistrements dans l'ordre chronologique. */
+data class DossierDocument(
+    val name: String,
+    val recordings: List<ExportDocument>,
+    /** Transcriptions complètes incluses (sinon synthèses et actions seulement). */
+    val includeTranscripts: Boolean = false,
+    val appVersion: String = "",
+    val generatedLabel: String = "",
+)
+
 /** Bloc de mise en page commun aux rédacteurs Word et PDF. */
 sealed class DocBlock {
     data class Title(val text: String) : DocBlock()
@@ -70,6 +80,63 @@ object ExportComposer {
         val out = ArrayList<DocBlock>()
         out += DocBlock.Title(doc.title.ifBlank { "Enregistrement" })
         if (doc.dossier.isNotBlank()) out += DocBlock.Subtitle(doc.dossier)
+        out += coverMeta(doc)
+        out += generatedNote(doc)
+        out += summaryBlocks(doc)
+        out += actionBlocks(doc)
+        out += DocBlock.PageBreak
+        out += DocBlock.Heading(1, "Transcription")
+        out += transcriptBlocks(doc)
+        return out
+    }
+
+    /**
+     * Document d'un dossier : page de garde (enregistrements, durée cumulée, période,
+     * actions à faire, intervenants), sommaire, puis une section par enregistrement
+     * (métadonnées, synthèse, actions, transcription si demandée).
+     */
+    fun composeDossier(d: DossierDocument): List<DocBlock> {
+        val out = ArrayList<DocBlock>()
+        out += DocBlock.Title(d.name.ifBlank { "Dossier" })
+        out += DocBlock.Subtitle("Dossier — ${d.recordings.size} enregistrement${if (d.recordings.size > 1) "s" else ""}")
+        val total = d.recordings.sumOf { it.durationMs }
+        if (total > 0) out += DocBlock.Meta("Durée cumulée", TranscriptExporter.formatHms(total))
+        if (d.recordings.isNotEmpty()) {
+            val first = d.recordings.first().dateLabel
+            val last = d.recordings.last().dateLabel
+            out += DocBlock.Meta("Période", if (first == last) first else "$first → $last")
+        }
+        val actions = d.recordings.flatMap { it.actions }
+        if (actions.isNotEmpty()) out += DocBlock.Meta("Actions", "${actions.count { !it.done }} à faire sur ${actions.size}")
+        val speakers = d.recordings.flatMap { it.speakerNames.values }.distinct()
+        if (speakers.isNotEmpty()) out += DocBlock.Meta("Intervenants", speakers.joinToString(", "))
+        out += generatedNote(d.appVersion, d.generatedLabel)
+        if (d.recordings.isNotEmpty()) {
+            out += DocBlock.Heading(1, "Sommaire")
+            d.recordings.forEachIndexed { i, r ->
+                val open = r.actions.count { !it.done }
+                out += DocBlock.Para(
+                    listOf(MdSpan("${i + 1}. ${r.title.ifBlank { "Enregistrement" }}", bold = true), MdSpan(" — ${r.dateLabel}" + (if (open > 0) " · $open action${if (open > 1) "s" else ""} à faire" else ""))),
+                    bullet = true,
+                )
+            }
+        }
+        d.recordings.forEachIndexed { i, r ->
+            out += DocBlock.PageBreak
+            out += DocBlock.Heading(1, "${i + 1}. ${r.title.ifBlank { "Enregistrement" }}")
+            out += coverMeta(r)
+            out += summaryBlocks(r)
+            out += actionBlocks(r)
+            if (d.includeTranscripts) {
+                out += DocBlock.Heading(2, "Transcription")
+                out += transcriptBlocks(r, chapterLevel = 3)
+            }
+        }
+        return out
+    }
+
+    private fun coverMeta(doc: ExportDocument): List<DocBlock> {
+        val out = ArrayList<DocBlock>()
         out += DocBlock.Meta("Date", doc.dateLabel)
         if (doc.durationMs > 0) out += DocBlock.Meta("Durée", TranscriptExporter.formatHms(doc.durationMs))
         if (doc.missionLabel.isNotBlank()) out += DocBlock.Meta("Type de mission", doc.missionLabel)
@@ -79,51 +146,62 @@ object ExportComposer {
         if (doc.chapters.isNotEmpty()) out += DocBlock.Meta("Chapitres", doc.chapters.size.toString())
         if (doc.encrypted) out += DocBlock.Meta("Audio", "chiffré sur l'appareil (AES-256-GCM)")
         doc.sha256?.takeIf { it.isNotBlank() }?.let { out += DocBlock.Meta("Empreinte SHA-256 (PCM)", it) }
-        out += DocBlock.Note(
-            buildString {
-                append("Document généré par Transcripto Stream")
-                if (doc.appVersion.isNotBlank()) append(" v").append(doc.appVersion)
-                if (doc.generatedLabel.isNotBlank()) append(" le ").append(doc.generatedLabel)
-                append(". Transcription automatique : à relire avant diffusion.")
-            }
-        )
+        return out
+    }
 
+    private fun generatedNote(doc: ExportDocument): DocBlock = generatedNote(doc.appVersion, doc.generatedLabel)
+
+    private fun generatedNote(appVersion: String, generatedLabel: String): DocBlock = DocBlock.Note(
+        buildString {
+            append("Document généré par Transcripto Stream")
+            if (appVersion.isNotBlank()) append(" v").append(appVersion)
+            if (generatedLabel.isNotBlank()) append(" le ").append(generatedLabel)
+            append(". Transcription automatique : à relire avant diffusion.")
+        }
+    )
+
+    private fun summaryBlocks(doc: ExportDocument): List<DocBlock> {
         val summary = doc.summaryMarkdown?.trim().orEmpty()
-        if (summary.isNotEmpty()) {
-            out += DocBlock.Heading(1, "Synthèse")
-            for (block in MarkdownLite.parse(summary)) {
-                when (block) {
-                    // Le titre de niveau 1 de la synthèse (« # Synthèse — … ») fait doublon
-                    is MdBlock.Heading -> if (block.level > 1) {
-                        out += DocBlock.Heading(block.level.coerceIn(2, 3), block.text)
-                    }
-                    is MdBlock.Bullet -> out += DocBlock.Para(MarkdownLite.spans(block.text), bullet = true)
-                    is MdBlock.Paragraph -> out += DocBlock.Para(MarkdownLite.spans(block.text))
-                    MdBlock.Blank -> Unit
+        if (summary.isEmpty()) return emptyList()
+        val out = ArrayList<DocBlock>()
+        out += DocBlock.Heading(1, "Synthèse")
+        for (block in MarkdownLite.parse(summary)) {
+            when (block) {
+                // Le titre de niveau 1 de la synthèse (« # Synthèse — … ») fait doublon
+                is MdBlock.Heading -> if (block.level > 1) {
+                    out += DocBlock.Heading(block.level.coerceIn(2, 3), block.text)
                 }
+                is MdBlock.Bullet -> out += DocBlock.Para(MarkdownLite.spans(block.text), bullet = true)
+                is MdBlock.Paragraph -> out += DocBlock.Para(MarkdownLite.spans(block.text))
+                MdBlock.Blank -> Unit
             }
         }
+        return out
+    }
 
-        if (doc.actions.isNotEmpty()) {
-            out += DocBlock.Heading(1, "Actions à mener")
-            val open = doc.actions.count { !it.done }
-            out += DocBlock.Meta("Suivi", "$open à faire sur ${doc.actions.size}")
-            for (a in doc.actions) {
-                val spans = ArrayList<MdSpan>()
-                spans += MdSpan(if (a.done) "☑ " else "☐ ")
-                spans += MdSpan(a.text, bold = !a.done)
-                val details = listOfNotNull(
-                    a.owner.takeIf { it.isNotBlank() },
-                    a.due.takeIf { it.isNotBlank() }?.let { "échéance $it" },
-                    if (a.done) "fait" else null,
-                )
-                if (details.isNotEmpty()) spans += MdSpan(" — " + details.joinToString(" · "), italic = true)
-                out += DocBlock.Para(spans, bullet = true)
-            }
+    private fun actionBlocks(doc: ExportDocument): List<DocBlock> {
+        if (doc.actions.isEmpty()) return emptyList()
+        val out = ArrayList<DocBlock>()
+        out += DocBlock.Heading(1, "Actions à mener")
+        val open = doc.actions.count { !it.done }
+        out += DocBlock.Meta("Suivi", "$open à faire sur ${doc.actions.size}")
+        for (a in doc.actions) {
+            val spans = ArrayList<MdSpan>()
+            spans += MdSpan(if (a.done) "☑ " else "☐ ")
+            spans += MdSpan(a.text, bold = !a.done)
+            val details = listOfNotNull(
+                a.owner.takeIf { it.isNotBlank() },
+                a.due.takeIf { it.isNotBlank() }?.let { "échéance $it" },
+                if (a.done) "fait" else null,
+            )
+            if (details.isNotEmpty()) spans += MdSpan(" — " + details.joinToString(" · "), italic = true)
+            out += DocBlock.Para(spans, bullet = true)
         }
+        return out
+    }
 
-        out += DocBlock.PageBreak
-        out += DocBlock.Heading(1, "Transcription")
+    private fun transcriptBlocks(doc: ExportDocument, chapterLevel: Int = 2): List<DocBlock> {
+        val out = ArrayList<DocBlock>()
         val segs = doc.segments.filter { it.text.isNotBlank() }
         when {
             segs.isNotEmpty() -> {
@@ -134,7 +212,7 @@ object ExportComposer {
                 for (seg in segs) {
                     while (nextChapter < chapters.size && chapters[nextChapter].startMs <= seg.startMs) {
                         val c = chapters[nextChapter++]
-                        out += DocBlock.Heading(2, "${TranscriptExporter.formatHms(c.startMs)} — ${c.title}")
+                        out += DocBlock.Heading(chapterLevel, "${TranscriptExporter.formatHms(c.startMs)} — ${c.title}")
                         current = Int.MIN_VALUE // l'étiquette d'intervenant est répétée après un titre de chapitre
                     }
                     if (multi && seg.speaker != current) {
@@ -147,7 +225,7 @@ object ExportComposer {
                 // Chapitres situés après le dernier passage : listés quand même (jamais perdus)
                 while (nextChapter < chapters.size) {
                     val c = chapters[nextChapter++]
-                    out += DocBlock.Heading(2, "${TranscriptExporter.formatHms(c.startMs)} — ${c.title}")
+                    out += DocBlock.Heading(chapterLevel, "${TranscriptExporter.formatHms(c.startMs)} — ${c.title}")
                 }
             }
             doc.transcriptText.isNotBlank() -> {

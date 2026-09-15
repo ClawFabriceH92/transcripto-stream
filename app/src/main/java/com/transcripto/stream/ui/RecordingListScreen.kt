@@ -4,10 +4,12 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -196,6 +198,11 @@ fun RecordingListScreen(
                     )
                 }
             }
+            dossierFilter?.let { d ->
+                TextButton(onClick = { vm.openDossier(d) }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Text("Ouvrir la fiche du dossier « $d »", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -257,6 +264,7 @@ fun RecordingListScreen(
                             item = rec,
                             formatHms = { vm.formatHms(it) },
                             onSelect = { onSelect(rec) },
+                            onOpenDossier = { vm.openDossier(rec.dossier) },
                             onRename = { renameTarget = rec },
                             onDelete = { deleteTarget = rec },
                             onShare = {
@@ -438,6 +446,7 @@ private fun RecordingCard(
     item: RecordingItem,
     formatHms: (Long) -> String,
     onSelect: () -> Unit,
+    onOpenDossier: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onShare: () -> Unit,
@@ -484,8 +493,10 @@ private fun RecordingCard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (item.dossier.isNotBlank()) {
+                        val open = item.openActionCount
                         MetaChip(
-                            text = item.dossier,
+                            text = if (open > 0) "${item.dossier} · $open à faire" else item.dossier,
+                            modifier = Modifier.clickable(onClick = onOpenDossier, onClickLabel = "Ouvrir la fiche du dossier"),
                             icon = AppIcons.Folder,
                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
                             container = MaterialTheme.colorScheme.secondaryContainer,

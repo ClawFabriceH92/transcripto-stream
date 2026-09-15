@@ -174,7 +174,7 @@ fun StreamScreen() {
             } else {
                 // Bouton retour système : détail → liste, sinon retour à l'onglet Transcrire
                 BackHandler(enabled = screen != 0) {
-                    vm.navigate(if (screen == 3) 1 else 0)
+                    vm.navigate(if (screen == 3 || screen == 4) 1 else 0)
                 }
 
                 val snackbarHostState = remember { SnackbarHostState() }
@@ -232,6 +232,7 @@ fun StreamScreen() {
                                     1 -> Text("Enregistrements")
                                     2 -> Text("Réglages")
                                     3 -> Text("Fiche")
+                                    4 -> Text("Dossier")
                                     else -> Row(verticalAlignment = Alignment.CenterVertically) {
                                         IconAvatar(
                                             icon = AppIcons.Mic,
@@ -247,7 +248,7 @@ fun StreamScreen() {
                                 }
                             },
                             navigationIcon = {
-                                if (screen == 3) {
+                                if (screen == 3 || screen == 4) {
                                     IconButton(onClick = { vm.navigate(1) }) {
                                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour à la liste")
                                     }
@@ -276,7 +277,7 @@ fun StreamScreen() {
                                 label = { Text("Transcrire") },
                             )
                             NavigationBarItem(
-                                selected = screen == 1 || screen == 3,
+                                selected = screen == 1 || screen == 3 || screen == 4,
                                 onClick = { vm.navigate(1) },
                                 icon = { Icon(AppIcons.Folder, contentDescription = "Enregistrements") },
                                 label = { Text("Enregistrements") },
@@ -300,6 +301,7 @@ fun StreamScreen() {
                                 )
                                 2 -> SettingsScreen(vm)
                                 3 -> DetailScreen(vm)
+                                4 -> DossierScreen(vm)
                                 else -> MainScreen(vm, snackbarHostState)
                             }
                         }

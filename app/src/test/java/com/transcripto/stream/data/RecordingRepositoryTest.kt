@@ -272,6 +272,15 @@ class RecordingRepositoryTest {
         assertTrue(repo.openActionsInDossier("").isEmpty())
         assertTrue(repo.openActionsInDossier("Inconnu").isEmpty())
         assertEquals(1, repo.item(a).openActionCount)
+        // Renommage / fusion de dossier : le .meta de chaque enregistrement rattaché est réécrit
+        assertEquals(3, repo.renameDossier("sarl X", "SARL Martin"))
+        assertEquals("SARL Martin", repo.readMeta(a).dossier)
+        assertEquals("SARL Martin", repo.readMeta(c).dossier)
+        assertEquals("Autre", repo.readMeta(other).dossier)
+        assertEquals(0, repo.renameDossier("SARL Martin", " SARL Martin "))
+        assertEquals(0, repo.renameDossier("", "X"))
+        assertEquals(1, repo.renameDossier("Autre", "SARL Martin")) // fusion
+        assertEquals(setOf("SARL Martin"), repo.list().items.map { it.dossier }.toSet())
     }
 
     @Test

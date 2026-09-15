@@ -436,6 +436,27 @@ class RecordingRepository(private val root: File) {
         return out
     }
 
+    /**
+     * Renomme un dossier (ou le fusionne dans [newName] s'il existe déjà) : réécrit le
+     * .meta de chaque enregistrement rattaché à [oldName]. Retourne le nombre modifié.
+     */
+    fun renameDossier(oldName: String, newName: String): Int {
+        val old = oldName.trim()
+        val target = newName.trim()
+        if (old.isEmpty() || target.isEmpty() || old == target) return 0
+        var count = 0
+        val seenBases = HashSet<String>()
+        for (f in dir.listFiles() ?: return 0) {
+            if (!f.isFile || !(RecordingNames.isAudio(f.name) || RecordingNames.isTextOnly(f.name))) continue
+            if (!seenBases.add(RecordingNames.baseName(f.name))) continue
+            val meta = readMeta(f)
+            if (!meta.dossier.equals(old, ignoreCase = true)) continue
+            writeMeta(f, meta.copy(dossier = target))
+            count++
+        }
+        return count
+    }
+
     /** Bases déjà prises dans le dossier (tous types confondus). */
     fun takenBases(): Set<String> =
         dir.listFiles()?.map { RecordingNames.baseName(it.name) }?.toSet() ?: emptySet()

@@ -97,6 +97,34 @@ class DocxExportTest {
     }
 
     @Test
+    fun dossierDocumentHasCoverTableOfContentsAndOneSectionPerRecording() {
+        val second = doc.copy(title = "Point d'étape", dateLabel = "20 sept. 2026 14:00", durationMs = 30_000L, actions = listOf(ExportAction("Signer le PV", done = false)), speakerNames = mapOf(1 to "Mme Durand"))
+        val d = DossierDocument(name = "SARL Martin & Fils", recordings = listOf(doc, second), includeTranscripts = false, appVersion = "0.12.0", generatedLabel = "21 sept. 2026")
+        val t = texts(ExportComposer.composeDossier(d))
+        assertEquals("T:SARL Martin & Fils", t[0])
+        assertEquals("S:Dossier — 2 enregistrements", t[1])
+        assertTrue(t.contains("M:Durée cumulée=02:05"))
+        assertTrue(t.contains("M:Période=12 sept. 2026 10:30 → 20 sept. 2026 14:00"))
+        assertTrue(t.contains("M:Actions=2 à faire sur 3"))
+        assertTrue(t.contains("M:Intervenants=M. Martin (DG), Mme Durand"))
+        assertTrue(t.contains("H1:Sommaire"))
+        assertTrue(t.contains("B:1. Réunion de clôture <SARL Martin & Fils> — 12 sept. 2026 10:30 · 1 action à faire"))
+        assertTrue(t.contains("B:2. Point d'étape — 20 sept. 2026 14:00 · 1 action à faire"))
+        assertTrue(t.contains("H1:1. Réunion de clôture <SARL Martin & Fils>"))
+        assertTrue(t.contains("H1:2. Point d'étape"))
+        assertEquals(2, t.count { it == "PB" })
+        assertEquals(2, t.count { it == "H1:Actions à mener" })
+        assertFalse("transcriptions exclues par défaut", t.any { it.startsWith("SG:") })
+        assertFalse(t.contains("H2:Transcription"))
+        val full = texts(ExportComposer.composeDossier(d.copy(includeTranscripts = true)))
+        assertEquals(2, full.count { it == "H2:Transcription" })
+        assertTrue(full.contains("SG:00:00 Bonjour à tous, on commence par les stocks."))
+        assertTrue("chapitres relégués au niveau 3 dans un dossier", full.contains("H3:00:30 — Stocks et provisions"))
+        val bytes = DocxWriter.write(ExportComposer.composeDossier(d), "Dossier " + d.name)
+        assertEquals(0x50, bytes[0].toInt())
+    }
+
+    @Test
     fun docxPackageHasRequiredPartsAndWellFormedXml() {
         val bytes = DocxWriter.write(ExportComposer.compose(doc), doc.title)
         assertEquals(0x50, bytes[0].toInt()) // 'P' — signature zip

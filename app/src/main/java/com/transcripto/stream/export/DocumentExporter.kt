@@ -52,18 +52,37 @@ class DocumentExporter(
         )
     }
 
+    /** Document d'un dossier : ses enregistrements du plus ancien au plus récent (I/O). */
+    fun buildDossier(name: String, includeTranscripts: Boolean): DossierDocument {
+        val items = repo.list().items
+            .filter { it.dossier.equals(name.trim(), ignoreCase = true) }
+            .sortedBy { it.modifiedAt }
+        return DossierDocument(
+            name = name.trim(),
+            recordings = items.map { build(it.file) },
+            includeTranscripts = includeTranscripts,
+            appVersion = appVersion,
+            generatedLabel = DATE_FORMAT.format(Date()),
+        )
+    }
+
+    fun writeDossier(doc: DossierDocument, out: OutputStream, format: ExportFormat) =
+        writeBlocks(ExportComposer.composeDossier(doc), "Dossier ${doc.name}", out, format)
+
     /** Écrit [doc] (voir [build]) au format [format] dans [out] (fermé à la fin, même en cas d'échec). */
-    fun write(doc: ExportDocument, out: OutputStream, format: ExportFormat) {
-        val blocks = ExportComposer.compose(doc)
+    fun write(doc: ExportDocument, out: OutputStream, format: ExportFormat) =
+        writeBlocks(ExportComposer.compose(doc), doc.title, out, format)
+
+    private fun writeBlocks(blocks: List<DocBlock>, title: String, out: OutputStream, format: ExportFormat) {
         out.use { o ->
             when (format) {
-                ExportFormat.DOCX -> o.write(DocxWriter.write(blocks, doc.title))
+                ExportFormat.DOCX -> o.write(DocxWriter.write(blocks, title))
                 ExportFormat.PDF -> PdfWriter.write(
                     blocks,
                     o,
                     footer = "Transcripto Stream" +
-                        (if (doc.appVersion.isNotBlank()) " v${doc.appVersion}" else "") +
-                        " · ${doc.title}",
+                        (if (appVersion.isNotBlank()) " v$appVersion" else "") +
+                        " · $title",
                 )
             }
         }
