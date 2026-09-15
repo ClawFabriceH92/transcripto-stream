@@ -52,16 +52,10 @@ import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.stt.SegmentData
 import com.transcripto.stream.summary.AiAnswer
-import com.transcripto.stream.summary.AiChaptersResult
-import com.transcripto.stream.summary.AiSummaryResult
-import com.transcripto.stream.summary.ChapterDetector
-import com.transcripto.stream.summary.ClaudeChapters
-import com.transcripto.stream.summary.ClaudeQa
-import com.transcripto.stream.summary.ClaudeSummarizer
-import com.transcripto.stream.summary.LocalSummarizer
+import com.transcripto.stream.summary.AiAssistant
+import com.transcripto.stream.summary.AiSettings
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.QaTurn
-import com.transcripto.stream.summary.SummaryInput
 import com.transcripto.stream.summary.SummaryTemplates
 import com.transcripto.stream.stt.WhisperModel
 import com.transcripto.stream.stt.WhisperStreamEngine
@@ -125,6 +119,16 @@ class StreamViewModel(
 
     /** Archive chiffrée par phrase de passe (export/restauration). */
     private val backup = BackupManager(repo, appContext.cacheDir, CryptoManager) { settings.encryptWav }
+
+    /** Synthèse, questions et chapitres (Claude ou repli local), lecture/écriture des fichiers. */
+    private val ai = AiAssistant(
+        repo,
+        object : AiSettings {
+            override val aiSummaryEnabled: Boolean get() = settings.aiSummaryEnabled
+            override val aiModel: String get() = settings.aiModel
+            override val hasApiKey: Boolean get() = settings.aiApiKeyEncrypted.isNotBlank()
+        },
+    ) { CryptoManager.decryptString(settings.aiApiKeyEncrypted)?.takeIf { it.isNotBlank() } }
 
     init {
         // Avant toute écriture : les textes suivent le réglage de chiffrement au repos
@@ -1182,9 +1186,6 @@ class StreamViewModel(
         return true
     }
 
-    private fun aiApiKey(): String? =
-        CryptoManager.decryptString(settings.aiApiKeyEncrypted)?.takeIf { it.isNotBlank() }
-
     /**
      * Synthèse existante (Markdown, noms d'intervenants appliqués) ou null — I/O : à
      * appeler hors du thread principal. Une synthèse rédigée avant le nommage suit
@@ -1210,7 +1211,7 @@ class StreamViewModel(
         viewModelScope.launch {
             _summaryBusy.value = true
             try {
-                val message = withContext(Dispatchers.IO) { buildSummaryFor(file) }
+                val message = withContext(Dispatchers.IO) { ai.summarize(file) }
                 _uiMessage.value = message
             } catch (t: Throwable) {
                 _uiMessage.value = "Synthèse impossible : ${t.message}"
@@ -1220,61 +1221,6 @@ class StreamViewModel(
                 _summaryVersion.value = _summaryVersion.value + 1
             }
         }
-    }
-
-    /** Lit la meilleure transcription disponible, génère, écrit le .md ; retourne le message. */
-    private fun buildSummaryFor(file: File): String {
-        val text = repo.transcriptBody(file)
-        if (text.isBlank()) return "Pas de transcription à synthétiser — lance d'abord « Transcrire »"
-        val meta = repo.readMeta(file)
-        val names = meta.speakers
-        val template = SummaryTemplates.byId(meta.template)
-        val input = SummaryInput(
-            title = RecordingNames.baseName(file.name),
-            transcript = text,
-            durationMs = repo.durationMsOf(file),
-            dateLabel = SUMMARY_DATE_FORMAT.format(Date(file.lastModified())),
-        )
-        val key = if (settings.aiSummaryEnabled) aiApiKey() else null
-        var failure: String? = null
-        if (settings.aiSummaryEnabled && key == null && settings.aiApiKeyEncrypted.isNotBlank()) {
-            // Blob présent mais indéchiffrable (clé KeyStore perdue) : le dire, pas se taire
-            failure = "Clé API illisible — ressaisis-la dans les Réglages"
-        }
-        val markdown = if (key != null) {
-            // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
-            val named = input.copy(transcript = SpeakerNames.apply(text, names))
-            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template)) {
-                is AiSummaryResult.Ok -> wrapAiSummary(input, r)
-                is AiSummaryResult.Failed -> {
-                    failure = r.message
-                    SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
-                }
-            }
-        } else {
-            SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
-        }
-        return try {
-            repo.writeSummary(file, markdown)
-            when {
-                failure != null -> "$failure — synthèse locale générée à la place"
-                key != null -> "Synthèse IA prête"
-                else -> "Synthèse prête"
-            }
-        } catch (e: Exception) {
-            "Écriture de la synthèse impossible : ${e.message}"
-        }
-    }
-
-    private fun wrapAiSummary(input: SummaryInput, r: AiSummaryResult.Ok): String = buildString {
-        append("# Synthèse — ").append(input.title).append('\n')
-        append('_').append(input.dateLabel)
-        if (input.durationMs > 0) append(" · ").append(formatHms(input.durationMs))
-        append(" · synthèse IA (").append(ClaudeSummarizer.modelLabel(r.model)).append(")_\n\n")
-        append(r.markdown.trim()).append("\n\n")
-        append("_Synthèse rédigée par Claude (").append(r.model).append(", ")
-            .append(r.inputTokens + r.outputTokens)
-            .append(" tokens) à partir de la transcription — à relire avant diffusion._\n")
     }
 
     /** Gabarit de synthèse de l'enregistrement (stocké dans le .meta) ; la fiche se met à jour. */
@@ -1288,7 +1234,7 @@ class StreamViewModel(
     // ================= QUESTIONS À L'IA =================
 
     /** L'IA est utilisable (option active et clé enregistrée) — sans I/O. */
-    fun aiAvailable(): Boolean = settings.aiSummaryEnabled && settings.aiApiKeyEncrypted.isNotBlank()
+    fun aiAvailable(): Boolean = ai.available()
 
     /**
      * Pose une question à Claude sur [file] : transcription (noms appliqués) + synthèse
@@ -1311,28 +1257,7 @@ class StreamViewModel(
         _qa.value = QaState(file = file, turns = turns, busy = true, error = null)
         viewModelScope.launch {
             val result: AiAnswer = try {
-                withContext(Dispatchers.IO) {
-                    val key = aiApiKey()
-                    if (key == null) {
-                        val why = if (settings.aiApiKeyEncrypted.isBlank()) {
-                            "Clé API absente — Réglages › Synthèse"
-                        } else {
-                            "Clé API illisible — ressaisis-la dans les Réglages"
-                        }
-                        return@withContext AiAnswer.Failed(why)
-                    }
-                    val raw = repo.transcriptBody(file)
-                    val names = repo.readMeta(file).speakers
-                    ClaudeQa.ask(
-                        apiKey = key,
-                        modelId = settings.aiModel,
-                        title = RecordingNames.baseName(file.name),
-                        transcript = SpeakerNames.apply(raw, names),
-                        summaryMarkdown = readSummary(file),
-                        history = turns,
-                        question = q,
-                    )
-                }
+                withContext(Dispatchers.IO) { ai.ask(file, turns, q) }
             } catch (t: Throwable) {
                 AiAnswer.Failed("Réponse impossible : ${t.message}")
             }
@@ -1366,46 +1291,7 @@ class StreamViewModel(
         viewModelScope.launch {
             _chaptersBusy.value = true
             try {
-                val message = withContext(Dispatchers.IO) {
-                    if (!repo.hasSegments(file)) return@withContext "Chapitres : lance d'abord « Transcrire » (segments horodatés requis)"
-                    val segs = repo.readSegments(file)
-                    if (segs.size < 8) return@withContext "Enregistrement trop court pour des chapitres"
-                    val meta = repo.readMeta(file)
-                    var failure: String? = null
-                    val key = if (settings.aiSummaryEnabled) aiApiKey() else null
-                    val detected = if (key != null) {
-                        // Horodatages hh:mm:ss au-delà d'une heure (réunions longues) : pas de repli à 00:00
-                        val timed = segs.joinToString("\n") { s ->
-                            "[${formatHms(s.startMs)}] ${SpeakerNames.label(s.speaker, meta.speakers)} : ${s.text.trim()}"
-                        }
-                        when (val r = ClaudeChapters.detect(key, settings.aiModel, RecordingNames.baseName(file.name), timed)) {
-                            is AiChaptersResult.Ok -> r.chapters
-                            is AiChaptersResult.Failed -> {
-                                failure = r.message
-                                ChapterDetector.detect(segs)
-                            }
-                        }
-                    } else {
-                        ChapterDetector.detect(segs)
-                    }
-                    // Bornes : pas de chapitre après la fin ; le premier commence avec le premier passage
-                    val lastMs = segs.last().endMs.coerceAtLeast(segs.last().startMs)
-                    val chapters = detected.filter { it.startMs <= lastMs }
-                        .sortedBy { it.startMs }
-                        .mapIndexed { i, c -> if (i == 0) c.copy(startMs = minOf(c.startMs, segs.first().startMs)) else c }
-                    if (chapters.isEmpty()) {
-                        return@withContext failure?.let { "$it — et pas de changement de sujet net détecté localement" }
-                            ?: "Pas de changement de sujet assez net pour des chapitres"
-                    }
-                    // Relu au moment d'écrire : un nom d'intervenant ou un dossier saisi pendant
-                    // l'appel (jusqu'à plusieurs minutes) n'est pas écrasé
-                    repo.updateMeta(file) { it.copy(chapters = chapters) }
-                    when {
-                        failure != null -> "$failure — ${chapters.size} chapitres détectés localement"
-                        key != null -> "${chapters.size} chapitres (IA)"
-                        else -> "${chapters.size} chapitres détectés"
-                    }
-                }
+                val message = withContext(Dispatchers.IO) { ai.chapters(file) }
                 _uiMessage.value = message
             } catch (t: Throwable) {
                 _uiMessage.value = "Chapitrage impossible : ${t.message}"
