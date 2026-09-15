@@ -153,7 +153,7 @@ fun DetailScreen(vm: StreamViewModel) {
     var dossierDialog by remember { mutableStateOf(false) }
     var speakerDialog by remember { mutableStateOf<Int?>(null) }
     var editSegment by remember { mutableStateOf<Int?>(null) }
-    var reviewMode by rememberSaveable(current.file.absolutePath) { mutableStateOf(false) }
+    var reviewMode by rememberSaveable(current.file.absolutePath) { mutableStateOf(vm.settings.reviewByDefault) }
     var reviewCursor by remember(current.file.absolutePath) { mutableStateOf(-1) }
 
     var summary by remember { mutableStateOf<String?>(null) }

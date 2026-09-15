@@ -28,3 +28,5 @@ add_subdirectory(whisper.cpp EXCLUDE_FROM_ALL)
 add_library(whisper_jni SHARED whisper_jni.cpp)
 set_target_properties(whisper_jni PROPERTIES OUTPUT_NAME "whisper")
 target_link_libraries(whisper_jni PRIVATE whisper log)
+# Pages mémoire de 16 Ko (Android 15+, exigence Google Play) : alignement des segments ELF
+target_link_options(whisper_jni PRIVATE "-Wl,-z,max-page-size=16384")

@@ -294,6 +294,18 @@ fun SettingsScreen(vm: StreamViewModel) {
                 },
                 icon = AppIcons.Waveform,
             )
+            var reviewByDefault by remember { mutableStateOf(settings.reviewByDefault) }
+            SettingSwitchRow(
+                title = "Vérification par défaut sur la fiche",
+                subtitle = "Ouvre chaque transcription en mode Vérification : passages sous 60 % de confiance teintés, " +
+                    "montants et dates soulignés, bouton « Suivant ».",
+                checked = reviewByDefault,
+                onChange = {
+                    reviewByDefault = it
+                    settings.reviewByDefault = it
+                },
+                icon = AppIcons.Document,
+            )
             var muteListening by remember { mutableStateOf(settings.muteWhileListening) }
             SettingSwitchRow(
                 title = "Écoute silencieuse (Google)",

@@ -24,6 +24,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Moteur compilé à la source, relecture assistée** (v0.13.0) : whisper.cpp v1.9.4 en sous-module compilé par le build (plus de binaires figés), **confiance par passage** dans le `.json`, mode **Vérification** sur la fiche (passages sous 60 % teintés, montants et dates soulignés, « Suivant »), marquage « (à vérifier) » dans les exports, réglage « Vérification par défaut ».
 - **Dossiers, suivi des actions, import par lots** (v0.12.0) : **actions à mener suivies** (extraites des synthèses, cochables, responsable et échéance, dates françaises reconnues, contexte des actions ouvertes fourni à l'IA), **fiche dossier** (écran dédié : enregistrements, durée cumulée, intervenants, actions ouvertes agrégées, renommer/fusionner, export Word/PDF du dossier avec sommaire), **import par lots** (sélection ou partage multiple, dossier et gabarit communs, notification de progression annulable), **rappel de sauvegarde** (7/30 jours, bandeau sur la liste).
 - **Refonte du code, corrections synchronisées, R8** (v0.11.0) : ViewModel découpé en collaborateurs testables (`RecordingRepository`, `LiveTranscriber`, `PlaybackController`, `BackupManager`, `AiAssistant`, `ModelManager`, `DocumentExporter`…), un seul chemin d'appel Claude (`ClaudeTransport`) avec client HTTP partagé, **correction depuis l'écran principal synchronisée avec les passages** (ou signalée non synchronisée), horodatages `hh:mm:ss` homogènes, **R8** en release avec compilation de la release non signée en CI, 111 tests JVM + Robolectric, `CLAUDE.md`.
 - **Recherche dans les passages, chapitres, VAD neuronale** (v0.10.0) : **index en mémoire de tous les passages** (section « Passages » dans la liste, extrait en gras, lecture calée sur le passage ; rien n'est persisté en clair), **chapitres automatiques** titrés (bascule de vocabulaire sur l'appareil ou Claude ; navigation sur la fiche, sous-titres dans les exports), **Silero VAD** (ONNX Runtime) pour transcrire chaque phrase dès qu'elle se termine et ignorer silences et bruits, avec repli sur le seuil de volume.
@@ -42,7 +43,8 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 app/src/main/
 ├── cpp/whisper_jni.cpp          # JNI : transcription d'un buffer PCM (pas de fichier)
 ├── assets/models/ggml-base.bin  # Modèle Whisper Base (~142 Mo, gitignoré)
-├── jniLibs/arm64-v8a/           # libwhisper.so + libggml*.so + libomp + libc++_shared (gitignorés)
+├── cpp/whisper.cpp/             # Sous-module whisper.cpp v1.9.4 (ggml + whisper, compilés en statique)
+├── cpp/CMakeLists.txt           # libwhisper.so = whisper + ggml + JNI (externalNativeBuild)
 └── java/com/transcripto/stream/
     ├── MainActivity.kt             # Point d'entrée + actions RECORD (tuile/raccourci) et SEND/VIEW (import)
     ├── RecordTileService.kt        # Tuile de réglages rapides « Transcrire »
@@ -103,15 +105,18 @@ app/src/main/
 
 ## Build
 
-### 1. Bibliothèque native (une seule fois, machine avec NDK)
+### 1. Bibliothèque native (compilée par le build)
+
+`whisper.cpp` est un sous-module git (`app/src/main/cpp/whisper.cpp`, épinglé sur v1.9.4) compilé par Gradle
+(`externalNativeBuild`, NDK r27, CMake 3.22) avec le pont JNI dans une seule `libwhisper.so`
+(arm64-v8a, `armv8.2-a+dotprod+fp16`, sans OpenMP, pages de 16 Ko). Après un clone :
 
 ```bash
-ANDROID_NDK=/opt/android-sdk/ndk/27.3.13750724 ./scripts/build_native.sh
+git submodule update --init --recursive
 ```
 
-Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `app/src/main/jniLibs/arm64-v8a/`.
-
-> ⚠️ Sur hôte ARM64 (Raspberry Pi), le NDK x86_64 passe par QEMU user-mode — installation requise : `qemu-user qemu-user-binfmt`.
+Le workflow `.github/workflows/native.yml` compile la bibliothèque seule (artefact `libwhisper.so`) à chaque
+changement du code natif ; la CI et la publication la compilent avec l'APK.
 
 ### 2. APK
 
@@ -127,7 +132,7 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 
 ## Binaires non versionnés
 
-- Le modèle `ggml-base.bin` et les `.so` sont dans `.gitignore` : un clone frais ne peut pas produire un APK **fonctionnel en mode Whisper** directement. Les releases GitHub contiennent l'APK complet.
+- Le modèle `ggml-base.bin` est dans `.gitignore` (142 Mo) : un clone frais compile la bibliothèque native mais ne peut pas produire un APK **fonctionnel en mode Whisper** sans le modèle. Les releases GitHub contiennent l'APK complet ; le workflow de publication reprend le modèle de la release v0.2.5.
 
 ## Roadmap
 
@@ -145,4 +150,5 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 - [x] Refonte du code en collaborateurs testables, un seul chemin d'appel Claude, R8 en release, tests Robolectric, corrections synchronisées avec les passages (v0.11.0)
 - [ ] Chaînes de l'interface externalisées dans `strings.xml` (préparation d'une version anglaise)
 - [x] Suivi des actions, fiche dossier, import par lots, rappel de sauvegarde (v0.12.0)
-- [ ] Compilation native en CI, relecture assistée par la confiance, diarisation v2 par embeddings de locuteurs (vague C)
+- [x] Compilation native en CI (sous-module whisper.cpp), confiance par passage, relecture assistée (v0.13.0)
+- [ ] Diarisation v2 par empreintes de locuteurs (modèle ONNX de locuteur, Fbank, regroupement, mémoire des voix par dossier)

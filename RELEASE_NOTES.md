@@ -1,10 +1,17 @@
-# Transcripto Stream v0.12.0
+# Transcripto Stream v0.13.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Nouveautés v0.12.0 — dossiers, suivi des actions, import par lots
+## Nouveautés v0.13.0 — moteur compilé à la source, relecture assistée
+
+- **Moteur Whisper compilé à la source** : whisper.cpp (v1.9.4) est désormais un sous-module du dépôt, compilé par le build (NDK 27, arm64 `armv8.2-a+dotprod+fp16`, pages de 16 Ko) au lieu de binaires figés depuis la v0.2.5. Paramètres revus pour le direct (pas de montée de température, blancs supprimés, seuil de non-parole). **À valider sur ton appareil** : lance une transcription différée et un enregistrement Whisper ; en cas de souci, la v0.12.0 reste installable.
+- **Confiance par passage** : chaque passage transcrit porte la probabilité moyenne du moteur (fichier `.json`), base de la relecture assistée.
+- **Relecture assistée** : sur la fiche, la puce « Vérifier (n) » teinte les passages dont la confiance est sous 60 %, souligne montants, pourcentages et dates, et « Suivant » saute de passage douteux en passage douteux en calant la lecture. Réglage « Vérification par défaut » (Réglages → Comportement). Les exports Word et PDF indiquent le nombre de passages à vérifier et les marquent « (à vérifier) ». Les enregistrements transcrits avant cette version n'ont pas de confiance : relance « Transcrire ».
+- Non inclus, prévu ensuite : diarisation par empreinte vocale (modèle de locuteur ONNX) et chaînes de l'interface externalisées.
+
+## v0.12.0 — dossiers, suivi des actions, import par lots
 
 - **Suivi des actions à mener** : les puces « Actions à mener » de chaque synthèse (locale ou IA) deviennent des actions suivies sur la fiche — case à cocher, responsable, échéance (dates françaises reconnues : « avant le 15 mars », « fin juin », « T2 2026 », « d'ici 2 semaines »…), modification par touche, ajout manuel. Une nouvelle synthèse n'écrase pas ce qui est coché ; les exports Word et PDF gagnent une section « Actions à mener » avec l'état.
 - **Synthèse IA au fil du dossier** : pour un enregistrement rattaché à un dossier, les actions encore ouvertes des enregistrements précédents sont fournies à Claude, qui signale celles traitées ou reconduites.

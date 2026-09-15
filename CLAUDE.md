@@ -24,6 +24,23 @@ messages en français.
 - **Équilibre des accolades** : sans compilateur Android, passer un vérificateur
   d'accolades sur chaque fichier `.kt` modifié avant de pousser.
 - **Jamais** désactiver la vérification TLS ni contourner le proxy.
+- **Code natif** : `whisper.cpp` est un sous-module (`app/src/main/cpp/whisper.cpp`, v1.9.4)
+  compilé par `externalNativeBuild` (CMake `app/src/main/cpp/CMakeLists.txt`, NDK r27) ;
+  le workflow `native.yml` compile la bibliothèque seule et publie `libwhisper.so` en
+  artefact. Pas de NDK en session : la CI est la seule compilation native aussi.
+  Le pont JNI émet par segment la confiance (`c`, probabilité moyenne des jetons) et la
+  probabilité de non-parole (`nsp`).
+- **Publication** : le push de tags échoue depuis la session (proxy) ; déclencher
+  `release.yml` par `workflow_dispatch` sur `main` (outil GitHub `actions_run_trigger`),
+  le workflow crée le tag et la release lui-même.
+
+## État du plan (septembre 2026)
+
+- Vague A (v0.11.0) faite sauf A5 (chaînes externalisées dans `strings.xml`) ; vague B
+  (v0.12.0) faite ; vague C : C1 (natif) et C2 (relecture assistée) faits en v0.13.0,
+  C3 (diarisation par empreintes de locuteurs) non commencée — nécessite un modèle de
+  locuteur ONNX (WeSpeaker/CAM++) inaccessible depuis la session (Hugging Face bloqué)
+  et une validation JVM avec le runtime ONNX de bureau, comme pour la VAD.
 
 ## Architecture (après la refonte v0.11.0)
 
@@ -38,6 +55,8 @@ messages en français.
   - `summary/AiAssistant` — synthèse, questions, chapitres ; appels Claude via
     `summary/ClaudeCall.kt` (`ClaudeRequest`, `ClaudeTransport`, `SdkClaudeTransport`).
   - `stt/ModelManager` — modèle Whisper actif, catalogue, téléchargements.
+  - `summary/ActionExtractor` (actions à mener), `data/ReviewMarks` (relecture assistée),
+    `ui/DossierScreen` (fiche dossier), import par lots dans le ViewModel + `RecordingService`.
   - `export/DocumentExporter`, `export/ShareComposer`.
 - Interfaces d'injection pour les tests : `KeyProvider` (clé des textes scellés),
   `WavCipher` (chiffrement des WAV), `WindowTranscriber`, `FrameVad`, `ClaudeTransport`,

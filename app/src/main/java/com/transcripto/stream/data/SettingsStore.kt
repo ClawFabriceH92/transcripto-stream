@@ -30,6 +30,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt("retention_days", 0)
         set(v) = prefs.edit().putInt("retention_days", v).apply()
 
+    // ---- Relecture assistée : la fiche s'ouvre en mode Vérification ----
+    var reviewByDefault: Boolean
+        get() = prefs.getBoolean("review_by_default", false)
+        set(v) = prefs.edit().putBoolean("review_by_default", v).apply()
+
     // ---- Rappel de sauvegarde : 0 = jamais, sinon nombre de jours entre deux sauvegardes ----
     var backupReminderDays: Int
         get() = prefs.getInt("backup_reminder_days", 0)
