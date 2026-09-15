@@ -19,9 +19,13 @@ import androidx.lifecycle.viewModelScope
 import com.transcripto.stream.RecordingService
 import com.transcripto.stream.RecordingState
 import com.transcripto.stream.audio.AudioImporter
+import com.transcripto.stream.audio.LiveSettings
+import com.transcripto.stream.audio.LiveTranscriber
 import com.transcripto.stream.audio.PcmAudioRecorder
+import com.transcripto.stream.audio.PcmDigest
+import com.transcripto.stream.audio.PitchDiarizer
 import com.transcripto.stream.audio.SileroVad
-import com.transcripto.stream.audio.SpeechGate
+import com.transcripto.stream.audio.WavPcm
 import com.transcripto.stream.audio.WavFileWriter
 import com.transcripto.stream.data.BackupCrypto
 import com.transcripto.stream.data.Chapter
@@ -47,8 +51,6 @@ import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.ModelCatalog
 import com.transcripto.stream.stt.SegmentData
-import com.transcripto.stream.stt.StreamResult
-import com.transcripto.stream.stt.VoiceCommands
 import com.transcripto.stream.summary.AiAnswer
 import com.transcripto.stream.summary.AiChaptersResult
 import com.transcripto.stream.summary.AiSummaryResult
@@ -78,18 +80,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.abs
-import kotlin.math.min
-import kotlin.math.sqrt
 
 sealed interface ModelState {
     data object Loading : ModelState
@@ -118,20 +114,9 @@ class StreamViewModel(
 
     companion object {
         private const val TAG = "StreamVM"
-        private const val SAMPLE_RATE = 16000
+        private const val SAMPLE_RATE = LiveTranscriber.SAMPLE_RATE
         private const val SEARCH_DEBOUNCE_MS = 150L
-        private const val WINDOW_SECONDS = 4
-        private const val OVERLAP_SECONDS = 1
-        private const val TICK_MS = 1000L
-        /** Cadence de vérification quand la VAD neuronale est active. */
-        private const val VAD_TICK_MS = 200L
-        /** Parole continue au-delà de cette durée : transcription partielle sans attendre la fin de phrase. */
-        private const val LONG_PHRASE_MS = 3000L
-        /** Nouvel audio minimal à la fin d'une phrase (au-delà du chevauchement déjà transcrit). */
-        private const val MIN_ENDED_MS = 250L
         private const val MODEL_ASSET = "models/ggml-base.bin"
-        private const val MIN_NEW_MS = 500L // minimum de nouvel audio pour transcrire
-        private const val VAD_THRESHOLD = 120.0 // RMS int16 : silence ~<50, parole >300 — seuil volontairement bas pour ne rien perdre
         private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         private val REC_START_END_FORMAT = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
         private val SUMMARY_DATE_FORMAT = SimpleDateFormat("d MMMM yyyy 'à' HH:mm", Locale.FRANCE)
@@ -184,17 +169,8 @@ class StreamViewModel(
     private val _selectedEngine = MutableStateFlow("google")
     val selectedEngine: StateFlow<String> = _selectedEngine.asStateFlow()
 
-    private val _liveText = MutableStateFlow("")
-    val liveText: StateFlow<String> = _liveText.asStateFlow()
-
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
-
-    private val _transcriptionCount = MutableStateFlow(0)
-    val transcriptionCount: StateFlow<Int> = _transcriptionCount.asStateFlow()
-
-    private val _lastWindowText = MutableStateFlow("")
-    val lastWindowText: StateFlow<String> = _lastWindowText.asStateFlow()
 
     private val _lastRecording = MutableStateFlow<File?>(null)
     val lastRecording: StateFlow<File?> = _lastRecording.asStateFlow()
@@ -311,48 +287,37 @@ class StreamViewModel(
     // (streaming ET transcription différée passent par ce verrou).
     private val whisperLock = Mutex()
     private val engine = WhisperStreamEngine()
+
+    /** Transcription en direct (ring buffer, VAD, fenêtres, fusion du texte) — flux relayés ci-dessous. */
+    private val transcriber = LiveTranscriber(
+        engine = { pcm, language, prompt -> engine.transcribeBuffer(pcm, language, prompt) },
+        lock = whisperLock,
+        settings = object : LiveSettings {
+            override val language: String get() = settings.language
+            override val vadSilero: Boolean get() = settings.vadSilero
+            override val dictationMode: Boolean get() = settings.dictationMode
+        },
+        vadFactory = { SileroVad.create(appContext) },
+        scope = viewModelScope,
+        onError = { _lastError.value = it },
+    )
+    val liveText: StateFlow<String> = transcriber.liveText
+    val transcriptionCount: StateFlow<Int> = transcriber.windowCount
+    val lastWindowText: StateFlow<String> = transcriber.lastWindowText
+
     private var googleEngine: GoogleSpeechEngine? = null
     private var recorder: PcmAudioRecorder? = null
     private var wavWriter: WavFileWriter? = null
-    // Empreinte SHA-256 du flux PCM, calculée au fil de l'eau sur le thread audio
-    // (valeur probante : l'empreinte est notée dans le .txt de l'enregistrement).
-    private var pcmDigest: MessageDigest? = null
-    private var digestScratch = ByteArray(0)
+    /** Empreinte SHA-256 du flux PCM (valeur probante notée dans le .txt). */
+    private var pcmDigest: PcmDigest? = null
     private var activeRecordingFile: File? = null
     private var activeStartTime: Long = 0L
-    private var streamJob: Job? = null
     private var chronoJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
     private var playbackFile: File? = null // temp décrypté en cours de lecture
     private var playbackIsTemp = false
     private var positionJob: Job? = null
     private var playbackStartJob: Job? = null
-
-    // Ring buffer (WINDOW_SECONDS + marge)
-    private val ringSize = SAMPLE_RATE * (WINDOW_SECONDS + OVERLAP_SECONDS)
-    private val ring = ShortArray(ringSize)
-    private var writePos = 0
-    private var filled = false
-    private var windowStart = 0
-    /** Position d'écriture au dernier prélèvement (-1 : aucun) : distingue l'audio neuf du chevauchement. */
-    private var lastSnapshotEnd = -1
-
-    // ---- VAD neuronale (Silero) : alimentée depuis le thread de capture ----
-    @Volatile
-    private var vad: SileroVad? = null
-    private val speechGate = SpeechGate()
-    private val vadFrame = ShortArray(SileroVad.FRAME)
-    private var vadFrameFill = 0
-    /** Une phrase vient de se terminer : transcrire sans attendre. */
-    @Volatile
-    private var phraseEnded = false
-    /** Trames de parole vues depuis le dernier prélèvement de fenêtre (thread audio ↔ boucle). */
-    private val speechFramesSinceSnapshot = AtomicInteger(0)
-    private val vadLoading = AtomicBoolean(false)
-    /** Faux dès qu'une erreur d'inférence survient pendant un enregistrement (repli RMS). */
-    @Volatile
-    private var vadHealthy = true
-    private var validatedText = ""
 
     // ---- État des modèles Whisper (déclaré AVANT init : le bloc init et
     // loadWhisperModel y accèdent — l'ordre de déclaration Kotlin est contraignant) ----
@@ -382,7 +347,7 @@ class StreamViewModel(
             // Migration interrompue par une mort du process : reprise (idempotente)
             if (settings.encryptTexts) TextVault.migrate(repo.dir, true)
         }
-        if (settings.vadSilero) loadVad()
+        if (settings.vadSilero) transcriber.loadVad()
         loadWhisperModel()
         cleanupExpired()
         refreshRecordings()
@@ -758,12 +723,7 @@ class StreamViewModel(
      */
     fun addMarker() {
         if (!_isStreaming.value) return
-        val sec = _elapsedSec.value
-        // Un seul token (pas d'espace interne) : le recoupement de fenêtres Whisper
-        // filtre les mots contenant ⭐ — un espace couperait le marqueur en deux.
-        val marker = "[⭐%02d:%02d]".format(sec / 60, sec % 60)
-        validatedText = (validatedText.trim() + " " + marker).trim()
-        _liveText.value = displayText()
+        transcriber.addMarker(_elapsedSec.value)
     }
 
     fun togglePause() {
@@ -775,17 +735,12 @@ class StreamViewModel(
             _isPaused.value = false
             RecordingState.isPaused = false
             googleEngine?.resume()
-            synchronized(ring) {
-                writePos = 0
-                filled = false
-                windowStart = 0
-                lastSnapshotEnd = -1
-            }
-            resetVadState()
+            transcriber.resume()
         } else {
             _isPaused.value = true
             RecordingState.isPaused = true
             googleEngine?.pause()
+            transcriber.pause()
         }
     }
 
@@ -817,12 +772,9 @@ class StreamViewModel(
         // Seul Whisper a besoin du modèle : Google (moteur système) fonctionne
         // dès le lancement, même pendant le chargement ou en cas d'erreur du modèle.
         if (_selectedEngine.value == "whisper" && _modelState.value !is ModelState.Ready) return
-        validatedText = ""
-        _liveText.value = ""
+        transcriber.reset()
         _fileTranscript.value = ""
         _lastError.value = null
-        _transcriptionCount.value = 0
-        _lastWindowText.value = ""
         _isPaused.value = false
         RecordingState.isActive = true
         RecordingState.isPaused = false
@@ -958,12 +910,6 @@ class StreamViewModel(
 
     /** Crée le fichier WAV + le recorder (commun aux deux moteurs). */
     private fun startAudioCapture(): Boolean {
-        writePos = 0
-        filled = false
-        windowStart = 0
-        lastSnapshotEnd = -1
-        resetVadState()
-        vadHealthy = true
         activeStartTime = System.currentTimeMillis()
 
         val recDir = repo.dir
@@ -986,11 +932,8 @@ class StreamViewModel(
         wavWriter = writer
         activeRecordingFile = recFile
         _lastRecording.value = recFile
-        pcmDigest = try {
-            MessageDigest.getInstance("SHA-256")
-        } catch (e: Exception) {
-            null
-        }
+        val digest = PcmDigest()
+        pcmDigest = digest
 
         val rec = PcmAudioRecorder(
             SAMPLE_RATE,
@@ -1017,12 +960,9 @@ class StreamViewModel(
                     }
                 }
                 writer.write(buf, n)
-                updateDigest(buf, n)
+                digest.update(buf, n)
                 // Le ring buffer ne sert qu'au moteur Whisper (transcription locale)
-                if (_selectedEngine.value == "whisper") {
-                    appendSamples(buf, n)
-                    feedVad(buf, n)
-                }
+                if (_selectedEngine.value == "whisper") transcriber.feed(buf, n)
             }
         }
         if (!rec.start()) {
@@ -1037,30 +977,11 @@ class StreamViewModel(
         return true
     }
 
-    /** Alimente l'empreinte SHA-256 du flux PCM (appelé depuis le thread audio). */
-    private fun updateDigest(buf: ShortArray, n: Int) {
-        val digest = pcmDigest ?: return
-        if (digestScratch.size < n * 2) digestScratch = ByteArray(n * 2)
-        for (i in 0 until n) {
-            val v = buf[i].toInt()
-            digestScratch[2 * i] = (v and 0xFF).toByte()
-            digestScratch[2 * i + 1] = ((v shr 8) and 0xFF).toByte()
-        }
-        digest.update(digestScratch, 0, n * 2)
-    }
-
     private fun startGoogleStreaming(): Boolean {
         val g = GoogleSpeechEngine(
             appContext,
-            onPartial = { partial ->
-                _liveText.value = displayText((validatedText + " " + partial).trim())
-            },
-            onFinal = { final ->
-                if (final.isNotEmpty() && final != validatedText) {
-                    validatedText = (validatedText + " " + final).trim()
-                }
-                _liveText.value = displayText()
-            },
+            onPartial = { partial -> transcriber.showPartial(partial) },
+            onFinal = { final -> transcriber.commitFinal(final) },
             onError = { msg -> _lastError.value = msg },
             language = settings.language,
             hints = settings.vocabularyList,
@@ -1071,57 +992,8 @@ class StreamViewModel(
     }
 
     private fun startWhisperStreaming() {
-        val prompt = settings.vocabularyList.joinToString(", ")
-        streamJob = viewModelScope.launch {
-            while (isActive) {
-                val neural = settings.vadSilero && vad != null && vadHealthy
-                // VAD neuronale : réaction rapide à la fin d'une phrase ; sinon tic d'une seconde
-                delay(if (neural) VAD_TICK_MS else TICK_MS)
-                if (transcribing || _isPaused.value) continue
-                if (neural) {
-                    // On transcrit quand une phrase vient de se terminer, ou quand la parole
-                    // continue depuis longtemps (résultat partiel) — sans prélever avant
-                    val ended = phraseEnded
-                    if (!ended && pendingNewMs() < LONG_PHRASE_MS) continue
-                    phraseEnded = false
-                    val (pcm, newMs) = snapshotNewAudio()
-                    val speechFrames = speechFramesSinceSnapshot.getAndSet(0)
-                    // Fin de phrase : on accepte une fenêtre courte, mais pas le seul chevauchement déjà transcrit
-                    if (newMs < (if (ended) MIN_ENDED_MS else MIN_NEW_MS)) continue
-                    // Aucune trame de parole dans la fenêtre : bruit ou silence, on n'envoie rien
-                    if (speechFrames == 0) continue
-                    runWindow(pcm, prompt)
-                    continue
-                }
-                val (pcm, newMs) = snapshotNewAudio()
-                if (newMs < MIN_NEW_MS) continue
-                // VAD par volume : ignore les fenêtres de silence (coupe les blancs, moins d'hallucinations)
-                if (rmsOf(pcm) < VAD_THRESHOLD) continue
-                runWindow(pcm, prompt)
-            }
-        }
+        transcriber.start(settings.vocabularyList.joinToString(", "))
     }
-
-    /** Transcrit une fenêtre audio et fusionne le résultat dans le texte en direct. */
-    private suspend fun runWindow(pcm: ByteArray, prompt: String) {
-        transcribing = true
-        val res = whisperLock.withLock {
-            engine.transcribeBuffer(pcm, settings.language, prompt)
-        }
-        transcribing = false
-        if (res.error != null) {
-            _lastError.value = res.error
-        } else {
-            _transcriptionCount.value++
-            _lastWindowText.value = res.fullText.trim()
-            if (res.fullText.isNotBlank()) {
-                mergeLive(res.fullText)
-            }
-        }
-    }
-
-    @Volatile
-    private var transcribing = false
 
     fun stopStreaming() {
         _isStreaming.value = false
@@ -1131,15 +1003,13 @@ class StreamViewModel(
         unmuteSystemSounds()
         abandonAudioFocus()
         RecordingService.stop(appContext)
-        streamJob?.cancel()
-        streamJob = null
         chronoJob?.cancel()
         chronoJob = null
         googleEngine?.stop()
         googleEngine = null
         recorder?.stop()
         recorder = null
-        releaseVadIfDisabled()
+        transcriber.stop()
         try {
             wavWriter?.close()
         } catch (_: Exception) {}
@@ -1166,22 +1036,22 @@ class StreamViewModel(
             val finalFile = _lastRecording.value ?: raw
 
             // Empreinte SHA-256 du flux PCM, finalisée à l'arrêt (recorder déjà stoppé/join)
-            val pcmHash = pcmDigest?.digest()?.joinToString("") { "%02x".format(it) }
+            val pcmHash = pcmDigest?.hex()
             pcmDigest = null
             // .txt auto à côté du WAV — rien ne se perd, même sans transcription différée
-            if (_liveText.value.isNotBlank() || pcmHash != null) {
-                writeTranscript(finalFile, _liveText.value, _elapsedSec.value * 1000, pcmHash)
+            if (liveText.value.isNotBlank() || pcmHash != null) {
+                writeTranscript(finalFile, liveText.value, _elapsedSec.value * 1000, pcmHash)
             }
             // L'encart transcription doit refléter CE fichier : consulter le détail d'un
             // autre enregistrement pendant la captation laissait ici son texte —
             // « Corriger » aurait alors écrasé le .txt tout juste écrit avec ce texte-là.
-            _fileTranscript.value = _liveText.value
+            _fileTranscript.value = liveText.value
             // Chiffrement optionnel du WAV
             _lastRecording.value = maybeEncrypt(finalFile)
             // Proposer de donner un nom (le défaut date-début-fin est déjà appliqué)
             _pendingName.value = _lastRecording.value
             _pendingNameDefault.value = defaultName
-        } else if (_selectedEngine.value == "google" && _liveText.value.isNotBlank()) {
+        } else if (_selectedEngine.value == "google" && liveText.value.isNotBlank()) {
             // Mode Google : pas de WAV (conflit micro), mais la transcription ne se perd
             // plus — sauvegardée en entrée « texte seul », visible dans la liste.
             var name = buildDefaultName(null)
@@ -1192,10 +1062,10 @@ class StreamViewModel(
                 txtFile = File(repo.dir, "$name.txt")
                 suffix++
             }
-            writeTranscript(txtFile, _liveText.value, _elapsedSec.value * 1000)
+            writeTranscript(txtFile, liveText.value, _elapsedSec.value * 1000)
             if (txtFile.exists()) {
                 _lastRecording.value = txtFile
-                _fileTranscript.value = _liveText.value
+                _fileTranscript.value = liveText.value
                 _pendingName.value = txtFile
                 _pendingNameDefault.value = name
             }
@@ -1284,7 +1154,7 @@ class StreamViewModel(
     private fun proposeSummaryIfEnabled() {
         if (!settings.proposeSummary) return
         val f = _lastRecording.value ?: return
-        if (_liveText.value.isBlank() && _fileTranscript.value.isBlank()) return
+        if (liveText.value.isBlank() && _fileTranscript.value.isBlank()) return
         _summaryProposal.value = f
     }
 
@@ -1747,7 +1617,7 @@ class StreamViewModel(
             _fileTranscript.value = ""
             val clear = withContext(Dispatchers.IO) { resolvedAudioFile(file, "_tr") }
             val pcm = if (clear != null) {
-                withContext(Dispatchers.IO) { readWavPcm(clear) }
+                withContext(Dispatchers.IO) { WavPcm.read(clear) }
             } else null
             if (clear != null && clear != file) clear.delete()
             if (pcm == null) {
@@ -1760,8 +1630,8 @@ class StreamViewModel(
                     _lastError.value = res.error
                 } else {
                     val (text, srt, segmentsJson) = withContext(Dispatchers.IO) {
-                        val shorts = byteArrayToShorts(pcm)
-                        val speakerIds = detectSpeakers(shorts, res.segments)
+                        val shorts = PitchDiarizer.toShorts(pcm)
+                        val speakerIds = PitchDiarizer.detectSpeakers(shorts, res.segments)
                         Triple(
                             repo.buildSpeakerMarkedTranscript(res, speakerIds, settings.useTimestamps),
                             TranscriptExporter.buildSrt(res.segments),
@@ -1804,29 +1674,6 @@ class StreamViewModel(
         }
     }
 
-    /**
-     * Attribue un intervenant (1 ou 2, alternance) à chaque segment via le pitch
-     * médian F0 — estimation adaptée aux entretiens à deux voix.
-     */
-    private fun detectSpeakers(shorts: ShortArray, segments: List<SegmentData>): List<Int> {
-        if (shorts.isEmpty()) return List(segments.size) { 1 }
-        val ids = ArrayList<Int>(segments.size)
-        var current = 1
-        var prevF0: Double? = null
-        for (seg in segments) {
-            val s0 = ((seg.startMs * SAMPLE_RATE) / 1000L).toInt().coerceIn(0, shorts.size - 1)
-            val s1 = ((seg.endMs * SAMPLE_RATE) / 1000L).toInt().coerceIn(s0 + 1, shorts.size)
-            val f0 = averagePitch(shorts, s0, s1)
-            if (prevF0 != null && f0 != null) {
-                val ratio = abs(f0 - prevF0) / min(f0, prevF0)
-                if (ratio > 0.20) current = if (current == 1) 2 else 1
-            }
-            prevF0 = f0 ?: prevF0
-            ids.add(current)
-        }
-        return ids
-    }
-
     // ================= PRESSE-PAPIERS + EMAIL =================
 
     fun copyText(text: String): Boolean {
@@ -1839,7 +1686,7 @@ class StreamViewModel(
     /** Intent de partage pour le dernier enregistrement : texte + .txt + audio + .srt. */
     suspend fun buildEmailIntent(): Intent? = withContext(Dispatchers.IO) {
         val file = _lastRecording.value ?: return@withContext null
-        buildShareIntent(file, _fileTranscript.value.ifBlank { _liveText.value })
+        buildShareIntent(file, _fileTranscript.value.ifBlank { liveText.value })
     }
 
     /** Partage direct d'un élément de la liste, sans passer par l'écran principal. */
@@ -1979,7 +1826,7 @@ class StreamViewModel(
                 _lastRecording.value = file
                 activeRecordingFile = null
                 _fileTranscript.value = ""
-                _liveText.value = ""
+                transcriber.clearText()
                 _uiMessage.value =
                     "« ${RecordingNames.baseName(file.name)} » importé — appuie sur Transcrire"
                 refreshRecordings()
@@ -2575,254 +2422,11 @@ class StreamViewModel(
         }
     }
 
-    // ================= RING BUFFER + VAD =================
-
-    private fun appendSamples(buf: ShortArray, n: Int) {
-        synchronized(ring) {
-            var i = 0
-            while (i < n) {
-                ring[writePos] = buf[i]
-                writePos = (writePos + 1) % ring.size
-                if (writePos == 0) filled = true
-                i++
-            }
-        }
-    }
-
-    /** Audio NEUF depuis le dernier prélèvement (hors chevauchement), sans le prélever (ms). */
-    private fun pendingNewMs(): Long {
-        synchronized(ring) {
-            return (freshSamples() * 1000L) / SAMPLE_RATE
-        }
-    }
-
-    /** Échantillons écrits depuis le dernier prélèvement (tout le tampon s'il n'y en a pas eu). */
-    private fun freshSamples(): Int {
-        val end = writePos
-        if (lastSnapshotEnd < 0) {
-            val len = (end - windowStart + ring.size) % ring.size
-            return if (len == 0 && filled) ring.size else len
-        }
-        var fresh = (end - lastSnapshotEnd + ring.size) % ring.size
-        if (fresh == 0 && filled && end != lastSnapshotEnd) fresh = ring.size
-        return fresh.coerceAtMost(ring.size)
-    }
-
-    /**
-     * Découpe le flux en trames de 512 échantillons pour la VAD neuronale et met à jour
-     * la machine à états (thread de capture). Une erreur d'inférence désactive la VAD
-     * jusqu'au prochain enregistrement : la boucle repasse au seuil de volume.
-     */
-    private fun feedVad(buf: ShortArray, n: Int) {
-        val v = vad ?: return
-        if (!vadHealthy || !settings.vadSilero) return
-        var i = 0
-        try {
-            while (i < n) {
-                val take = minOf(n - i, SileroVad.FRAME - vadFrameFill)
-                System.arraycopy(buf, i, vadFrame, vadFrameFill, take)
-                vadFrameFill += take
-                i += take
-                if (vadFrameFill == SileroVad.FRAME) {
-                    vadFrameFill = 0
-                    val p = v.process(vadFrame)
-                    if (p >= 0.5f) speechFramesSinceSnapshot.incrementAndGet()
-                    if (speechGate.feed(p, SileroVad.FRAME_MS) == SpeechGate.Event.SPEECH_END) phraseEnded = true
-                }
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "VAD : ${t.message} — repli sur le seuil de volume")
-            vadHealthy = false
-        }
-    }
-
-    /** Charge le modèle Silero hors du thread principal ; sans effet s'il est déjà chargé ou en cours. */
-    private fun loadVad() {
-        if (vad != null || !vadLoading.compareAndSet(false, true)) return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val v = SileroVad.create(appContext)
-                if (v != null && vad == null && settings.vadSilero) vad = v else v?.close()
-            } finally {
-                vadLoading.set(false)
-            }
-        }
-    }
-
-    /** État de la VAD remis à zéro (début d'enregistrement, reprise après pause). */
-    private fun resetVadState() {
-        speechGate.reset()
-        vadFrameFill = 0
-        phraseEnded = false
-        speechFramesSinceSnapshot.set(0)
-        vad?.reset()
-    }
-
-    /** Ferme la VAD si le réglage a été désactivé pendant un enregistrement. */
-    private fun releaseVadIfDisabled() {
-        if (!settings.vadSilero) {
-            vad?.close()
-            vad = null
-        }
-    }
+    // ================= VAD =================
 
     fun setVadSilero(enabled: Boolean) {
         settings.vadSilero = enabled
-        if (enabled) {
-            loadVad()
-        } else if (!_isStreaming.value) {
-            // Pendant un enregistrement, la boucle et feedVad ignorent déjà la VAD (réglage lu à
-            // chaque tic) ; l'instance est fermée à l'arrêt
-            vad?.close()
-            vad = null
-        }
-    }
-
-    private fun snapshotNewAudio(): Pair<ByteArray, Long> {
-        synchronized(ring) {
-            val end = writePos
-            var start = windowStart
-            var len = (end - start + ring.size) % ring.size
-            if (len == 0 && filled) len = ring.size
-            if (len == 0) return ByteArray(0) to 0L
-
-            val out = ShortArray(len)
-            for (i in 0 until len) {
-                out[i] = ring[(start + i) % ring.size]
-            }
-            val bytes = ByteArray(len * 2)
-            for (i in 0 until len) {
-                val v = out[i].toInt()
-                bytes[2 * i] = (v and 0xFF).toByte()
-                bytes[2 * i + 1] = ((v shr 8) and 0xFF).toByte()
-            }
-            // Durée renvoyée = audio neuf (hors chevauchement déjà transcrit)
-            val newMs = (freshSamples().coerceAtMost(len) * 1000L) / SAMPLE_RATE
-            val overlap = SAMPLE_RATE * OVERLAP_SECONDS
-            windowStart = if (!filled) {
-                maxOf(0, end - overlap)
-            } else {
-                (end - overlap + ring.size) % ring.size
-            }
-            lastSnapshotEnd = end
-            return bytes to newMs
-        }
-    }
-
-    /** RMS d'un buffer PCM int16 — utilisé par la VAD. */
-    private fun rmsOf(pcm: ByteArray): Double {
-        if (pcm.size < 2) return 0.0
-        var sum = 0.0
-        var n = 0
-        var i = 0
-        while (i + 1 < pcm.size) {
-            val v = ((pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)).toShort().toDouble()
-            sum += v * v
-            n++
-            i += 2
-        }
-        if (n == 0) return 0.0
-        return sqrt(sum / n)
-    }
-
-    private fun mergeLive(full: String) {
-        val cleaned = full.trim()
-        // Les marqueurs [⭐ mm:ss] ne viennent pas de Whisper : on les exclut du
-        // suffixe de recoupement, sinon plus rien ne matche et le texte se duplique.
-        val words = validatedText.split(" ").filter { it.isNotBlank() && !it.contains("⭐") }
-        var matched = 0
-        val maxMatch = minOf(words.size, 8)
-        for (n in maxMatch downTo 1) {
-            val suffix = words.takeLast(n).joinToString(" ")
-            if (suffix.isNotBlank() && cleaned.startsWith(suffix)) {
-                matched = suffix.length
-                break
-            }
-        }
-        val extra = if (matched > 0) cleaned.substring(matched).trim() else cleaned
-        if (extra.isNotEmpty()) {
-            // validatedText reste BRUT : le recoupement ci-dessus compare aux mots
-            // exacts sortis de Whisper — stocker du texte transformé par la dictée
-            // casserait le suffixe et dupliquerait le texte à chaque fenêtre.
-            validatedText = (validatedText.trim() + " " + extra).trim()
-            _liveText.value = displayText()
-        }
-    }
-
-    /** Texte affiché/sauvegardé : les commandes de dictée ne s'appliquent qu'en sortie. */
-    private fun displayText(raw: String = validatedText): String =
-        if (settings.dictationMode) VoiceCommands.apply(raw) else raw
-
-    // ================= PITCH (diarisation approximative) =================
-
-    private fun byteArrayToShorts(bytes: ByteArray): ShortArray {
-        val n = bytes.size / 2
-        val out = ShortArray(n)
-        for (i in 0 until n) {
-            out[i] = ((bytes[2 * i].toInt() and 0xFF) or (bytes[2 * i + 1].toInt() shl 8)).toShort()
-        }
-        return out
-    }
-
-    private fun averagePitch(pcm: ShortArray, start: Int, end: Int): Double? {
-        val win = 480
-        val hop = 240
-        val pitches = mutableListOf<Double>()
-        var s = start
-        while (s + win < end) {
-            val f0 = f0Window(pcm, s, win)
-            if (f0 != null && f0 in 60.0..300.0) pitches.add(f0)
-            s += hop
-        }
-        if (pitches.size < 3) return null
-        pitches.sort()
-        return pitches[pitches.size / 2]
-    }
-
-    private fun f0Window(pcm: ShortArray, offset: Int, len: Int): Double? {
-        var bestLag = -1
-        var bestScore = 0.0
-        var energy = 0.0
-        for (i in 0 until len) {
-            val v = pcm[offset + i].toDouble()
-            energy += v * v
-        }
-        if (energy < 1e6) return null
-        for (lag in 40..267) {
-            var score = 0.0
-            for (i in 0 until len - lag) {
-                score += pcm[offset + i].toDouble() * pcm[offset + i + lag].toDouble()
-            }
-            score /= (len - lag)
-            if (score > bestScore) {
-                bestScore = score
-                bestLag = lag
-            }
-        }
-        if (bestLag <= 0 || bestScore <= 0) return null
-        return SAMPLE_RATE.toDouble() / bestLag
-    }
-
-    private fun readWavPcm(file: File): ByteArray? {
-        return try {
-            val bytes = file.readBytes()
-            var idx = 12
-            while (idx + 8 <= bytes.size) {
-                val id = String(bytes, idx, 4)
-                val size = (bytes[idx + 4].toInt() and 0xFF) or
-                    ((bytes[idx + 5].toInt() and 0xFF) shl 8) or
-                    ((bytes[idx + 6].toInt() and 0xFF) shl 16) or
-                    ((bytes[idx + 7].toInt() and 0xFF) shl 24)
-                if (id == "data") {
-                    return bytes.copyOfRange(idx + 8, minOf(idx + 8 + size, bytes.size))
-                }
-                idx += 8 + size
-            }
-            // Filet de sécurité : pas de chunk "data" trouvé → PCM brut après un header de 44 octets
-            if (bytes.size > 44) bytes.copyOfRange(44, bytes.size) else null
-        } catch (e: Exception) {
-            null
-        }
+        transcriber.setVadEnabled(enabled, _isStreaming.value)
     }
 
     // ================= MODÈLE =================
@@ -2861,6 +2465,7 @@ class StreamViewModel(
 
     override fun onCleared() {
         stopStreaming()
+        transcriber.close()
         stopPlayback()
         viewModelScope.launch {
             engine.unloadModel()

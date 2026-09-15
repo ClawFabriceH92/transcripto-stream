@@ -25,7 +25,7 @@ class SileroVad private constructor(
     private val env: OrtEnvironment,
     private val session: OrtSession,
     private val scalarSampleRate: Boolean,
-) : AutoCloseable {
+) : FrameVad {
 
     private val context = FloatArray(CONTEXT)
     private val inputBuf: FloatBuffer = ByteBuffer.allocateDirect((CONTEXT + FRAME) * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -39,7 +39,7 @@ class SileroVad private constructor(
     private var closed = false
 
     /** Remet à zéro l'état récurrent (à chaque nouvel enregistrement). */
-    fun reset() {
+    override fun reset() {
         synchronized(lock) {
             context.fill(0f)
             for (i in 0 until 2 * 128) stateBuf.put(i, 0f)
@@ -50,7 +50,7 @@ class SileroVad private constructor(
      * Probabilité de parole (0..1) pour [frame] : exactement [FRAME] échantillons int16.
      * Appel bloquant d'environ une milliseconde.
      */
-    fun process(frame: ShortArray, offset: Int = 0): Float {
+    override fun process(frame: ShortArray, offset: Int): Float {
         synchronized(lock) {
             check(!closed) { "VAD fermée" }
             for (i in 0 until CONTEXT) inputBuf.put(i, context[i])
@@ -95,9 +95,8 @@ class SileroVad private constructor(
     companion object {
         private const val TAG = "SileroVad"
         const val SAMPLE_RATE = 16_000
-        /** Taille de trame du modèle à 16 kHz. */
-        const val FRAME = 512
-        const val FRAME_MS = 32
+        const val FRAME = FrameVad.FRAME
+        const val FRAME_MS = FrameVad.FRAME_MS
         private const val CONTEXT = 64
         private const val ASSET = "vad/silero_vad.onnx"
 
