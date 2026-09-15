@@ -25,6 +25,9 @@ data class RecordingItem(
     val openActionCount: Int get() = actions.count { !it.done }
 }
 
+/** Une action ouverte d'un dossier, avec l'enregistrement qui la porte. */
+data class DossierAction(val file: File, val baseName: String, val action: ActionItem)
+
 /** Résultat d'une correction manuelle de la transcription. */
 data class EditOutcome(
     /** Faux si le scellement demandé a échoué (texte conservé en clair). */

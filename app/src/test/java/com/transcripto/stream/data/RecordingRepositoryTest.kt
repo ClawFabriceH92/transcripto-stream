@@ -267,8 +267,9 @@ class RecordingRepositoryTest {
         repo.updateMeta(b) { it.copy(dossier = "sarl x", actions = listOf(ActionItem("3", "Trois"))) }
         repo.updateMeta(c) { it.copy(dossier = "SARL X", actions = listOf(ActionItem("4", "Quatre"))) }
         repo.updateMeta(other) { it.copy(dossier = "Autre", actions = listOf(ActionItem("5", "Cinq"))) }
-        assertEquals(listOf("c" to "Quatre", "b" to "Trois", "a" to "Une"), repo.openActionsInDossier("SARL X").map { it.first to it.second.text })
-        assertEquals(listOf("c" to "Quatre", "a" to "Une"), repo.openActionsInDossier("SARL X", except = b).map { it.first to it.second.text })
+        assertEquals(listOf("c" to "Quatre", "b" to "Trois", "a" to "Une"), repo.openActionsInDossier("SARL X").map { it.baseName to it.action.text })
+        assertEquals(listOf("c" to "Quatre", "a" to "Une"), repo.openActionsInDossier("SARL X", except = b).map { it.baseName to it.action.text })
+        assertEquals(a, repo.openActionsInDossier("SARL X").last().file)
         assertTrue(repo.openActionsInDossier("").isEmpty())
         assertTrue(repo.openActionsInDossier("Inconnu").isEmpty())
         assertEquals(1, repo.item(a).openActionCount)

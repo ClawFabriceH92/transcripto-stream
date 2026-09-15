@@ -1224,9 +1224,18 @@ class StreamViewModel(
         }
     }
 
+    /** Supprime une action ; sa clé est mémorisée pour qu'une nouvelle synthèse ne la recrée pas. */
     fun deleteAction(file: File, id: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repo.updateMeta(file) { m -> m.copy(actions = m.actions.filter { it.id != id }) } }
+            withContext(Dispatchers.IO) {
+                repo.updateMeta(file) { m ->
+                    val removed = m.actions.firstOrNull { it.id == id }
+                    m.copy(
+                        actions = m.actions.filter { it.id != id },
+                        dismissedActions = if (removed == null) m.dismissedActions else (m.dismissedActions + ActionExtractor.key(removed.text)).distinct(),
+                    )
+                }
+            }
             refreshRecordings()
         }
     }
@@ -1487,6 +1496,7 @@ class StreamViewModel(
                     _batch.value = BatchProgress(i, uris.size, BatchState.label, false)
                     _importProgress.value = 0f
                     val r = withContext(Dispatchers.IO) { transfer.import(uri) { p -> _importProgress.value = p } }
+                    _importProgress.value = null // la suite (transcription, synthèse) n'est pas un décodage
                     val file = r.file
                     if (file == null) {
                         errors += "fichier ${i + 1} : ${r.error ?: "import impossible"}"

@@ -109,6 +109,15 @@ class AiAssistantTest {
         assertTrue(ctx, ctx.contains("Actions encore ouvertes dans ce dossier"))
         assertTrue(ctx, ctx.contains("- Obtenir l'attestation bancaire (Mme Durand), échéance fin juin — Precedente"))
         assertFalse(ctx, ctx.contains("Déjà faite"))
+        // Le modèle signale une action du dossier comme traitée : cochée sur son enregistrement d'origine,
+        // pas de doublon local ; une action reconduite n'est pas dupliquée non plus
+        transport.reply = { ClaudeText("## Actions à mener\n- Mme Durand — obtenir l'attestation bancaire — traitée\n- Nouvelle action locale\n- Relancer la banque (reconduite)", "claude-opus-5", "end_turn", 1, 1) }
+        ai.summarize(file)
+        assertTrue(repo.readMeta(other).actions.first { it.id == "p1" }.done)
+        val mine = repo.readMeta(file).actions
+        assertTrue(mine.none { it.text.contains("attestation", ignoreCase = true) })
+        assertEquals(1, mine.count { it.text == "Nouvelle action locale" })
+        assertEquals(1, mine.count { it.text == "Relancer la banque" })
 
         // Refus des filtres : synthèse locale à la place, noms appliqués, pas de mention IA
         transport.reply = { throw ClaudeRefusal() }

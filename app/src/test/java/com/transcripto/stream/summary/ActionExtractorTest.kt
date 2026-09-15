@@ -51,12 +51,25 @@ class ActionExtractorTest {
         assertTrue(actions.all { it.id.isNotBlank() && it.createdAt == ref && !it.done })
         // Doublon replié (accents/casse ignorés) écarté ; hors rubrique ignoré
         assertTrue(ActionExtractor.extract("## Décisions\n- Envoyer la convention", ref).isEmpty())
+        // Statuts signalés par le modèle sur des actions déjà suivies
+        val statused = ActionExtractor.extract(
+            "## Actions à mener\n- Mme Durand — obtenir l'attestation bancaire — traitée\n- Obtenir le PV signé (reconduite)\n- Relancer le client — fin octobre — faite\n- Vérifier les stocks (en cours)",
+            ref,
+        )
+        assertEquals(listOf("obtenir l'attestation bancaire", "Obtenir le PV signé", "Relancer le client", "Vérifier les stocks"), statused.map { it.text })
+        assertEquals(listOf(true, false, true, false), statused.map { it.done })
+        assertEquals("Mme Durand", statused[0].owner)
+        assertEquals("", statused[0].dueLabel)
+        assertEquals("fin octobre", statused[2].dueLabel)
     }
 
     @Test
     fun recognisesFrenchDeadlines() {
         fun due(s: String) = ActionExtractor.findDue(s, ref)
         assertEquals(day(2027, Calendar.MARCH, 15), due("avant le 15 mars")!!.at) // mars déjà passé → année suivante
+        assertEquals(day(2027, Calendar.JULY, 15), due("avant le 15 juillet")!!.at) // « juil » ≠ « juin »
+        assertEquals(day(2027, Calendar.JULY, 1), due("le 1er juil.")!!.at)
+        assertEquals(day(2027, Calendar.JUNE, 3), due("le 3 juin")!!.at)
         assertEquals(day(2026, Calendar.OCTOBER, 1), due("pour le 1er octobre")!!.at)
         assertEquals(day(2026, Calendar.SEPTEMBER, 20), due("le 20 sept. au plus tard")!!.at)
         assertEquals(day(2026, Calendar.DECEMBER, 31), due("fin décembre")!!.at)
@@ -91,6 +104,10 @@ class ActionExtractorTest {
         assertEquals(listOf("1", "2", "y"), merged.map { it.id })
         assertTrue(merged[0].done)
         assertEquals("M. Martin", merged[0].owner)
+        // Action supprimée à la main : sa clé l'empêche de revenir ; « traitée » coche l'existante
+        val again = ActionExtractor.merge(tracked, listOf(ActionItem("z", "Préparer les pièces"), ActionItem("w", "relancer la banque", done = true)), dismissed = listOf("preparer les pieces"))
+        assertEquals(listOf("1", "2"), again.map { it.id })
+        assertTrue(again[1].done)
         // Codec .meta
         val meta = RecordingMeta(actions = merged)
         val back = MetaCodec.fromJson(MetaCodec.toJson(meta))

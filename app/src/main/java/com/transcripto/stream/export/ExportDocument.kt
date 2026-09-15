@@ -125,8 +125,8 @@ object ExportComposer {
             out += DocBlock.PageBreak
             out += DocBlock.Heading(1, "${i + 1}. ${r.title.ifBlank { "Enregistrement" }}")
             out += coverMeta(r)
-            out += summaryBlocks(r)
-            out += actionBlocks(r)
+            out += summaryBlocks(r, level = 2)
+            out += actionBlocks(r, level = 2)
             if (d.includeTranscripts) {
                 out += DocBlock.Heading(2, "Transcription")
                 out += transcriptBlocks(r, chapterLevel = 3)
@@ -160,16 +160,16 @@ object ExportComposer {
         }
     )
 
-    private fun summaryBlocks(doc: ExportDocument): List<DocBlock> {
+    private fun summaryBlocks(doc: ExportDocument, level: Int = 1): List<DocBlock> {
         val summary = doc.summaryMarkdown?.trim().orEmpty()
         if (summary.isEmpty()) return emptyList()
         val out = ArrayList<DocBlock>()
-        out += DocBlock.Heading(1, "Synthèse")
+        out += DocBlock.Heading(level, "Synthèse")
         for (block in MarkdownLite.parse(summary)) {
             when (block) {
                 // Le titre de niveau 1 de la synthèse (« # Synthèse — … ») fait doublon
                 is MdBlock.Heading -> if (block.level > 1) {
-                    out += DocBlock.Heading(block.level.coerceIn(2, 3), block.text)
+                    out += DocBlock.Heading(block.level.coerceIn(level + 1, 3), block.text)
                 }
                 is MdBlock.Bullet -> out += DocBlock.Para(MarkdownLite.spans(block.text), bullet = true)
                 is MdBlock.Paragraph -> out += DocBlock.Para(MarkdownLite.spans(block.text))
@@ -179,10 +179,10 @@ object ExportComposer {
         return out
     }
 
-    private fun actionBlocks(doc: ExportDocument): List<DocBlock> {
+    private fun actionBlocks(doc: ExportDocument, level: Int = 1): List<DocBlock> {
         if (doc.actions.isEmpty()) return emptyList()
         val out = ArrayList<DocBlock>()
-        out += DocBlock.Heading(1, "Actions à mener")
+        out += DocBlock.Heading(level, "Actions à mener")
         val open = doc.actions.count { !it.done }
         out += DocBlock.Meta("Suivi", "$open à faire sur ${doc.actions.size}")
         for (a in doc.actions) {

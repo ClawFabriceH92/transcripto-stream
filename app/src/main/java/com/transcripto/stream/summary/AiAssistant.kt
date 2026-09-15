@@ -1,5 +1,6 @@
 package com.transcripto.stream.summary
 
+import com.transcripto.stream.data.ActionItem
 import com.transcripto.stream.data.RecordingNames
 import com.transcripto.stream.data.RecordingRepository
 import com.transcripto.stream.data.SpeakerNames
@@ -75,12 +76,13 @@ class AiAssistant(
             // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
             val named = input.copy(transcript = SpeakerNames.apply(text, names))
             // Actions encore ouvertes du dossier : le modèle signale celles traitées ou reconduites
-            val open = repo.openActionsInDossier(meta.dossier, except = file).map { (base, a) ->
+            val open = repo.openActionsInDossier(meta.dossier, except = file).map { d ->
+                val a = d.action
                 buildString {
                     append(a.text)
                     if (a.owner.isNotBlank()) append(" (").append(a.owner).append(')')
                     if (a.dueLabel.isNotBlank()) append(", échéance ").append(a.dueLabel)
-                    append(" — ").append(base)
+                    append(" — ").append(d.baseName)
                 }
             }
             when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template, transport, open)) {
@@ -99,7 +101,20 @@ class AiAssistant(
             // celles déjà suivies gardent leur état, les nouvelles s'ajoutent
             val extracted = ActionExtractor.extract(markdown, file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis())
             if (extracted.isNotEmpty()) {
-                repo.updateMeta(file) { it.copy(actions = ActionExtractor.merge(it.actions, extracted)) }
+                // Actions déjà suivies ailleurs dans le dossier : « traitée » les coche sur leur
+                // enregistrement d'origine, « reconduite » (ou simple rappel) ne crée pas de doublon
+                val dossierOpen = repo.openActionsInDossier(meta.dossier, except = file)
+                    .associateBy { ActionExtractor.key(it.action.text) }
+                val local = ArrayList<ActionItem>()
+                for (a in extracted) {
+                    val source = dossierOpen[ActionExtractor.key(a.text)]
+                    if (source == null) {
+                        local += a
+                    } else if (a.done) {
+                        repo.updateMeta(source.file) { m -> m.copy(actions = m.actions.map { if (it.id == source.action.id) it.copy(done = true) else it }) }
+                    }
+                }
+                repo.updateMeta(file) { it.copy(actions = ActionExtractor.merge(it.actions, local, it.dismissedActions)) }
             }
             when {
                 failure != null -> "$failure — synthèse locale générée à la place"
