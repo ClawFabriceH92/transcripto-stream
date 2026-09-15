@@ -40,12 +40,8 @@ import com.transcripto.stream.data.SearchHit
 import com.transcripto.stream.data.SearchIndex
 import com.transcripto.stream.data.SettingsStore
 import com.transcripto.stream.data.TextVault
-import com.transcripto.stream.export.DocxWriter
-import com.transcripto.stream.export.ExportComposer
-import com.transcripto.stream.export.ExportDocument
+import com.transcripto.stream.export.DocumentExporter
 import com.transcripto.stream.export.ExportFormat
-import com.transcripto.stream.export.ExportSegment
-import com.transcripto.stream.export.PdfWriter
 import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.GoogleSpeechEngine
 import com.transcripto.stream.stt.ModelManager
@@ -56,7 +52,6 @@ import com.transcripto.stream.summary.AiAssistant
 import com.transcripto.stream.summary.AiSettings
 import com.transcripto.stream.summary.MarkdownLite
 import com.transcripto.stream.summary.QaTurn
-import com.transcripto.stream.summary.SummaryTemplates
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -99,7 +94,6 @@ class StreamViewModel(
         private const val SEARCH_DEBOUNCE_MS = 150L
         private val REC_DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         private val REC_START_END_FORMAT = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
-        private val SUMMARY_DATE_FORMAT = SimpleDateFormat("d MMMM yyyy 'à' HH:mm", Locale.FRANCE)
     }
 
     val settings = SettingsStore(appContext)
@@ -109,6 +103,16 @@ class StreamViewModel(
 
     /** Archive chiffrée par phrase de passe (export/restauration). */
     private val backup = BackupManager(repo, appContext.cacheDir, CryptoManager) { settings.encryptWav }
+
+    /** Document Word/PDF d'un enregistrement (page de garde, synthèse, transcription). */
+    private val documents = DocumentExporter(
+        repo,
+        appVersion = try {
+            appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName ?: ""
+        } catch (e: Exception) {
+            ""
+        },
+    ) { settings.useTimestamps }
 
     /** Synthèse, questions et chapitres (Claude ou repli local), lecture/écriture des fichiers. */
     private val ai = AiAssistant(
@@ -1551,36 +1555,6 @@ class StreamViewModel(
 
     // ================= EXPORTS STRUCTURÉS (WORD, PDF) =================
 
-    /** Assemble le document d'un enregistrement : page de garde, synthèse, transcription (I/O). */
-    private fun buildExportDocument(file: File): ExportDocument {
-        val meta = repo.readMeta(file)
-        val content = repo.readTranscript(file) ?: ""
-        val raw = RecordingRepository.bodyOf(content)
-        val segments = repo.readSegments(file).map { ExportSegment(it.speaker, it.startMs, it.endMs, it.text) }
-        val version = try {
-            appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName ?: ""
-        } catch (e: Exception) {
-            ""
-        }
-        return ExportDocument(
-            title = RecordingNames.baseName(file.name),
-            dateLabel = SUMMARY_DATE_FORMAT.format(Date(file.lastModified())),
-            durationMs = repo.durationMsOf(file),
-            dossier = meta.dossier,
-            missionLabel = SummaryTemplates.ALL.firstOrNull { it.id == meta.template }?.label ?: "",
-            speakerNames = meta.speakers,
-            sha256 = RecordingRepository.HASH_LINE.find(content)?.groupValues?.get(1),
-            encrypted = file.name.endsWith(".enc"),
-            summaryMarkdown = readSummary(file),
-            segments = segments,
-            chapters = meta.chapters,
-            transcriptText = SpeakerNames.apply(raw, meta.speakers),
-            timestamps = if (raw.isEmpty()) settings.useTimestamps else RecordingRepository.CLOCK_TAG.containsMatchIn(raw),
-            appVersion = version,
-            generatedLabel = SUMMARY_DATE_FORMAT.format(Date()),
-        )
-    }
-
     /** Écrit le document Word ou PDF de [file] dans [destUri] (emplacement choisi via SAF). */
     fun exportDocument(file: File, destUri: Uri, format: ExportFormat) {
         if (_isTranscribingFile.value) {
@@ -1590,25 +1564,12 @@ class StreamViewModel(
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 try {
-                    val doc = buildExportDocument(file)
-                    val blocks = ExportComposer.compose(doc)
                     val out = try {
                         appContext.contentResolver.openOutputStream(destUri, "wt")
                     } catch (e: Exception) {
                         appContext.contentResolver.openOutputStream(destUri)
                     } ?: return@withContext false
-                    out.use { o ->
-                        when (format) {
-                            ExportFormat.DOCX -> o.write(DocxWriter.write(blocks, doc.title))
-                            ExportFormat.PDF -> PdfWriter.write(
-                                blocks,
-                                o,
-                                footer = "Transcripto Stream" +
-                                    (if (doc.appVersion.isNotBlank()) " v${doc.appVersion}" else "") +
-                                    " · ${doc.title}",
-                            )
-                        }
-                    }
+                    documents.write(file, out, format)
                     true
                 } catch (e: Exception) {
                     Log.e(TAG, "exportDocument: ${e.message}")
