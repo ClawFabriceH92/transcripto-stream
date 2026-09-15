@@ -83,6 +83,8 @@ android {
         // Les tests JVM traversent des chemins qui journalisent (android.util.Log) :
         // valeurs par défaut plutôt que « Method not mocked »
         unitTests.isReturnDefaultValues = true
+        // Robolectric : ressources et manifeste disponibles aux tests qui en ont besoin
+        unitTests.isIncludeAndroidResources = true
     }
 
     packaging {
@@ -123,4 +125,7 @@ dependencies {
     implementation("com.anthropic:anthropic-java:2.62.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    // Parties Android testées en JVM (journal des plantages, contexte applicatif)
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("androidx.test:core:1.6.1")
 }
