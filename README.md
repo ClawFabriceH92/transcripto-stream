@@ -109,10 +109,11 @@ app/src/main/
 
 `whisper.cpp` est un sous-module git (`app/src/main/cpp/whisper.cpp`, épinglé sur v1.9.4) compilé par Gradle
 (`externalNativeBuild`, NDK r27, CMake 3.22) avec le pont JNI dans une seule `libwhisper.so`
-(arm64-v8a, `armv8.2-a+dotprod+fp16`, sans OpenMP, pages de 16 Ko). Après un clone :
+(arm64-v8a, socle `armv8-a`, sans OpenMP, pages de 16 Ko). Après un clone :
 
 ```bash
 git submodule update --init --recursive
+rm -rf app/src/main/jniLibs   # anciens binaires pré-compilés d'un clone antérieur : ils feraient doublon
 ```
 
 Le workflow `.github/workflows/native.yml` compile la bibliothèque seule (artefact `libwhisper.so`) à chaque

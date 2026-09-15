@@ -112,9 +112,8 @@ Java_com_transcripto_stream_stt_WhisperStreamEngine_nativeTranscribeBuffer(
     wparams.language = (lang_copy == "auto" || lang_copy == "auto-detect") ? nullptr : lang;
     wparams.n_threads = std::max(1, std::min(4, static_cast<int>(std::thread::hardware_concurrency())));
     wparams.initial_prompt = effective_prompt;
-    // Direct et différé : pas de montée de température (latence stable), blancs supprimés,
-    // seuil de non-parole pour ne pas inventer de texte sur du silence
-    wparams.temperature_inc = 0.0f;
+    // La montée de température par défaut (0,2) reste active : c'est elle qui sort le
+    // décodeur des boucles de répétition ; blancs supprimés, seuil de non-parole explicite
     wparams.suppress_blank = true;
     wparams.no_speech_thold = 0.6f;
 

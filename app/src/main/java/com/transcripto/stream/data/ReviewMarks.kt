@@ -15,9 +15,9 @@ object ReviewMarks {
     private const val MONTHS = "janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre"
     private val FIGURE = Regex(
         // montants et pourcentages : 12 000 €, 12.000,50 euros, 3,5 %, 2 M€, 150 k€
-        "\\d(?:[\\d\\u00a0\\u202f ]*\\d)?(?:[.,]\\d+)?\\s?(?:%|€|k€|M€|euros?|millions?|milliers?)" +
-            // dates numériques : 15/03, 15/03/2026, 15.03.2026
-            "|\\b\\d{1,2}[./]\\d{1,2}(?:[./]\\d{2,4})?\\b" +
+        "(?:\\d{1,3}(?:[.\\u00a0\\u202f ]\\d{3})+(?:,\\d+)?|\\d+(?:[.,]\\d+)?)\\s?(?:%|€|k€|M€|euros?|millions?|milliers?)" +
+            // dates numériques : 15/03, 15/03/2026, 15.03.2026 (jamais « 2.3 » d'un numéro de version)
+            "|\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\b|\\b\\d{1,2}\\.\\d{1,2}\\.\\d{2,4}\\b" +
             // dates en lettres : 15 mars, 1er juillet 2026, mars 2026
             "|\\b(?:\\d{1,2}(?:er)?\\s+)?(?:$MONTHS)(?:\\s+\\d{4})?\\b" +
             // trimestres et exercices : T2 2026, exercice 2025

@@ -48,13 +48,14 @@ jobs:
       - name: Vérifier la signature et la bibliothèque native
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
-          unzip -l "$APK" | grep -E "lib/arm64-v8a/|assets/models/" || true
-          unzip -l "$APK" | grep -q "lib/arm64-v8a/libwhisper.so" || { echo "::error::libwhisper.so absente de l'APK"; exit 1; }
           if [ ! -f "$APK" ]; then
             echo "::error::app-release.apk absent — APK non signé. Vérifie les secrets TRANSCRIPTO_STREAM_KEYSTORE_*."
             ls app/build/outputs/apk/release/
             exit 1
           fi
+          unzip -l "$APK" | grep -E "lib/arm64-v8a/|assets/models/" || true
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libwhisper.so" || { echo "::error::libwhisper.so absente de l'APK"; exit 1; }
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libc++_shared.so" || { echo "::error::libc++_shared.so absente de l'APK"; exit 1; }
           BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
           "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs "$APK"
 

@@ -53,7 +53,9 @@ class RecordingRepository(private val root: File) {
                     .replace(PAUSE_TAG, " ")
                     .trim()
                 if (chunk.isEmpty()) return null
-                out += segments[i].copy(text = chunk)
+                // Un passage relu à la main n'est plus « à vérifier » : sa confiance est effacée
+                val unchanged = chunk == segments[i].text.trim()
+                out += segments[i].copy(text = chunk, confidence = if (unchanged) segments[i].confidence else -1f)
             }
             return out
         }
@@ -346,7 +348,8 @@ class RecordingRepository(private val root: File) {
                 null
             } else {
                 val oldText = segs[index].text.trim()
-                segs[index] = segs[index].copy(text = cleaned)
+                // Corrigé à la main : la confiance du moteur ne s'applique plus à ce passage
+                segs[index] = segs[index].copy(text = cleaned, confidence = -1f)
                 TextVault.write(json, SegmentsCodec.toJsonStored(segs))
                 val data = segs.map { SegmentData(it.text, it.startMs, it.endMs) }
                 val body = transcriptBody(file)

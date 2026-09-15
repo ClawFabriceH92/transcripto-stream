@@ -92,11 +92,6 @@ android {
         compose = true
     }
 
-    sourceSets {
-        getByName("main") {
-            jniLibs.srcDirs("src/main/jniLibs")
-        }
-    }
 
     testOptions {
         // Les tests JVM traversent des chemins qui journalisent (android.util.Log) :

@@ -19,8 +19,11 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 if(ANDROID_ABI STREQUAL "arm64-v8a")
-    # Couvert par tous les téléphones Android 10 et plus ; i8mm à évaluer à part sur l'appareil
-    set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
+    # Socle armv8-a : les noyaux ggml choisissent leurs instructions à la compilation, et
+    # « armv8.2-a+dotprod+fp16 » planterait (SIGILL) les Cortex-A72/A73 (Snapdragon 835,
+    # Kirin 970…) encore sous Android 10/11. Piste de performance : une seconde variante
+    # « +dotprod+fp16 » choisie à l'exécution d'après /proc/cpuinfo (asimddp, fphp).
+    set(GGML_CPU_ARM_ARCH "armv8-a" CACHE STRING "" FORCE)
 endif()
 
 add_subdirectory(whisper.cpp EXCLUDE_FROM_ALL)

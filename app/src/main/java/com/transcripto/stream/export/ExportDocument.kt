@@ -125,7 +125,7 @@ object ExportComposer {
         d.recordings.forEachIndexed { i, r ->
             out += DocBlock.PageBreak
             out += DocBlock.Heading(1, "${i + 1}. ${r.title.ifBlank { "Enregistrement" }}")
-            out += coverMeta(r)
+            out += coverMeta(r, marked = d.includeTranscripts)
             out += summaryBlocks(r, level = 2)
             out += actionBlocks(r, level = 2)
             if (d.includeTranscripts) {
@@ -136,7 +136,7 @@ object ExportComposer {
         return out
     }
 
-    private fun coverMeta(doc: ExportDocument): List<DocBlock> {
+    private fun coverMeta(doc: ExportDocument, marked: Boolean = true): List<DocBlock> {
         val out = ArrayList<DocBlock>()
         out += DocBlock.Meta("Date", doc.dateLabel)
         if (doc.durationMs > 0) out += DocBlock.Meta("Durée", TranscriptExporter.formatHms(doc.durationMs))
@@ -146,7 +146,9 @@ object ExportComposer {
         speakingShares(doc)?.let { out += DocBlock.Meta("Temps de parole", it) }
         if (doc.chapters.isNotEmpty()) out += DocBlock.Meta("Chapitres", doc.chapters.size.toString())
         val doubtful = doc.segments.count { ReviewMarks.isDoubtful(it.confidence) }
-        if (doubtful > 0) out += DocBlock.Meta("Passages à vérifier", "$doubtful (confiance du moteur sous 60 %, marqués « (à vérifier) »)")
+        if (doubtful > 0) {
+            out += DocBlock.Meta("Passages à vérifier", "$doubtful (confiance du moteur sous 60 %" + (if (marked) ", marqués « (à vérifier) »)" else ")"))
+        }
         if (doc.encrypted) out += DocBlock.Meta("Audio", "chiffré sur l'appareil (AES-256-GCM)")
         doc.sha256?.takeIf { it.isNotBlank() }?.let { out += DocBlock.Meta("Empreinte SHA-256 (PCM)", it) }
         return out

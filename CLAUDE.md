@@ -29,7 +29,9 @@ messages en français.
   le workflow `native.yml` compile la bibliothèque seule et publie `libwhisper.so` en
   artefact. Pas de NDK en session : la CI est la seule compilation native aussi.
   Le pont JNI émet par segment la confiance (`c`, probabilité moyenne des jetons) et la
-  probabilité de non-parole (`nsp`).
+  probabilité de non-parole (`nsp`). Socle `armv8-a` (pas de dotprod/fp16 : SIGILL sur les
+  Cortex-A72/A73) ; piste : seconde variante « +dotprod+fp16 » choisie d'après
+  `/proc/cpuinfo`. Un ancien `app/src/main/jniLibs/` local doit être supprimé (doublon).
 - **Publication** : le push de tags échoue depuis la session (proxy) ; déclencher
   `release.yml` par `workflow_dispatch` sur `main` (outil GitHub `actions_run_trigger`),
   le workflow crée le tag et la release lui-même.

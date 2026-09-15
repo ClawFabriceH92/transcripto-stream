@@ -158,7 +158,7 @@ class RecordingRepositoryTest {
     @Test
     fun updateSegmentTextReplacesInPlaceOrRebuilds() {
         val f = wav("s.wav")
-        val segs = listOf(SegmentData("Bonjour tout le monde", 0, 4000), SegmentData("Passons aux stocks", 5000, 9000))
+        val segs = listOf(SegmentData("Bonjour tout le monde", 0, 4000, confidence = 0.9f), SegmentData("Passons aux stocks", 5000, 9000, confidence = 0.3f))
         File(dir, "s.json").writeText(SegmentsCodec.toJson(segs, listOf(1, 2)))
         repo.writeTranscriptFile(f, "[Intervenant 1] [00:00] Bonjour tout le monde\n[Intervenant 2] [00:05] Passons aux stocks (note manuelle)", 9000)
         assertNull(repo.updateSegmentText(f, 5, "x", true))
@@ -167,6 +167,8 @@ class RecordingRepositoryTest {
         assertEquals(EditOutcome(sealed = true, segmentsStale = false), repo.updateSegmentText(f, 1, "Passons aux provisions", true))
         assertEquals("[Intervenant 1] [00:00] Bonjour tout le monde\n[Intervenant 2] [00:05] Passons aux provisions (note manuelle)", repo.transcriptBody(f))
         assertEquals("Passons aux provisions", repo.readSegments(f)[1].text)
+        assertEquals("corrigé à la main : plus « à vérifier »", -1f, repo.readSegments(f)[1].confidence, 0f)
+        assertEquals(0.9f, repo.readSegments(f)[0].confidence, 0.001f)
         assertTrue(File(dir, "s.srt").readText().contains("Passons aux provisions"))
         // Passage introuvable dans le .txt (corrigé à la main entre-temps) : reconstruction, horodatage conservé
         repo.writeTranscriptFile(f, "[Intervenant 1] [00:00] Texte réécrit à la main", 9000)
@@ -223,7 +225,7 @@ class RecordingRepositoryTest {
     @Test
     fun editedTranscriptRealignsSegmentsOrFlagsThemStale() {
         val f = wav("e.wav")
-        val segs = listOf(SegmentData("Bonjour à tous", 0, 4000), SegmentData("Passons aux stocks", 5000, 9000), SegmentData("Puis aux provisions", 12_000, 15_000))
+        val segs = listOf(SegmentData("Bonjour à tous", 0, 4000, confidence = 0.5f), SegmentData("Passons aux stocks", 5000, 9000, confidence = 0.8f), SegmentData("Puis aux provisions", 12_000, 15_000))
         repo.writeSidecars(f, "", SegmentsCodec.toJson(segs, listOf(1, 2, 2)))
         repo.setSpeakerName(f, 2, "Mme Durand")
         repo.writeTranscriptFile(f, "[Intervenant 1] [00:00] Bonjour à tous\n[Intervenant 2] [00:05] Passons aux stocks  [pause 3s] [00:12] Puis aux provisions\n\n--- Temps de parole (estimation par la voix) ---\nIntervenant 1 : 00:04 (36 %)\nIntervenant 2 : 00:07 (64 %)", 15_000)
@@ -232,6 +234,7 @@ class RecordingRepositoryTest {
         assertEquals(EditOutcome(sealed = true, segmentsStale = false), r)
         assertEquals(listOf("Bonjour à toutes et à tous", "Passons aux stocks [⭐00:07]", "Puis aux provisions pour litige"), repo.readSegments(f).map { it.text })
         assertEquals(listOf(1, 2, 2), repo.readSegments(f).map { it.speaker })
+        assertEquals(listOf(-1f, -1f, -1f), repo.readSegments(f).map { it.confidence }) // tous relus à la main
         assertTrue(File(dir, "e.srt").readText().contains("Puis aux provisions pour litige"))
         assertFalse(repo.readMeta(f).segmentsStale)
         assertTrue("les noms ne sont pas figés dans le .txt", repo.transcriptBody(f).startsWith("[Intervenant 1] [00:00] Bonjour à toutes et à tous\n[Intervenant 2] [00:05]"))

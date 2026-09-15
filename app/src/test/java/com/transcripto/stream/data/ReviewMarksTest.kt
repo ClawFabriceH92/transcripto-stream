@@ -27,5 +27,8 @@ class ReviewMarksTest {
         assertEquals(listOf("1er juillet", "exercice 2025"), found("Clôture au 1er juillet de l'exercice 2025."))
         assertTrue(found("Bonjour à tous, on commence par les stocks.").isEmpty())
         assertEquals(listOf("150 k€"), found("Le découvert atteint 150 k€"))
+        assertEquals(listOf("12.000,50 euros", "15.03.2026"), found("Soit 12.000,50 euros au 15.03.2026"))
+        assertTrue("numéros de version : pas des dates", found("version 2.3 du logiciel, article 3.1").isEmpty())
+        assertEquals(listOf("15 %"), found("13, 14 et 15 %"))
     }
 }
