@@ -149,6 +149,13 @@ class AiAssistantTest {
         transport.reply = { throw ClaudeRefusal() }
         assertEquals(AiAnswer.Failed("Question refusée par les filtres de sécurité du modèle"), ai.ask(file, emptyList(), "?"))
         assertEquals(AiAnswer.Failed("Question vide"), ai.ask(file, emptyList(), "   "))
+        // Transcription scellée avec une autre clé : pas d'appel à vide
+        TextVault.enabled = true
+        repo.writeTranscriptFile(file, "scellé", 1000)
+        TextVault.keyProvider = KeyProvider { KeyGenerator.getInstance("AES").apply { init(256) }.generateKey() }
+        val before = transport.calls.size
+        assertEquals(AiAnswer.Failed("Transcription illisible — clé perdue ou fichier altéré"), ai.ask(file, emptyList(), "?"))
+        assertEquals(before, transport.calls.size)
     }
 
     @Test

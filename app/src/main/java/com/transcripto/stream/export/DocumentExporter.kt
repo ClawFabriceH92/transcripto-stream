@@ -51,9 +51,8 @@ class DocumentExporter(
         )
     }
 
-    /** Écrit le document de [file] au format [format] dans [out] (fermé à la fin). */
-    fun write(file: File, out: OutputStream, format: ExportFormat) {
-        val doc = build(file)
+    /** Écrit [doc] (voir [build]) au format [format] dans [out] (fermé à la fin, même en cas d'échec). */
+    fun write(doc: ExportDocument, out: OutputStream, format: ExportFormat) {
         val blocks = ExportComposer.compose(doc)
         out.use { o ->
             when (format) {

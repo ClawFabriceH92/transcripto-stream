@@ -116,7 +116,11 @@ class AiAssistant(
      */
     fun ask(file: File, history: List<QaTurn>, question: String): AiAnswer {
         val key = apiKey() ?: return AiAnswer.Failed(if (settings.hasApiKey) KEY_UNREADABLE else KEY_MISSING)
-        val raw = repo.transcriptBody(file)
+        val content = repo.readTranscript(file)
+        if (content == null && repo.transcriptFileFor(file).exists()) {
+            return AiAnswer.Failed("Transcription illisible — clé perdue ou fichier altéré")
+        }
+        val raw = content?.let { RecordingRepository.bodyOf(it) } ?: ""
         val names = repo.readMeta(file).speakers
         return ClaudeQa.ask(
             apiKey = key,
@@ -139,7 +143,7 @@ class AiAssistant(
      */
     fun chapters(file: File): String {
         if (!repo.hasSegments(file)) return "Chapitres : lance d'abord « Transcrire » (segments horodatés requis)"
-        val segs = repo.readSegments(file)
+        val segs = repo.readSegmentsStrict(file) // illisible → exception, pas « trop court »
         if (segs.size < 8) return "Enregistrement trop court pour des chapitres"
         val meta = repo.readMeta(file)
         var (key, failure) = keyForAi()

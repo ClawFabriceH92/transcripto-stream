@@ -161,22 +161,28 @@ class RecordingRepositoryTest {
         val segs = listOf(SegmentData("Bonjour tout le monde", 0, 4000), SegmentData("Passons aux stocks", 5000, 9000))
         File(dir, "s.json").writeText(SegmentsCodec.toJson(segs, listOf(1, 2)))
         repo.writeTranscriptFile(f, "[Intervenant 1] [00:00] Bonjour tout le monde\n[Intervenant 2] [00:05] Passons aux stocks (note manuelle)", 9000)
-        assertFalse(repo.updateSegmentText(f, 5, "x", true))
-        assertFalse(repo.updateSegmentText(f, 0, "   ", true))
+        assertNull(repo.updateSegmentText(f, 5, "x", true))
+        assertNull(repo.updateSegmentText(f, 0, "   ", true))
         // L'ancien passage est unique dans le .txt : remplacement ciblé, la note manuelle survit
-        assertTrue(repo.updateSegmentText(f, 1, "Passons aux provisions", true))
+        assertEquals(EditOutcome(sealed = true, segmentsStale = false), repo.updateSegmentText(f, 1, "Passons aux provisions", true))
         assertEquals("[Intervenant 1] [00:00] Bonjour tout le monde\n[Intervenant 2] [00:05] Passons aux provisions (note manuelle)", repo.transcriptBody(f))
         assertEquals("Passons aux provisions", repo.readSegments(f)[1].text)
         assertTrue(File(dir, "s.srt").readText().contains("Passons aux provisions"))
         // Passage introuvable dans le .txt (corrigé à la main entre-temps) : reconstruction, horodatage conservé
         repo.writeTranscriptFile(f, "[Intervenant 1] [00:00] Texte réécrit à la main", 9000)
-        assertTrue(repo.updateSegmentText(f, 0, "Bonjour à toutes et à tous", false))
+        assertEquals(EditOutcome(sealed = true, segmentsStale = false), repo.updateSegmentText(f, 0, "Bonjour à toutes et à tous", false))
         val body = repo.transcriptBody(f)
         assertTrue(body, body.startsWith("[Intervenant 1] [00:00] Bonjour à toutes et à tous"))
         assertTrue(body, body.contains("[Intervenant 2] [00:05] Passons aux provisions"))
         assertTrue(body, body.contains("--- Temps de parole"))
         // Sans .json : rien à corriger
-        assertFalse(repo.updateSegmentText(wav("t.wav"), 0, "x", true))
+        assertNull(repo.updateSegmentText(wav("t.wav"), 0, "x", true))
+        // .json scellé avec une autre clé : lecture stricte en erreur, lecture tolérante vide
+        val u = wav("u.wav")
+        File(dir, "u.json").writeBytes(TextSealer.seal("{\"segments\":[]}", KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()))
+        assertTrue(repo.readSegments(u).isEmpty())
+        assertTrue(runCatching { repo.readSegmentsStrict(u) }.isFailure)
+        assertTrue(repo.readSegmentsStrict(wav("v.wav")).isEmpty())
     }
 
     @Test

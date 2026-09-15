@@ -92,9 +92,14 @@ class ModelManager(
         }
     }
 
-    /** Libère le modèle natif (fin de vie du ViewModel). */
+    /**
+     * Libère le modèle natif (fin de vie du ViewModel). Portée dédiée : viewModelScope est
+     * déjà annulé quand onCleared() s'exécute, un launch dessus ne partirait jamais.
+     */
     fun release() {
-        scope.launch { engine.unloadModel() }
+        CoroutineScope(Dispatchers.IO).launch {
+            lock.withLock { engine.unloadModel() }
+        }
     }
 
     /**

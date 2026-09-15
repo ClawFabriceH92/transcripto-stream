@@ -25,6 +25,13 @@
 -dontwarn java.lang.management.**
 -dontwarn javax.management.**
 -dontwarn org.slf4j.**
+# Générateur de schémas JSON embarqué par le SDK (outils) : jamais exécuté sur Android
+-dontwarn com.github.victools.**
+-dontwarn java.lang.reflect.AnnotatedType
+-dontwarn java.lang.reflect.AnnotatedParameterizedType
+-dontwarn java.lang.reflect.AnnotatedArrayType
+-dontwarn java.lang.reflect.AnnotatedTypeVariable
+-dontwarn java.lang.reflect.AnnotatedWildcardType
 
 # --- org.json (JSON des segments, .meta, catalogue) : classes de la plateforme, intactes ---
 -keep class org.json.** { *; }

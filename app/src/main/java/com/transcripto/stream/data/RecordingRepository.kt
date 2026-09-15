@@ -152,6 +152,13 @@ class RecordingRepository(private val root: File) {
 
     fun hasSegments(file: File): Boolean = RecordingNames.jsonSibling(file).exists()
 
+    /** Segments du .json ; lève si le fichier est illisible (clé perdue, fichier altéré) — vide s'il est absent. */
+    fun readSegmentsStrict(file: File): List<StoredSegment> {
+        val json = RecordingNames.jsonSibling(file)
+        if (!json.exists()) return emptyList()
+        return SegmentsCodec.fromJson(TextVault.read(json))
+    }
+
     /** Écrit les sous-titres et les segments issus d'une transcription différée (vides = ignorés). */
     fun writeSidecars(file: File, srt: String, segmentsJson: String) {
         if (srt.isNotBlank()) {
@@ -326,16 +333,17 @@ class RecordingRepository(private val root: File) {
      * corrections manuelles antérieures sont préservées — sinon reconstruction
      * complète, en gardant l'horodatage tel qu'il était) et le .srt.
      * [defaultTimestamps] : réglage courant, utilisé si le .txt est vide.
+     * Retourne null si la correction est impossible (segments introuvables, index hors bornes).
      */
-    fun updateSegmentText(file: File, index: Int, newText: String, defaultTimestamps: Boolean): Boolean = try {
+    fun updateSegmentText(file: File, index: Int, newText: String, defaultTimestamps: Boolean): EditOutcome? = try {
         val json = RecordingNames.jsonSibling(file)
         if (!json.exists()) {
-            false
+            null
         } else {
             val segs = SegmentsCodec.fromJson(TextVault.read(json)).toMutableList()
             val cleaned = newText.trim()
             if (index !in segs.indices || cleaned.isEmpty()) {
-                false
+                null
             } else {
                 val oldText = segs[index].text.trim()
                 segs[index] = segs[index].copy(text = cleaned)
@@ -351,15 +359,15 @@ class RecordingRepository(private val root: File) {
                         timestamps = if (body.isEmpty()) defaultTimestamps else CLOCK_TAG.containsMatchIn(body),
                     )
                 }
-                writeTranscriptFile(file, text, durationMsOf(file))
+                val sealed = writeTranscriptFile(file, text, durationMsOf(file))
                 val srt = TranscriptExporter.buildSrt(data)
                 if (srt.isNotBlank()) TextVault.write(RecordingNames.srtSibling(file), srt)
-                true
+                EditOutcome(sealed, segmentsStale = false)
             }
         }
     } catch (e: Exception) {
         Log.e(TAG, "updateSegmentText: ${e.message}")
-        false
+        null
     }
 
     // ---- Liste ----

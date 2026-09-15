@@ -457,10 +457,11 @@ class StreamViewModel(
             return
         }
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) {
+            val r = withContext(Dispatchers.IO) {
                 repo.updateSegmentText(file, index, newText, settings.useTimestamps)
             }
-            if (ok) {
+            if (r != null) {
+                if (!r.sealed) _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
                 if (_lastRecording.value == file) refreshFileTranscript(file)
                 _transcriptVersion.value = _transcriptVersion.value + 1
                 refreshRecordings()
@@ -1371,12 +1372,14 @@ class StreamViewModel(
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 try {
+                    // Document assemblé avant d'ouvrir le flux : un échec de lecture ne laisse pas un flux ouvert
+                    val doc = documents.build(file)
                     val out = try {
                         appContext.contentResolver.openOutputStream(destUri, "wt")
                     } catch (e: Exception) {
                         appContext.contentResolver.openOutputStream(destUri)
                     } ?: return@withContext false
-                    documents.write(file, out, format)
+                    documents.write(doc, out, format)
                     true
                 } catch (e: Exception) {
                     Log.e(TAG, "exportDocument: ${e.message}")
