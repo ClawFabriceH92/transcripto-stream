@@ -7,8 +7,6 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.PlaybackParams
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
@@ -24,6 +22,7 @@ import com.transcripto.stream.audio.LiveTranscriber
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.PcmDigest
 import com.transcripto.stream.audio.PitchDiarizer
+import com.transcripto.stream.audio.PlaybackController
 import com.transcripto.stream.audio.SileroVad
 import com.transcripto.stream.audio.WavPcm
 import com.transcripto.stream.audio.WavFileWriter
@@ -67,7 +66,6 @@ import com.transcripto.stream.stt.WhisperModel
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -181,9 +179,6 @@ class StreamViewModel(
     private val _fileTranscript = MutableStateFlow("")
     val fileTranscript: StateFlow<String> = _fileTranscript.asStateFlow()
 
-    private val _isPlaying = MutableStateFlow(false)
-    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
-
     // ---- Liste des enregistrements + recherche ----
     private val _recordings = MutableStateFlow<List<RecordingItem>>(emptyList())
     val recordings: StateFlow<List<RecordingItem>> = _recordings.asStateFlow()
@@ -234,14 +229,19 @@ class StreamViewModel(
     private val _detailItem = MutableStateFlow<RecordingItem?>(null)
     val detailItem: StateFlow<RecordingItem?> = _detailItem.asStateFlow()
 
-    private val _playingFile = MutableStateFlow<File?>(null)
-    val playingFile: StateFlow<File?> = _playingFile.asStateFlow()
-
-    private val _playbackPositionMs = MutableStateFlow(0L)
-    val playbackPositionMs: StateFlow<Long> = _playbackPositionMs.asStateFlow()
-
-    private val _playbackDurationMs = MutableStateFlow(0L)
-    val playbackDurationMs: StateFlow<Long> = _playbackDurationMs.asStateFlow()
+    /** Lecture (MediaPlayer, position, vitesse, déchiffrement temporaire) — flux relayés ci-dessous. */
+    private val playback = PlaybackController(
+        cacheDir = appContext.cacheDir,
+        scope = viewModelScope,
+        speed = { settings.playbackSpeed },
+        // Pendant un enregistrement, le haut-parleur serait recapté par le micro
+        canStart = { !_isStreaming.value },
+        onError = { _lastError.value = it },
+    )
+    val isPlaying: StateFlow<Boolean> = playback.isPlaying
+    val playingFile: StateFlow<File?> = playback.playingFile
+    val playbackPositionMs: StateFlow<Long> = playback.positionMs
+    val playbackDurationMs: StateFlow<Long> = playback.durationMs
 
     // ---- Sauvegarde / restauration chiffrée ----
     private val _backupBusy = MutableStateFlow(false)
@@ -313,11 +313,6 @@ class StreamViewModel(
     private var activeRecordingFile: File? = null
     private var activeStartTime: Long = 0L
     private var chronoJob: Job? = null
-    private var mediaPlayer: MediaPlayer? = null
-    private var playbackFile: File? = null // temp décrypté en cours de lecture
-    private var playbackIsTemp = false
-    private var positionJob: Job? = null
-    private var playbackStartJob: Job? = null
 
     // ---- État des modèles Whisper (déclaré AVANT init : le bloc init et
     // loadWhisperModel y accèdent — l'ordre de déclaration Kotlin est contraignant) ----
@@ -681,9 +676,7 @@ class StreamViewModel(
 
     fun setPlaybackSpeed(speed: Float) {
         settings.playbackSpeed = speed
-        try {
-            mediaPlayer?.playbackParams = PlaybackParams().setSpeed(speed)
-        } catch (_: Exception) {}
+        playback.setSpeed(speed)
     }
 
     fun setSearchQuery(q: String) {
@@ -702,7 +695,7 @@ class StreamViewModel(
     /** Résultat de recherche : ouvre la fiche et cale la lecture sur le passage. */
     fun openHit(hit: SearchHit) {
         openDetailForFile(hit.file)
-        if (hit.hasAudio && hit.startMs >= 0) playFrom(hit.file, hit.startMs)
+        if (hit.hasAudio && hit.startMs >= 0) playback.playFrom(hit.file, hit.startMs)
     }
 
     // ================= STREAMING =================
@@ -1422,13 +1415,8 @@ class StreamViewModel(
         }
     }
 
-    // ================= LECTURE + VITESSE =================
+    // ================= LECTURE =================
 
-    /**
-     * Retourne le fichier WAV en clair (déchiffre .enc vers un temp si besoin).
-     * [suffix] distingue les usages simultanés (lecture "_pb", transcription "_tr",
-     * partage "_dec") : la suppression du temp d'un flux n'invalide pas les autres.
-     */
     /** Supprime les copies en clair du cache : dossier « exports » et WAV déchiffrés temporaires. */
     private fun purgeClearCopies() {
         try {
@@ -1443,6 +1431,11 @@ class StreamViewModel(
         }
     }
 
+    /**
+     * Retourne le fichier WAV en clair (déchiffre .enc vers un temp si besoin).
+     * [suffix] distingue les usages simultanés (transcription "_tr", partage "_dec") :
+     * la suppression du temp d'un flux n'invalide pas les autres.
+     */
     private fun resolvedAudioFile(file: File, suffix: String = "_dec"): File? {
         if (file.extension != "enc") return file
         return CryptoManager.decryptToTemp(file, appContext.cacheDir, suffix)
@@ -1450,141 +1443,17 @@ class StreamViewModel(
 
     fun togglePlayback() {
         val file = _lastRecording.value ?: return
-        togglePlaybackFor(file)
+        playback.toggle(file)
     }
 
     /** Lance/arrête la lecture d'un fichier (écran principal ou écran détail). */
-    fun togglePlaybackFor(file: File) {
-        if (!RecordingNames.isAudio(file.name)) return // entrée texte seul : rien à écouter
-        if (_isPlaying.value && _playingFile.value == file) {
-            stopPlayback()
-        } else {
-            startPlayback(file, 0L)
-        }
-    }
+    fun togglePlaybackFor(file: File) = playback.toggle(file)
 
     /** Tap sur un segment de l'écran détail : cale la lecture sur [positionMs]. */
-    fun playFrom(file: File, positionMs: Long) {
-        if (!RecordingNames.isAudio(file.name)) return
-        if (_isPlaying.value && _playingFile.value == file) {
-            seekTo(positionMs)
-        } else {
-            startPlayback(file, positionMs)
-        }
-    }
+    fun playFrom(file: File, positionMs: Long) = playback.playFrom(file, positionMs)
 
     /** Curseur de position de l'écran détail. */
-    fun seekTo(positionMs: Long) {
-        try {
-            mediaPlayer?.seekTo(positionMs.toInt())
-        } catch (_: Exception) {
-        }
-        _playbackPositionMs.value = positionMs
-    }
-
-    private fun startPlayback(file: File, startMs: Long) {
-        // Pendant un enregistrement, le haut-parleur serait recapté par le micro
-        // (couvre aussi le tap sur un segment de l'écran détail)
-        if (_isStreaming.value) return
-        stopPlayback()
-        playbackStartJob = viewModelScope.launch {
-            // Déchiffrement hors du thread UI : un .enc de réunion fait des dizaines de Mo.
-            // NonCancellable : une annulation pendant l'IO rendrait sinon le résultat
-            // impossible à récupérer — le temp ne serait jamais supprimé.
-            val clear = withContext(Dispatchers.IO + NonCancellable) {
-                resolvedAudioFile(file, "_pb")
-            }
-            if (clear == null) {
-                _lastError.value = "Déchiffrement impossible"
-                return@launch
-            }
-            if (!isActive) { // lecture annulée pendant le déchiffrement
-                if (clear != file) clear.delete()
-                return@launch
-            }
-            val mp = MediaPlayer()
-            try {
-                mp.setDataSource(clear.absolutePath)
-                mp.setOnCompletionListener {
-                    finishPlayback(clear != file, clear)
-                }
-                mp.setOnErrorListener { _, _, _ ->
-                    finishPlayback(clear != file, clear)
-                    true
-                }
-                mp.prepare()
-                mp.playbackParams = PlaybackParams().setSpeed(settings.playbackSpeed)
-                if (startMs > 0) mp.seekTo(startMs.toInt())
-                mp.start()
-                mediaPlayer = mp
-                playbackFile = clear
-                playbackIsTemp = clear != file
-                _playingFile.value = file
-                _playbackDurationMs.value = try {
-                    mp.duration.toLong()
-                } catch (e: Exception) {
-                    0L
-                }
-                _playbackPositionMs.value = startMs
-                _isPlaying.value = true
-                startPositionTicker()
-            } catch (e: Exception) {
-                if (mediaPlayer === mp) mediaPlayer = null
-                try {
-                    mp.release() // pas de player natif fuité à chaque échec
-                } catch (_: Exception) {
-                }
-                if (clear != file) clear.delete()
-                _lastError.value = "Lecture impossible : ${e.message}"
-            }
-        }
-    }
-
-    /** Fin naturelle ou erreur du lecteur : libère sans repasser par stop(). */
-    private fun finishPlayback(deleteTemp: Boolean, temp: File) {
-        positionJob?.cancel()
-        positionJob = null
-        _isPlaying.value = false
-        _playingFile.value = null
-        mediaPlayer?.release()
-        mediaPlayer = null
-        playbackFile = null
-        playbackIsTemp = false
-        if (deleteTemp) temp.delete()
-    }
-
-    /** Suit la position de lecture (surlignage du segment courant à l'écran détail). */
-    private fun startPositionTicker() {
-        positionJob?.cancel()
-        positionJob = viewModelScope.launch {
-            while (isActive && _isPlaying.value) {
-                _playbackPositionMs.value = try {
-                    mediaPlayer?.currentPosition?.toLong() ?: 0L
-                } catch (e: Exception) {
-                    0L
-                }
-                delay(300)
-            }
-        }
-    }
-
-    private fun stopPlayback() {
-        playbackStartJob?.cancel()
-        playbackStartJob = null
-        positionJob?.cancel()
-        positionJob = null
-        try {
-            mediaPlayer?.stop()
-        } catch (_: Exception) {}
-        mediaPlayer?.release()
-        mediaPlayer = null
-        if (playbackIsTemp) playbackFile?.delete()
-        playbackFile = null
-        playbackIsTemp = false
-        _isPlaying.value = false
-        _playingFile.value = null
-        _playbackPositionMs.value = 0L
-    }
+    fun seekTo(positionMs: Long) = playback.seekTo(positionMs)
 
     // ================= TRANSCRIPTION DIFFÉRÉE + .txt =================
 
@@ -2466,7 +2335,7 @@ class StreamViewModel(
     override fun onCleared() {
         stopStreaming()
         transcriber.close()
-        stopPlayback()
+        playback.stop()
         viewModelScope.launch {
             engine.unloadModel()
         }
