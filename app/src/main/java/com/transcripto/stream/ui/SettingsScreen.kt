@@ -43,6 +43,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +78,15 @@ import java.util.Locale
  */
 @Composable
 fun SettingsScreen(vm: StreamViewModel) {
+    val scrollState = rememberScrollState()
+    // Ouverture depuis le bandeau de rappel : défiler jusqu'à la section Sauvegarde (vers le bas)
+    val settingsTarget by vm.settingsTarget.collectAsStateWithLifecycle()
+    LaunchedEffect(settingsTarget, scrollState.maxValue) {
+        if (settingsTarget == "backup" && scrollState.maxValue > 0) {
+            vm.consumeSettingsTarget()
+            scrollState.animateScrollTo((scrollState.maxValue * 0.62f).toInt())
+        }
+    }
     val settings = vm.settings
     val context = LocalContext.current
     val storageBytes by vm.storageBytes.collectAsStateWithLifecycle()
@@ -92,7 +102,7 @@ fun SettingsScreen(vm: StreamViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
