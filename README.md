@@ -24,6 +24,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Dossiers, suivi des actions, import par lots** (v0.12.0) : **actions à mener suivies** (extraites des synthèses, cochables, responsable et échéance, dates françaises reconnues, contexte des actions ouvertes fourni à l'IA), **fiche dossier** (écran dédié : enregistrements, durée cumulée, intervenants, actions ouvertes agrégées, renommer/fusionner, export Word/PDF du dossier avec sommaire), **import par lots** (sélection ou partage multiple, dossier et gabarit communs, notification de progression annulable), **rappel de sauvegarde** (7/30 jours, bandeau sur la liste).
 - **Refonte du code, corrections synchronisées, R8** (v0.11.0) : ViewModel découpé en collaborateurs testables (`RecordingRepository`, `LiveTranscriber`, `PlaybackController`, `BackupManager`, `AiAssistant`, `ModelManager`, `DocumentExporter`…), un seul chemin d'appel Claude (`ClaudeTransport`) avec client HTTP partagé, **correction depuis l'écran principal synchronisée avec les passages** (ou signalée non synchronisée), horodatages `hh:mm:ss` homogènes, **R8** en release avec compilation de la release non signée en CI, 111 tests JVM + Robolectric, `CLAUDE.md`.
 - **Recherche dans les passages, chapitres, VAD neuronale** (v0.10.0) : **index en mémoire de tous les passages** (section « Passages » dans la liste, extrait en gras, lecture calée sur le passage ; rien n'est persisté en clair), **chapitres automatiques** titrés (bascule de vocabulaire sur l'appareil ou Claude ; navigation sur la fiche, sous-titres dans les exports), **Silero VAD** (ONNX Runtime) pour transcrire chaque phrase dès qu'elle se termine et ignorer silences et bruits, avec repli sur le seuil de volume.
 - **Organisation** (v0.9.0) : **intervenants nommés** (toucher l'étiquette sur la fiche ; les noms s'appliquent à l'affichage, au partage, à la synthèse et aux exports, le `.txt` garde « [Intervenant N] »), **dossiers / clients** (proposés à la fin de l'enregistrement, filtres dans la liste), **correction d'un passage** par appui long sur la fiche (`.txt`/`.srt`/segments mis à jour, ajout au vocabulaire).
@@ -77,6 +78,7 @@ app/src/main/
     ├── summary/SummaryTemplate.kt  # Gabarits par type de mission (pur, testé)
     ├── summary/LocalSummarizer.kt  # Synthèse locale extractive (pur, testé)
     ├── summary/AiAssistant.kt      # Synthèse, questions, chapitres : Claude ou repli local (testé, transport factice)
+    ├── summary/ActionExtractor.kt  # Actions à mener extraites des synthèses, dates françaises (pur, testé)
     ├── summary/ClaudeCall.kt       # ClaudeRequest / ClaudeTransport / SdkClaudeTransport (client HTTP partagé)
     ├── summary/ClaudeSummarizer.kt # Prompt de synthèse IA (opt-in)
     ├── summary/ClaudeQa.kt         # Questions sur un enregistrement (prompt caching)
@@ -90,7 +92,8 @@ app/src/main/
     └── ui/StreamViewModel.kt       # Navigation, verrouillage, réglages, flux d'état, capture ; délègue aux classes ci-dessus
         StreamScreen.kt             # Écran principal Compose (Scaffold, navigation, session, contrôles)
         RecordingListScreen.kt      # Liste/recherche/partage/renommage (en-têtes de jour épinglés)
-        DetailScreen.kt             # Fiche : lecteur synchronisé, segments par intervenant
+        DetailScreen.kt             # Fiche : lecteur synchronisé, segments par intervenant, actions
+        DossierScreen.kt            # Fiche dossier : enregistrements, actions ouvertes, renommer/fusionner, export
         SettingsScreen.kt           # Réglages en sections
         PinScreen.kt / Biometrics.kt # Verrouillage PIN + BiometricPrompt
         UiComponents.kt             # Composants partagés (cartes, pastilles, puces, états vides…)
@@ -141,5 +144,5 @@ Produit `libwhisper.so` (JNI inclus), `libggml*.so` et `libc++_shared.so` dans `
 - [x] Recherche instantanée dans tous les passages (index en mémoire, sans base persistée en clair), chapitres automatiques, Silero VAD (v0.10.0)
 - [x] Refonte du code en collaborateurs testables, un seul chemin d'appel Claude, R8 en release, tests Robolectric, corrections synchronisées avec les passages (v0.11.0)
 - [ ] Chaînes de l'interface externalisées dans `strings.xml` (préparation d'une version anglaise)
-- [ ] Suivi des actions, fiche dossier, import par lots, rappel de sauvegarde (vague B)
+- [x] Suivi des actions, fiche dossier, import par lots, rappel de sauvegarde (v0.12.0)
 - [ ] Compilation native en CI, relecture assistée par la confiance, diarisation v2 par embeddings de locuteurs (vague C)

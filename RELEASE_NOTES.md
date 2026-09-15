@@ -1,10 +1,18 @@
-# Transcripto Stream v0.11.0
+# Transcripto Stream v0.12.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
 
-## Nouveautés v0.11.0 — refonte du code, corrections synchronisées, APK allégé
+## Nouveautés v0.12.0 — dossiers, suivi des actions, import par lots
+
+- **Suivi des actions à mener** : les puces « Actions à mener » de chaque synthèse (locale ou IA) deviennent des actions suivies sur la fiche — case à cocher, responsable, échéance (dates françaises reconnues : « avant le 15 mars », « fin juin », « T2 2026 », « d'ici 2 semaines »…), modification par touche, ajout manuel. Une nouvelle synthèse n'écrase pas ce qui est coché ; les exports Word et PDF gagnent une section « Actions à mener » avec l'état.
+- **Synthèse IA au fil du dossier** : pour un enregistrement rattaché à un dossier, les actions encore ouvertes des enregistrements précédents sont fournies à Claude, qui signale celles traitées ou reconduites.
+- **Fiche dossier** : touche la puce de dossier d'une carte (elle affiche le nombre d'actions à faire) ou le bouton sous le filtre de la liste — enregistrements du dossier, durée cumulée, intervenants rencontrés, **toutes les actions ouvertes** à cocher d'un seul endroit, renommer ou fusionner deux dossiers, **export Word/PDF du dossier entier** (page de garde, sommaire, une section par enregistrement, transcriptions en option).
+- **Import par lots** : sélection de plusieurs fichiers (ou partage de plusieurs audios depuis une autre application) → dossier et type de mission choisis une fois, puis décodage, transcription et synthèse de chaque fichier l'un après l'autre, sous notification de progression « 3 sur 10 » avec bouton Annuler ; les erreurs d'un fichier n'arrêtent pas les suivants et sont listées à la fin.
+- **Rappel de sauvegarde** : Réglages → Sauvegarde → « Me rappeler de sauvegarder » (7 ou 30 jours). Quand le délai est dépassé, un bandeau discret en haut de la liste mène à la sauvegarde. Rien ne tourne en arrière-plan.
+
+## v0.11.0 — refonte du code, corrections synchronisées, APK allégé
 
 - **Correction depuis l'écran principal synchronisée avec les passages** : quand le texte corrigé garde un horodatage par passage, les passages horodatés de la fiche (et les sous-titres) suivent la correction ligne à ligne ; sinon la fiche signale « passages non synchronisés » et propose de relancer « Transcrire ».
 - **Horodatages homogènes au-delà d'une heure** (`hh:mm:ss`) sur l'écran principal, la fiche, les transcriptions et les exports — plus d'heures repliées dans le `.txt` des réunions longues.
