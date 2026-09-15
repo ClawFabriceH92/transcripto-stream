@@ -51,7 +51,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 : code réduit et obscurci, ressources inutilisées retirées (règles : proguard-rules.pro).
+            // La CI compile la release non signée pour attraper une règle manquante avant publication.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = if (signingConfigs.getByName("release").storeFile == null) null
                 else signingConfigs.getByName("release")
         }
