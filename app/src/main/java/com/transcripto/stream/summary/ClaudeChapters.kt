@@ -1,14 +1,5 @@
 package com.transcripto.stream.summary
 
-import com.anthropic.client.AnthropicClient
-import com.anthropic.errors.BadRequestException
-import com.anthropic.models.beta.AnthropicBeta
-import com.anthropic.models.beta.messages.BetaMessage
-import com.anthropic.models.beta.messages.BetaOutputConfig
-import com.anthropic.models.beta.messages.MessageCreateParams as BetaMessageCreateParams
-import com.anthropic.models.messages.Message
-import com.anthropic.models.messages.MessageCreateParams
-import com.anthropic.models.messages.OutputConfig
 import com.transcripto.stream.data.Chapter
 import org.json.JSONArray
 
@@ -40,72 +31,28 @@ object ClaudeChapters {
         — « title » : 2 à 7 mots en français, factuel, sans ponctuation finale, sans numéro de chapitre.
     """.trimIndent()
 
-    fun detect(apiKey: String, modelId: String, title: String, timedTranscript: String): AiChaptersResult {
-        if (timedTranscript.isBlank()) return AiChaptersResult.Failed("Transcription vide")
+    /** Requête envoyée au modèle (visible pour les tests). */
+    fun request(title: String, timedTranscript: String): ClaudeRequest {
         val (body, truncated) = ClaudeSupport.truncate(timedTranscript.trim())
         val user = buildString {
             append("Titre : ").append(title.ifBlank { "Enregistrement" }).append('\n')
             if (truncated) append("(Transcription tronquée : seule la première partie est fournie.)\n")
             append("\nTranscription :\n<<<\n").append(body).append("\n>>>")
         }
-        val client: AnthropicClient = try {
-            ClaudeSupport.newClient(apiKey)
-        } catch (t: Throwable) {
-            return AiChaptersResult.Failed("Chapitrage IA indisponible : ${t.message}")
-        }
+        return ClaudeRequest.single(SYSTEM, user, MAX_TOKENS, ClaudeRequest.Effort.LOW)
+    }
+
+    fun detect(apiKey: String, modelId: String, title: String, timedTranscript: String, transport: ClaudeTransport): AiChaptersResult {
+        if (timedTranscript.isBlank()) return AiChaptersResult.Failed("Transcription vide")
         return try {
-            val (text, model) = if (modelId == ClaudeSupport.MODEL_OPUS && !ClaudeSupport.fallbacksRejected) {
-                try {
-                    callBeta(client, modelId, user)
-                } catch (e: BadRequestException) {
-                    if (ClaudeSupport.isFallbackRejected(e)) callStable(client, modelId, user) else throw e
-                }
-            } else {
-                callStable(client, modelId, user)
-            }
-            val chapters = parse(text)
-            if (chapters.isEmpty()) AiChaptersResult.Failed("Réponse du modèle inexploitable") else AiChaptersResult.Ok(chapters, model)
+            val r = transport.run(apiKey, modelId, request(title, timedTranscript))
+            val chapters = parse(r.text)
+            if (chapters.isEmpty()) AiChaptersResult.Failed("Réponse du modèle inexploitable") else AiChaptersResult.Ok(chapters, r.model)
+        } catch (e: ClaudeRefusal) {
+            AiChaptersResult.Failed("Chapitrage refusé par les filtres de sécurité du modèle")
         } catch (t: Throwable) {
             AiChaptersResult.Failed(ClaudeSupport.describe(t, "Chapitrage IA"))
-        } finally {
-            ClaudeSupport.closeQuietly(client)
         }
-    }
-
-    /** (texte de la réponse, modèle) ; lève sur refus ou réponse vide. */
-    private fun callBeta(client: AnthropicClient, modelId: String, user: String): Pair<String, String> {
-        val params = BetaMessageCreateParams.builder()
-            .model(modelId)
-            .maxTokens(MAX_TOKENS)
-            .system(SYSTEM)
-            .addUserMessage(user)
-            .outputConfig(BetaOutputConfig.builder().effort(BetaOutputConfig.Effort.LOW).build())
-            .fallbacksDefault()
-            .addBeta(AnthropicBeta.SERVER_SIDE_FALLBACK_2026_07_01)
-            .build()
-        val msg: BetaMessage = client.beta().messages().create(params)
-        val stop = msg.stopReason().map { it.toString() }.orElse("")
-        if (stop.contains("refusal", ignoreCase = true)) throw IllegalStateException("Chapitrage refusé par les filtres de sécurité du modèle")
-        val text = msg.content().mapNotNull { b -> b.text().map { it.text() }.orElse(null) }.joinToString("\n").trim()
-        if (text.isBlank()) throw IllegalStateException("Réponse vide du modèle")
-        return text to msg.model().asString()
-    }
-
-    private fun callStable(client: AnthropicClient, modelId: String, user: String): Pair<String, String> {
-        val builder = MessageCreateParams.builder()
-            .model(modelId)
-            .maxTokens(MAX_TOKENS)
-            .system(SYSTEM)
-            .addUserMessage(user)
-        if (modelId != ClaudeSupport.MODEL_HAIKU) {
-            builder.outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.LOW).build())
-        }
-        val msg: Message = client.messages().create(builder.build())
-        val stop = msg.stopReason().map { it.toString() }.orElse("")
-        if (stop.contains("refusal", ignoreCase = true)) throw IllegalStateException("Chapitrage refusé par les filtres de sécurité du modèle")
-        val text = msg.content().mapNotNull { b -> b.text().map { it.text() }.orElse(null) }.joinToString("\n").trim()
-        if (text.isBlank()) throw IllegalStateException("Réponse vide du modèle")
-        return text to msg.model().asString()
     }
 
     private val CLOCK = Regex("^(?:(\\d{1,2}):)?(\\d{1,3}):(\\d{2})$")

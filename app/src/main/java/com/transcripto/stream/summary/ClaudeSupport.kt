@@ -13,8 +13,8 @@ import com.anthropic.errors.UnauthorizedException
 import java.time.Duration
 
 /**
- * Plomberie commune aux appels Claude (synthèse, questions) : client, messages
- * d'erreur en français, troncature sûre de la transcription.
+ * Plomberie commune aux appels Claude (synthèse, questions, chapitres) : client,
+ * messages d'erreur en français, troncature sûre de la transcription.
  */
 internal object ClaudeSupport {
 
@@ -47,6 +47,8 @@ internal object ClaudeSupport {
 
     /** Message utilisateur pour une erreur d'appel ; [what] = « Synthèse IA », « Réponse »… */
     fun describe(t: Throwable, what: String): String = when (t) {
+        is ClaudeUnavailable -> "$what indisponible : ${t.message}"
+        is ClaudeEmptyReply -> "Réponse vide du modèle"
         is UnauthorizedException -> "Clé API refusée (401) — vérifie-la dans les Réglages"
         is PermissionDeniedException -> "Accès refusé par l'API (403) : ${t.message}"
         is NotFoundException -> "Modèle introuvable (404) — choisis un autre modèle dans les Réglages"

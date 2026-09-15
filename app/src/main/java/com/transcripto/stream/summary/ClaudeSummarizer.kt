@@ -1,14 +1,5 @@
 package com.transcripto.stream.summary
 
-import com.anthropic.client.AnthropicClient
-import com.anthropic.errors.BadRequestException
-import com.anthropic.models.beta.AnthropicBeta
-import com.anthropic.models.beta.messages.BetaMessage
-import com.anthropic.models.beta.messages.BetaOutputConfig
-import com.anthropic.models.beta.messages.MessageCreateParams as BetaMessageCreateParams
-import com.anthropic.models.messages.Message
-import com.anthropic.models.messages.MessageCreateParams
-import com.anthropic.models.messages.OutputConfig
 import com.transcripto.stream.export.TranscriptExporter
 
 /** Résultat d'une synthèse IA : Markdown (rubriques) ou message d'erreur exploitable. */
@@ -24,14 +15,11 @@ sealed class AiSummaryResult {
 }
 
 /**
- * Synthèse rédigée par Claude via le SDK Java officiel Anthropic. Opt-in : seule
- * la TRANSCRIPTION (jamais l'audio) est envoyée à api.anthropic.com, avec la
- * clé API de l'utilisateur. Appel synchrone : à exécuter hors du thread principal.
- *
- * Sur Opus 5, un repli serveur par défaut (`fallbacks: "default"`, routé par
- * catégorie de refus) est demandé pour qu'un refus des filtres de sécurité ne
- * laisse pas l'utilisateur sans synthèse ; si le serveur rejette ce paramètre,
- * la même requête est renvoyée sans repli.
+ * Synthèse rédigée par Claude. Opt-in : seule la TRANSCRIPTION (jamais l'audio)
+ * est envoyée à api.anthropic.com, avec la clé API de l'utilisateur. Appel
+ * synchrone : à exécuter hors du thread principal. La plomberie (client, repli
+ * serveur, refus, erreurs) est dans [ClaudeTransport] ; ici, seulement la
+ * construction de la requête et la lecture de la réponse.
  */
 object ClaudeSummarizer {
 
@@ -69,15 +57,9 @@ object ClaudeSummarizer {
     fun systemPrompt(template: SummaryTemplate): String =
         PREAMBLE.trimIndent().trim() + "\n\n" + template.aiTask.trim() + "\n\n" + RULES.trimIndent().trim()
 
-    fun summarize(
-        apiKey: String,
-        modelId: String,
-        input: SummaryInput,
-        template: SummaryTemplate = SummaryTemplates.REUNION,
-    ): AiSummaryResult {
-        val transcript = input.transcript.trim()
-        if (transcript.isBlank()) return AiSummaryResult.Failed("Transcription vide")
-        val (body, truncated) = ClaudeSupport.truncate(transcript)
+    /** Requête envoyée au modèle (visible pour les tests). */
+    fun request(input: SummaryInput, template: SummaryTemplate): ClaudeRequest {
+        val (body, truncated) = ClaudeSupport.truncate(input.transcript.trim())
         val user = buildString {
             append("Titre : ").append(input.title.ifBlank { "Enregistrement" }).append('\n')
             append("Date : ").append(input.dateLabel).append('\n')
@@ -87,99 +69,30 @@ object ClaudeSummarizer {
             if (truncated) append("(Transcription tronquée : seule la première partie est fournie.)\n")
             append("\nTranscription :\n<<<\n").append(body).append("\n>>>")
         }
-        val system = systemPrompt(template)
+        // Effort « medium » : synthèse = tâche de rédaction, pas de raisonnement long
+        return ClaudeRequest.single(systemPrompt(template), user, MAX_TOKENS, ClaudeRequest.Effort.MEDIUM)
+    }
 
-        val client: AnthropicClient = try {
-            ClaudeSupport.newClient(apiKey)
-        } catch (t: Throwable) {
-            // Initialisation du SDK impossible (classe manquante…) : repli local en amont
-            return AiSummaryResult.Failed("Synthèse IA indisponible : ${t.message}")
-        }
+    fun summarize(
+        apiKey: String,
+        modelId: String,
+        input: SummaryInput,
+        template: SummaryTemplate = SummaryTemplates.REUNION,
+        transport: ClaudeTransport,
+    ): AiSummaryResult {
+        if (input.transcript.isBlank()) return AiSummaryResult.Failed("Transcription vide")
         return try {
-            if (modelId == MODEL_OPUS && !ClaudeSupport.fallbacksRejected) {
-                try {
-                    callWithFallbacks(client, modelId, system, user)
-                } catch (e: BadRequestException) {
-                    // Paramètre de repli refusé par le serveur → même requête, sans repli
-                    if (ClaudeSupport.isFallbackRejected(e)) callStable(client, modelId, system, user) else throw e
-                }
-            } else {
-                callStable(client, modelId, system, user)
-            }
+            val r = transport.run(apiKey, modelId, request(input, template))
+            AiSummaryResult.Ok(
+                markdown = r.text,
+                model = r.model,
+                inputTokens = r.inputTokens,
+                outputTokens = r.outputTokens,
+            )
+        } catch (e: ClaudeRefusal) {
+            AiSummaryResult.Failed("Synthèse IA refusée par les filtres de sécurité du modèle")
         } catch (t: Throwable) {
             AiSummaryResult.Failed(ClaudeSupport.describe(t, "Synthèse IA"))
-        } finally {
-            ClaudeSupport.closeQuietly(client)
         }
-    }
-
-    /** Point d'accès bêta : repli serveur par défaut en cas de refus des filtres. */
-    private fun callWithFallbacks(
-        client: AnthropicClient,
-        modelId: String,
-        system: String,
-        user: String,
-    ): AiSummaryResult {
-        val params = BetaMessageCreateParams.builder()
-            .model(modelId)
-            .maxTokens(MAX_TOKENS)
-            .system(system)
-            .addUserMessage(user)
-            // Même effort « medium » que sur le point d'accès stable
-            .outputConfig(BetaOutputConfig.builder().effort(BetaOutputConfig.Effort.MEDIUM).build())
-            .fallbacksDefault()
-            .addBeta(AnthropicBeta.SERVER_SIDE_FALLBACK_2026_07_01)
-            .build()
-        val msg: BetaMessage = client.beta().messages().create(params)
-        val stop = msg.stopReason().map { it.toString() }.orElse("")
-        if (stop.contains("refusal", ignoreCase = true)) {
-            return AiSummaryResult.Failed("Synthèse IA refusée par les filtres de sécurité du modèle")
-        }
-        val text = msg.content()
-            .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-            .joinToString("\n")
-            .trim()
-        if (text.isBlank()) return AiSummaryResult.Failed("Réponse vide du modèle")
-        return AiSummaryResult.Ok(
-            markdown = text,
-            model = msg.model().asString(),
-            inputTokens = msg.usage().inputTokens(),
-            outputTokens = msg.usage().outputTokens(),
-        )
-    }
-
-    /** Point d'accès stable (Sonnet 5, Haiku 4.5, ou Opus 5 sans repli). */
-    private fun callStable(
-        client: AnthropicClient,
-        modelId: String,
-        system: String,
-        user: String,
-    ): AiSummaryResult {
-        val builder = MessageCreateParams.builder()
-            .model(modelId)
-            .maxTokens(MAX_TOKENS)
-            .system(system)
-            .addUserMessage(user)
-        if (modelId != MODEL_HAIKU) {
-            // Effort « medium » : synthèse = tâche de rédaction, pas de raisonnement long
-            // (paramètre refusé par Haiku 4.5, donc réservé aux modèles de la génération 5)
-            builder.outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.MEDIUM).build())
-        }
-        val msg: Message = client.messages().create(builder.build())
-        val stop = msg.stopReason().map { it.toString() }.orElse("")
-        if (stop.contains("refusal", ignoreCase = true)) {
-            return AiSummaryResult.Failed("Synthèse IA refusée par les filtres de sécurité du modèle")
-        }
-        val text = msg.content()
-            .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-            .joinToString("\n")
-            .trim()
-        if (text.isBlank()) return AiSummaryResult.Failed("Réponse vide du modèle")
-        return AiSummaryResult.Ok(
-            markdown = text,
-            model = msg.model().asString(),
-            inputTokens = msg.usage().inputTokens(),
-            outputTokens = msg.usage().outputTokens(),
-        )
     }
 }

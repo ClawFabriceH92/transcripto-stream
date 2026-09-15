@@ -49,6 +49,7 @@ import com.transcripto.stream.summary.AiAnswer
 import com.transcripto.stream.summary.AiAssistant
 import com.transcripto.stream.summary.AiSettings
 import com.transcripto.stream.summary.QaTurn
+import com.transcripto.stream.summary.SdkClaudeTransport
 import com.transcripto.stream.stt.WhisperStreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -115,6 +116,9 @@ class StreamViewModel(
         },
     ) { settings.useTimestamps }
 
+    /** Un seul client HTTP Anthropic pour la durée du ViewModel (recréé si la clé change). */
+    private val claude = SdkClaudeTransport()
+
     /** Synthèse, questions et chapitres (Claude ou repli local), lecture/écriture des fichiers. */
     private val ai = AiAssistant(
         repo,
@@ -123,7 +127,9 @@ class StreamViewModel(
             override val aiModel: String get() = settings.aiModel
             override val hasApiKey: Boolean get() = settings.aiApiKeyEncrypted.isNotBlank()
         },
-    ) { CryptoManager.decryptString(settings.aiApiKeyEncrypted)?.takeIf { it.isNotBlank() } }
+        apiKey = { CryptoManager.decryptString(settings.aiApiKeyEncrypted)?.takeIf { it.isNotBlank() } },
+        transport = claude,
+    )
 
     init {
         // Avant toute écriture : les textes suivent le réglage de chiffrement au repos
@@ -1551,6 +1557,7 @@ class StreamViewModel(
         transcriber.close()
         playback.stop()
         models.release()
+        claude.close()
         super.onCleared()
     }
 }

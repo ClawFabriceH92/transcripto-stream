@@ -29,6 +29,8 @@ class AiAssistant(
     private val settings: AiSettings,
     /** Clé API déchiffrée ; null si absente ou illisible (clé KeyStore perdue). */
     private val apiKey: () -> String?,
+    /** Transport des requêtes Claude (SDK en production, factice en test). */
+    private val transport: ClaudeTransport,
 ) {
 
     companion object {
@@ -72,7 +74,7 @@ class AiAssistant(
         val markdown = if (key != null) {
             // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
             val named = input.copy(transcript = SpeakerNames.apply(text, names))
-            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template)) {
+            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template, transport)) {
                 is AiSummaryResult.Ok -> wrapAiSummary(input, r)
                 is AiSummaryResult.Failed -> {
                     failure = r.message
@@ -124,6 +126,7 @@ class AiAssistant(
             summaryMarkdown = repo.readSummary(file),
             history = history,
             question = question,
+            transport = transport,
         )
     }
 
@@ -145,7 +148,7 @@ class AiAssistant(
             val timed = segs.joinToString("\n") { s ->
                 "[${TranscriptExporter.formatHms(s.startMs)}] ${SpeakerNames.label(s.speaker, meta.speakers)} : ${s.text.trim()}"
             }
-            when (val r = ClaudeChapters.detect(key, settings.aiModel, RecordingNames.baseName(file.name), timed)) {
+            when (val r = ClaudeChapters.detect(key, settings.aiModel, RecordingNames.baseName(file.name), timed, transport)) {
                 is AiChaptersResult.Ok -> r.chapters
                 is AiChaptersResult.Failed -> {
                     failure = r.message

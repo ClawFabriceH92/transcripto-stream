@@ -1,19 +1,5 @@
 package com.transcripto.stream.summary
 
-import com.anthropic.client.AnthropicClient
-import com.anthropic.errors.BadRequestException
-import com.anthropic.models.beta.AnthropicBeta
-import com.anthropic.models.beta.messages.BetaCacheControlEphemeral
-import com.anthropic.models.beta.messages.BetaMessage
-import com.anthropic.models.beta.messages.BetaOutputConfig
-import com.anthropic.models.beta.messages.BetaTextBlockParam
-import com.anthropic.models.beta.messages.MessageCreateParams as BetaMessageCreateParams
-import com.anthropic.models.messages.CacheControlEphemeral
-import com.anthropic.models.messages.Message
-import com.anthropic.models.messages.MessageCreateParams
-import com.anthropic.models.messages.OutputConfig
-import com.anthropic.models.messages.TextBlockParam
-
 /** Un échange question → réponse sur un enregistrement. */
 data class QaTurn(val question: String, val answer: String)
 
@@ -57,18 +43,10 @@ object ClaudeQa {
         en Markdown léger, sans introduction ni conclusion.
     """.trimIndent()
 
-    fun ask(
-        apiKey: String,
-        modelId: String,
-        title: String,
-        transcript: String,
-        summaryMarkdown: String?,
-        history: List<QaTurn>,
-        question: String,
-    ): AiAnswer {
+    /** Requête envoyée au modèle (visible pour les tests) ; null si la question ou la transcription est vide. */
+    fun request(title: String, transcript: String, summaryMarkdown: String?, history: List<QaTurn>, question: String): ClaudeRequest? {
         val q = question.trim()
-        if (q.isEmpty()) return AiAnswer.Failed("Question vide")
-        if (transcript.isBlank()) return AiAnswer.Failed("Pas de transcription — lance d'abord « Transcrire »")
+        if (q.isEmpty() || transcript.isBlank()) return null
         val (body, truncated) = ClaudeSupport.truncate(transcript.trim())
         // Préfixe stable (mis en cache) : titre, transcription, synthèse — rien qui varie d'un tour à l'autre
         val context = buildString {
@@ -79,121 +57,48 @@ object ClaudeQa {
                 append("\nSynthèse existante :\n<<<\n").append(summaryMarkdown.trim()).append("\n>>>\n")
             }
         }
-        val turns = history.takeLast(MAX_HISTORY)
-
-        val client: AnthropicClient = try {
-            ClaudeSupport.newClient(apiKey)
-        } catch (t: Throwable) {
-            return AiAnswer.Failed("Assistant IA indisponible : ${t.message}")
+        val messages = ArrayList<ClaudeMessage>()
+        history.takeLast(MAX_HISTORY).forEach { t ->
+            messages += ClaudeMessage(ClaudeMessage.Role.USER, t.question)
+            messages += ClaudeMessage(ClaudeMessage.Role.ASSISTANT, t.answer)
         }
+        messages += ClaudeMessage(ClaudeMessage.Role.USER, q)
+        // Question ponctuelle : effort bas suffit, réponse rapide
+        return ClaudeRequest(
+            system = listOf(INSTRUCTIONS, context),
+            messages = messages,
+            maxTokens = MAX_TOKENS,
+            effort = ClaudeRequest.Effort.LOW,
+            cacheLastSystemBlock = true,
+        )
+    }
+
+    fun ask(
+        apiKey: String,
+        modelId: String,
+        title: String,
+        transcript: String,
+        summaryMarkdown: String?,
+        history: List<QaTurn>,
+        question: String,
+        transport: ClaudeTransport,
+    ): AiAnswer {
+        if (question.isBlank()) return AiAnswer.Failed("Question vide")
+        if (transcript.isBlank()) return AiAnswer.Failed("Pas de transcription — lance d'abord « Transcrire »")
+        val request = request(title, transcript, summaryMarkdown, history, question) ?: return AiAnswer.Failed("Question vide")
         return try {
-            if (modelId == ClaudeSupport.MODEL_OPUS && !ClaudeSupport.fallbacksRejected) {
-                try {
-                    askWithFallbacks(client, modelId, context, turns, q)
-                } catch (e: BadRequestException) {
-                    if (ClaudeSupport.isFallbackRejected(e)) askStable(client, modelId, context, turns, q) else throw e
-                }
-            } else {
-                askStable(client, modelId, context, turns, q)
-            }
+            val r = transport.run(apiKey, modelId, request)
+            AiAnswer.Ok(
+                text = ClaudeSupport.markTruncated(r.text, r.stopReason),
+                model = r.model,
+                inputTokens = r.inputTokens,
+                outputTokens = r.outputTokens,
+                cacheReadTokens = r.cacheReadTokens,
+            )
+        } catch (e: ClaudeRefusal) {
+            AiAnswer.Failed("Question refusée par les filtres de sécurité du modèle")
         } catch (t: Throwable) {
             AiAnswer.Failed(ClaudeSupport.describe(t, "Réponse"))
-        } finally {
-            ClaudeSupport.closeQuietly(client)
         }
-    }
-
-    private fun askWithFallbacks(
-        client: AnthropicClient,
-        modelId: String,
-        context: String,
-        turns: List<QaTurn>,
-        question: String,
-    ): AiAnswer {
-        val builder = BetaMessageCreateParams.builder()
-            .model(modelId)
-            .maxTokens(MAX_TOKENS)
-            .systemOfBetaTextBlockParams(
-                listOf(
-                    BetaTextBlockParam.builder().text(INSTRUCTIONS).build(),
-                    BetaTextBlockParam.builder()
-                        .text(context)
-                        .cacheControl(BetaCacheControlEphemeral.builder().build())
-                        .build(),
-                )
-            )
-        turns.forEach { t ->
-            builder.addUserMessage(t.question)
-            builder.addAssistantMessage(t.answer)
-        }
-        builder.addUserMessage(question)
-            // Question ponctuelle : effort bas, réponse rapide (Opus 5 accepte le paramètre)
-            .outputConfig(BetaOutputConfig.builder().effort(BetaOutputConfig.Effort.LOW).build())
-            .fallbacksDefault()
-            .addBeta(AnthropicBeta.SERVER_SIDE_FALLBACK_2026_07_01)
-        val msg: BetaMessage = client.beta().messages().create(builder.build())
-        val stop = msg.stopReason().map { it.toString() }.orElse("")
-        if (stop.contains("refusal", ignoreCase = true)) {
-            return AiAnswer.Failed("Question refusée par les filtres de sécurité du modèle")
-        }
-        val text = msg.content()
-            .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-            .joinToString("\n")
-            .trim()
-        if (text.isBlank()) return AiAnswer.Failed("Réponse vide du modèle")
-        return AiAnswer.Ok(
-            text = ClaudeSupport.markTruncated(text, stop),
-            model = msg.model().asString(),
-            inputTokens = msg.usage().inputTokens(),
-            outputTokens = msg.usage().outputTokens(),
-            cacheReadTokens = msg.usage().cacheReadInputTokens().orElse(0L),
-        )
-    }
-
-    private fun askStable(
-        client: AnthropicClient,
-        modelId: String,
-        context: String,
-        turns: List<QaTurn>,
-        question: String,
-    ): AiAnswer {
-        val builder = MessageCreateParams.builder()
-            .model(modelId)
-            .maxTokens(MAX_TOKENS)
-            .systemOfTextBlockParams(
-                listOf(
-                    TextBlockParam.builder().text(INSTRUCTIONS).build(),
-                    TextBlockParam.builder()
-                        .text(context)
-                        .cacheControl(CacheControlEphemeral.builder().build())
-                        .build(),
-                )
-            )
-        turns.forEach { t ->
-            builder.addUserMessage(t.question)
-            builder.addAssistantMessage(t.answer)
-        }
-        builder.addUserMessage(question)
-        if (modelId != ClaudeSupport.MODEL_HAIKU) {
-            // Question ponctuelle : effort bas suffit, réponse rapide (paramètre refusé par Haiku 4.5)
-            builder.outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.LOW).build())
-        }
-        val msg: Message = client.messages().create(builder.build())
-        val stop = msg.stopReason().map { it.toString() }.orElse("")
-        if (stop.contains("refusal", ignoreCase = true)) {
-            return AiAnswer.Failed("Question refusée par les filtres de sécurité du modèle")
-        }
-        val text = msg.content()
-            .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-            .joinToString("\n")
-            .trim()
-        if (text.isBlank()) return AiAnswer.Failed("Réponse vide du modèle")
-        return AiAnswer.Ok(
-            text = ClaudeSupport.markTruncated(text, stop),
-            model = msg.model().asString(),
-            inputTokens = msg.usage().inputTokens(),
-            outputTokens = msg.usage().outputTokens(),
-            cacheReadTokens = msg.usage().cacheReadInputTokens().orElse(0L),
-        )
     }
 }
