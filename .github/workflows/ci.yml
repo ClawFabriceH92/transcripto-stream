@@ -5,6 +5,10 @@ on:
     branches: [main, "claude/**"]
   pull_request:
 
+# contents: write — nécessaire pour publier l'extrait des erreurs en commentaire de commit
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,11 +23,15 @@ jobs:
 
       # Le modèle ggml et les .so JNI sont gitignorés : l'APK compile sans eux,
       # seule l'exécution Whisper sur l'appareil en a besoin.
+      # La sortie Gradle est conservée (build.log) pour en publier un extrait en cas d'échec :
+      # les journaux de job ne sont pas lisibles depuis l'environnement des sessions automatiques.
       - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+        shell: bash
+        run: ./gradlew assembleDebug --no-daemon 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
 
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest --no-daemon
+        shell: bash
+        run: ./gradlew testDebugUnitTest --no-daemon 2>&1 | tee -a build.log; exit ${PIPESTATUS[0]}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -37,3 +45,27 @@ jobs:
         with:
           name: test-reports
           path: app/build/reports/tests/
+
+      # Extrait des erreurs (compilation + tests) publié en commentaire de commit, lisible
+      # anonymement via l'API : GET /repos/{owner}/{repo}/commits/{sha}/comments
+      - name: Publish error excerpt as commit comment
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            grep -E "^e: |error:|> Task .* FAILED|Execution failed|What went wrong|Caused by:|tests completed" build.log | head -80
+            python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for f in sorted(glob.glob('app/build/test-results/testDebugUnitTest/*.xml')):
+              for tc in ET.parse(f).getroot().iter('testcase'):
+                  fl = tc.find('failure')
+                  if fl is not None:
+                      print(f"TEST FAILED {tc.get('classname')}.{tc.get('name')}: {(fl.get('message') or '')[:300]}")
+          PY
+          } > errors.txt 2>/dev/null || true
+          [ -s errors.txt ] || echo "(aucune ligne d'erreur reconnue — voir le run ${{ github.run_id }})" > errors.txt
+          body="$(printf 'CI en échec (run %s) — extrait des erreurs :\n\n```\n%s\n```\n' "${{ github.run_id }}" "$(head -c 60000 errors.txt)")"
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -f body="$body" >/dev/null \
+            || echo "Commentaire de commit impossible (jeton en lecture seule ?)"
