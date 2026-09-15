@@ -22,6 +22,21 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+        externalNativeBuild {
+            cmake {
+                // whisper.cpp (sous-module) + ggml statiques, liés au pont JNI dans libwhisper.so
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
+    }
+
+    // Compilation native : CMake du projet (src/main/cpp), NDK r27 (installé par AGP si absent)
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     signingConfigs {

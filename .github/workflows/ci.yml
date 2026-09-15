@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
@@ -21,8 +23,9 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      # Le modèle ggml et les .so JNI sont gitignorés : l'APK compile sans eux,
-      # seule l'exécution Whisper sur l'appareil en a besoin.
+      # Le modèle ggml est gitignoré : l'APK compile sans lui, seule l'exécution Whisper
+      # sur l'appareil en a besoin. La bibliothèque native est compilée ici (sous-module
+      # whisper.cpp, NDK installé par AGP au besoin).
       # La sortie Gradle est conservée (build.log) pour en publier un extrait en cas d'échec :
       # les journaux de job ne sont pas lisibles depuis l'environnement des sessions automatiques.
       - name: Build debug APK

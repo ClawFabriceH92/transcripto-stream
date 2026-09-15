@@ -1,8 +1,8 @@
 name: Release
 
-# Construit un APK release signé COMPLET (binaires natifs + modèle Whisper Base
-# récupérés depuis la release v0.2.5 — inchangés depuis) et publie la release
-# GitHub que l'auto-updater de l'app ira chercher.
+# Construit un APK release signé COMPLET (bibliothèque native compilée depuis le
+# sous-module whisper.cpp, modèle Whisper Base récupéré depuis la release v0.2.5)
+# et publie la release GitHub que l'auto-updater de l'app ira chercher.
 on:
   workflow_dispatch:
   push:
@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
@@ -23,17 +25,17 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Binaires natifs + modèle Whisper (extraits de la release v0.2.5)
+      # Les bibliothèques natives viennent désormais du build (sous-module whisper.cpp) ;
+      # seul le modèle Base est repris de la release v0.2.5 (inchangé depuis).
+      - name: Modèle Whisper Base (extrait de la release v0.2.5)
         run: |
           curl -fsSL -o base.apk \
             "https://github.com/ClawFabriceH92/transcripto-stream/releases/download/v0.2.5/transcripto-stream-v0.2.5.apk"
-          unzip -o -q base.apk 'lib/arm64-v8a/*' 'assets/models/*' -d extracted
-          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets/models
-          cp extracted/lib/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
+          unzip -o -q base.apk 'assets/models/*' -d extracted
+          mkdir -p app/src/main/assets/models
           cp extracted/assets/models/ggml-base.bin app/src/main/assets/models/
-          test -s app/src/main/jniLibs/arm64-v8a/libwhisper.so
           test -s app/src/main/assets/models/ggml-base.bin
-          ls -l app/src/main/jniLibs/arm64-v8a/ app/src/main/assets/models/
+          ls -l app/src/main/assets/models/
 
       - name: Build APK release signé
         env:
@@ -43,9 +45,11 @@ jobs:
           TRANSCRIPTO_STREAM_KEY_PASSWORD: ${{ secrets.TRANSCRIPTO_STREAM_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Vérifier la signature
+      - name: Vérifier la signature et la bibliothèque native
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
+          unzip -l "$APK" | grep -E "lib/arm64-v8a/|assets/models/" || true
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libwhisper.so" || { echo "::error::libwhisper.so absente de l'APK"; exit 1; }
           if [ ! -f "$APK" ]; then
             echo "::error::app-release.apk absent — APK non signé. Vérifie les secrets TRANSCRIPTO_STREAM_KEYSTORE_*."
             ls app/build/outputs/apk/release/
