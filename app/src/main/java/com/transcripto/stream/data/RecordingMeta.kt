@@ -21,10 +21,20 @@ data class RecordingMeta(
     val actions: List<ActionItem> = emptyList(),
     /** Clés (texte replié) des actions supprimées à la main : une nouvelle synthèse ne les recrée pas. */
     val dismissedActions: List<String> = emptyList(),
+    /**
+     * Empreinte vocale (centroïde normalisé) de chaque intervenant, calculée à la transcription
+     * différée — mémoire des voix : un intervenant nommé ici est reconnu dans les enregistrements
+     * suivants. Comparer par [voicesContentEquals], pas par `==` (tableaux).
+     */
+    val voices: Map<Int, FloatArray> = emptyMap(),
 ) {
     val isEmpty: Boolean
         get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty() &&
-            !segmentsStale && actions.isEmpty() && dismissedActions.isEmpty()
+            !segmentsStale && actions.isEmpty() && dismissedActions.isEmpty() && voices.isEmpty()
+
+    /** Égalité de contenu des empreintes (les tableaux se comparent par référence dans `==`). */
+    fun voicesContentEquals(other: Map<Int, FloatArray>): Boolean =
+        voices.keys == other.keys && voices.all { (id, v) -> other[id]?.contentEquals(v) == true }
 
     /** Actions non faites, dans l'ordre. */
     val openActions: List<ActionItem> get() = actions.filter { !it.done }
@@ -76,6 +86,17 @@ object MetaCodec {
             o.put("actions", actions)
         }
         if (meta.dismissedActions.isNotEmpty()) o.put("dismissed", JSONArray(meta.dismissedActions))
+        if (meta.voices.isNotEmpty()) {
+            val voices = JSONObject()
+            meta.voices.forEach { (id, v) ->
+                if (v.isEmpty()) return@forEach
+                val arr = JSONArray()
+                // 4 décimales : ~3,5 Ko par intervenant, précision très suffisante pour une similarité cosinus
+                v.forEach { x -> arr.put(Math.round(x.toDouble() * 10000.0) / 10000.0) }
+                voices.put(id.toString(), arr)
+            }
+            o.put("voices", voices)
+        }
         return o.toString()
     }
 
@@ -118,6 +139,15 @@ object MetaCodec {
                     )
                 }
             }
+            val voices = LinkedHashMap<Int, FloatArray>()
+            o.optJSONObject("voices")?.let { vo ->
+                vo.keys().forEach { k ->
+                    val id = k.toIntOrNull() ?: return@forEach
+                    val arr = vo.optJSONArray(k) ?: return@forEach
+                    if (arr.length() == 0) return@forEach
+                    voices[id] = FloatArray(arr.length()) { arr.optDouble(it, 0.0).toFloat() }
+                }
+            }
             RecordingMeta(
                 speakers = speakers,
                 dossier = o.optString("dossier", "").trim(),
@@ -126,6 +156,7 @@ object MetaCodec {
                 segmentsStale = o.optBoolean("stale", false),
                 actions = actions,
                 dismissedActions = o.optJSONArray("dismissed")?.let { arr -> (0 until arr.length()).map { arr.optString(it, "") }.filter { it.isNotBlank() } } ?: emptyList(),
+                voices = voices,
             )
         } catch (e: Exception) {
             RecordingMeta()

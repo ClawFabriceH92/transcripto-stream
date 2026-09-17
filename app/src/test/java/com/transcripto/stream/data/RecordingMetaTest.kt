@@ -33,6 +33,31 @@ class RecordingMetaTest {
     }
 
     @Test
+    fun voicesRoundTripWithFourDecimals() {
+        val v1 = FloatArray(8) { (it - 3) / 7f }
+        val v2 = FloatArray(8) { 0.123456f * it }
+        val meta = RecordingMeta(speakers = mapOf(1 to "M. Martin"), voices = mapOf(1 to v1, 2 to v2))
+        assertFalse(meta.isEmpty)
+        val json = MetaCodec.toJson(meta)
+        assertTrue(json, json.contains("\"voices\""))
+        val back = MetaCodec.fromJson(json)
+        assertEquals(setOf(1, 2), back.voices.keys)
+        for (i in 0 until 8) {
+            assertEquals(v1[i], back.voices.getValue(1)[i], 5e-5f)
+            assertEquals(v2[i], back.voices.getValue(2)[i], 5e-5f)
+        }
+        assertTrue(back.voicesContentEquals(MetaCodec.fromJson(json).voices))
+        assertFalse(back.voicesContentEquals(mapOf(1 to v1)))
+        // Sans empreinte : pas de clé, et une empreinte vide est ignorée
+        assertFalse(MetaCodec.toJson(RecordingMeta(dossier = "X")).contains("voices"))
+        assertTrue(MetaCodec.fromJson(MetaCodec.toJson(RecordingMeta(voices = mapOf(1 to FloatArray(0))))).isEmpty)
+        // Empreintes illisibles : ignorées sans perdre le reste
+        val broken = MetaCodec.fromJson("""{"dossier":"D","voices":{"a":[1,2],"2":"x","3":[]}}""")
+        assertEquals("D", broken.dossier)
+        assertTrue(broken.voices.isEmpty())
+    }
+
+    @Test
     fun invalidJsonYieldsEmptyMeta() {
         assertTrue(MetaCodec.fromJson("pas du json").isEmpty)
         assertTrue(MetaCodec.fromJson(null).isEmpty)

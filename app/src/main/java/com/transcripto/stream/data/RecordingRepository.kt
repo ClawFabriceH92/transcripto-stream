@@ -440,6 +440,51 @@ class RecordingRepository(private val root: File) {
     }
 
     /**
+     * Mémoire des voix : nom d'intervenant → empreinte moyenne (normalisée), à partir des
+     * intervenants à la fois nommés et dotés d'une empreinte dans les autres enregistrements.
+     * Les enregistrements du même [dossier] sont lus en premier ; les noms se comparent sans
+     * la casse et un même nom vu plusieurs fois donne une seule empreinte moyenne.
+     */
+    fun knownVoices(dossier: String, except: File? = null): Map<String, FloatArray> {
+        val files = (dir.listFiles() ?: return emptyMap())
+            .filter { it.isFile && (RecordingNames.isAudio(it.name) || RecordingNames.isTextOnly(it.name)) }
+            .filter { except == null || RecordingNames.baseName(it.name) != RecordingNames.baseName(except.name) }
+            .sortedByDescending { it.lastModified() }
+        val seenBases = HashSet<String>()
+        val metas = files
+            .filter { seenBases.add(RecordingNames.baseName(it.name)) } // « a.wav » et « a.txt » partagent le .meta
+            .map { readMeta(it) }
+            .filter { it.voices.isNotEmpty() && it.speakers.isNotEmpty() }
+        val d = dossier.trim()
+        // Tri stable : même dossier d'abord, puis du plus récent au plus ancien
+        val ordered = if (d.isEmpty()) metas else metas.sortedBy { if (it.dossier.equals(d, ignoreCase = true)) 0 else 1 }
+        val sums = LinkedHashMap<String, FloatArray>()
+        val labels = LinkedHashMap<String, String>()
+        for (meta in ordered) {
+            for ((id, name) in meta.speakers) {
+                val v = meta.voices[id] ?: continue
+                val key = name.trim().lowercase()
+                if (key.isEmpty() || v.isEmpty()) continue
+                val sum = sums[key]
+                if (sum == null) {
+                    sums[key] = v.copyOf()
+                    labels[key] = name.trim()
+                } else if (sum.size == v.size) {
+                    for (i in sum.indices) sum[i] += v[i]
+                }
+            }
+        }
+        val out = LinkedHashMap<String, FloatArray>()
+        for ((key, sum) in sums) {
+            var n = 0.0
+            for (x in sum) n += x.toDouble() * x
+            val norm = Math.sqrt(n).toFloat()
+            if (norm > 0f) out[labels.getValue(key)] = FloatArray(sum.size) { sum[it] / norm }
+        }
+        return out
+    }
+
+    /**
      * Renomme un dossier (ou le fusionne dans [newName] s'il existe déjà) : réécrit le
      * .meta de chaque enregistrement rattaché à [oldName]. Retourne le nombre modifié.
      */

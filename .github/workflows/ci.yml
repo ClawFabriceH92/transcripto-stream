@@ -28,6 +28,17 @@ jobs:
       # whisper.cpp, NDK installé par AGP au besoin).
       # La sortie Gradle est conservée (build.log) pour en publier un extrait en cas d'échec :
       # les journaux de job ne sont pas lisibles depuis l'environnement des sessions automatiques.
+      # Modèle de locuteur (WeSpeaker CAM++ VoxCeleb, fp32, 28 Mo) : téléchargé depuis la release
+      # sherpa-onnx, empreinte vérifiée, embarqué dans assets/speaker (gitignoré). Absent : l'app se
+      # replie sur la diarisation par hauteur de voix.
+      - name: Modèle de locuteur (WeSpeaker CAM++)
+        shell: bash
+        run: |
+          mkdir -p app/src/main/assets/speaker
+          curl -fsSL --retry 3 -o app/src/main/assets/speaker/wespeaker_voxceleb_campplus.onnx \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx"
+          echo "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef  app/src/main/assets/speaker/wespeaker_voxceleb_campplus.onnx" | sha256sum -c -
+
       - name: Build debug APK
         shell: bash
         run: ./gradlew assembleDebug --no-daemon 2>&1 | tee build.log; exit ${PIPESTATUS[0]}

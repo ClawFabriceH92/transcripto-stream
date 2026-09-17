@@ -20,6 +20,10 @@ import com.transcripto.stream.audio.LiveTranscriber
 import com.transcripto.stream.audio.PcmAudioRecorder
 import com.transcripto.stream.audio.PcmDigest
 import com.transcripto.stream.audio.PitchDiarizer
+import com.transcripto.stream.audio.SpeakerClustering
+import com.transcripto.stream.audio.SpeakerDiarizer
+import com.transcripto.stream.audio.SpeakerEmbedder
+import com.transcripto.stream.audio.VoiceEmbedder
 import com.transcripto.stream.audio.PlaybackController
 import com.transcripto.stream.audio.SileroVad
 import com.transcripto.stream.audio.WavPcm
@@ -315,6 +319,14 @@ class StreamViewModel(
     val liveText: StateFlow<String> = transcriber.liveText
     val transcriptionCount: StateFlow<Int> = transcriber.windowCount
     val lastWindowText: StateFlow<String> = transcriber.lastWindowText
+
+    /**
+     * Encodeur d'empreintes vocales (modèle ONNX de 28 Mo) : chargé à la première transcription
+     * différée si le réglage est actif, null si le modèle est absent (repli par hauteur de voix).
+     */
+    private var speakerEmbedder: SpeakerEmbedder? = null
+    private var speakerEmbedderTried = false
+    private val speakerEmbedderLock = Mutex()
 
     private var googleEngine: GoogleSpeechEngine? = null
     private var recorder: PcmAudioRecorder? = null
@@ -1413,14 +1425,27 @@ class StreamViewModel(
             engineRef.transcribeBuffer(pcm, settings.language, settings.vocabularyList.joinToString(", "))
         }
         if (res.error != null) return res.error
+        val embedder = if (settings.speakerEmbeddings) speakerEmbedder() else null
+        val expected = settings.expectedSpeakers.takeIf { it in 1..SpeakerClustering.MAX_SPEAKERS }
+        val diarization = withContext(Dispatchers.IO) { diarize(pcm, res.segments, embedder, expected) }
+        val voices = diarization.voices
         val (text, srt, segmentsJson) = withContext(Dispatchers.IO) {
-            val shorts = PitchDiarizer.toShorts(pcm)
-            val speakerIds = PitchDiarizer.detectSpeakers(shorts, res.segments)
+            val speakerIds = diarization.speakerIds
             Triple(
                 repo.buildSpeakerMarkedTranscript(res, speakerIds, settings.useTimestamps),
                 TranscriptExporter.buildSrt(res.segments),
                 if (res.segments.isEmpty()) "" else SegmentsCodec.toJson(res.segments, speakerIds),
             )
+        }
+        // Mémoire des voix : empreintes conservées dans le .meta ; les voix déjà nommées ailleurs
+        // (même dossier d'abord) pré-remplissent les intervenants sans nom — à confirmer sur la fiche.
+        val recognised = withContext(Dispatchers.IO) {
+            if (voices.isEmpty()) return@withContext emptyMap<Int, String>()
+            val meta = repo.readMeta(file)
+            val known = repo.knownVoices(meta.dossier, except = file)
+            val found = SpeakerDiarizer.recognise(voices, known).filterKeys { it !in meta.speakers }
+            repo.updateMeta(file) { m -> m.copy(voices = voices, speakers = found + m.speakers) }
+            found
         }
         if (showInMain) {
             _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { repo.readMeta(file).speakers })
@@ -1431,7 +1456,52 @@ class StreamViewModel(
             writeTranscript(file, text, durationMs)
             repo.writeSidecars(file, srt, segmentsJson)
         }
+        if (recognised.isNotEmpty() && showInMain) {
+            val names = recognised.entries.sortedBy { it.key }.joinToString(", ") { "Intervenant ${it.key} → ${it.value}" }
+            _uiMessage.value = appContext.getString(R.string.m_voix_reconnues, names)
+        }
         return null
+    }
+
+    /**
+     * Intervenants par empreintes vocales quand l'encodeur est disponible (sinon, ou en cas
+     * d'erreur d'inférence, par hauteur de voix — sans mémoire des voix).
+     */
+    private fun diarize(pcm: ByteArray, segments: List<SegmentData>, embedder: VoiceEmbedder?, expected: Int?): SpeakerDiarizer.Result {
+        if (expected == 1) return SpeakerDiarizer.Result(List(segments.size) { 1 }, emptyMap())
+        val shorts = PitchDiarizer.toShorts(pcm)
+        if (embedder != null) {
+            try {
+                return SpeakerDiarizer.assign(shorts, segments, embedder, expected)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Empreintes vocales impossibles, repli par hauteur de voix : ${t.message}")
+            }
+        }
+        return SpeakerDiarizer.Result(PitchDiarizer.detectSpeakers(shorts, segments), emptyMap())
+    }
+
+    /** Encodeur d'empreintes, chargé une seule fois (I/O) ; null si le modèle manque. */
+    private suspend fun speakerEmbedder(): VoiceEmbedder? = speakerEmbedderLock.withLock {
+        if (!speakerEmbedderTried) {
+            speakerEmbedderTried = true
+            speakerEmbedder = withContext(Dispatchers.IO) { SpeakerEmbedder.create(appContext) }
+        }
+        speakerEmbedder
+    }
+
+    fun setSpeakerEmbeddings(enabled: Boolean) {
+        settings.speakerEmbeddings = enabled
+        if (!enabled) viewModelScope.launch(Dispatchers.IO) {
+            speakerEmbedderLock.withLock {
+                speakerEmbedder?.close()
+                speakerEmbedder = null
+                speakerEmbedderTried = false
+            }
+        }
+    }
+
+    fun setExpectedSpeakers(count: Int) {
+        settings.expectedSpeakers = if (count in 1..SpeakerClustering.MAX_SPEAKERS) count else 0
     }
 
     // ---- Import par lots : décodage, transcription différée puis synthèse, un fichier à la fois ----
@@ -1873,6 +1943,7 @@ class StreamViewModel(
         playback.stop()
         models.release()
         claude.close()
+        speakerEmbedder?.close()
         super.onCleared()
     }
 }

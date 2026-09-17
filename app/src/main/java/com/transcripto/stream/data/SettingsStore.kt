@@ -30,6 +30,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt("retention_days", 0)
         set(v) = prefs.edit().putInt("retention_days", v).apply()
 
+    // ---- Diarisation par empreintes vocales (modèle de locuteur embarqué) ; sinon hauteur de voix ----
+    var speakerEmbeddings: Boolean
+        get() = prefs.getBoolean("speaker_embeddings", true)
+        set(v) = prefs.edit().putBoolean("speaker_embeddings", v).apply()
+
+    // ---- Intervenants attendus : 0 = automatique, sinon nombre imposé (2..6) ----
+    var expectedSpeakers: Int
+        get() = prefs.getInt("expected_speakers", 0)
+        set(v) = prefs.edit().putInt("expected_speakers", v).apply()
+
     // ---- Relecture assistée : la fiche s'ouvre en mode Vérification ----
     var reviewByDefault: Boolean
         get() = prefs.getBoolean("review_by_default", false)

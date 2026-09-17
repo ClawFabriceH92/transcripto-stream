@@ -302,4 +302,29 @@ class RecordingRepositoryTest {
         assertEquals(maxOf(File(dir, "i.txt").lastModified(), File(dir, "i.json").lastModified()), src.contentStamp)
         assertTrue(repo.segmentsForIndex(wav("empty.wav")).isEmpty())
     }
+
+    @Test
+    fun knownVoicesAveragesNamedVoicesAndPrefersTheDossier() {
+        val a = wav("a.wav", modified = 3_000L)
+        val b = wav("b.wav", modified = 2_000L)
+        val c = wav("c.wav", modified = 1_000L)
+        val cur = wav("cur.wav", modified = 4_000L)
+        val x = floatArrayOf(1f, 0f, 0f)
+        val y = floatArrayOf(0f, 1f, 0f)
+        repo.writeMeta(a, RecordingMeta(dossier = "SARL Martin", speakers = mapOf(1 to "M. Martin", 2 to "Sans empreinte"), voices = mapOf(1 to x, 3 to y)))
+        repo.writeMeta(b, RecordingMeta(dossier = "Autre", speakers = mapOf(1 to "m. martin", 2 to "Mme Durand"), voices = mapOf(1 to y, 2 to y)))
+        repo.writeMeta(c, RecordingMeta(speakers = mapOf(1 to "Mme Durand"), voices = emptyMap()))
+        repo.writeMeta(cur, RecordingMeta(dossier = "SARL Martin", speakers = mapOf(1 to "Moi"), voices = mapOf(1 to x)))
+        val known = repo.knownVoices("SARL Martin", except = cur)
+        // « Moi » (enregistrement courant) exclu ; « Sans empreinte » sans vecteur ignoré ; c sans empreinte ignoré
+        assertEquals(setOf("M. Martin", "Mme Durand"), known.keys)
+        // M. Martin : moyenne de x (dossier) et y (autre), normalisée — le libellé vient du dossier lu en premier
+        val m = known.getValue("M. Martin")
+        assertEquals(m[0], m[1], 1e-6f)
+        assertEquals(1f, m[0] * m[0] + m[1] * m[1] + m[2] * m[2], 1e-5f)
+        assertEquals(1f, known.getValue("Mme Durand")[1], 1e-6f)
+        // Sans dossier : mêmes voix ; le libellé garde la première graphie rencontrée (la plus récente)
+        assertEquals(setOf("M. Martin", "Mme Durand"), repo.knownVoices("", except = cur).keys)
+        assertTrue(repo.knownVoices("SARL Martin", except = null).containsKey("Moi"))
+    }
 }

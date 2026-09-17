@@ -153,4 +153,5 @@
     <string name="m_un_telechargement_de_modele_est_deja_en">Un téléchargement de modèle est déjà en cours</string>
     <string name="m_une_reponse_est_deja_en_cours">Une réponse est déjà en cours</string>
     <string name="m_une_synthese_est_deja_en_cours">Une synthèse est déjà en cours</string>
+    <string name="m_voix_reconnues">Voix reconnues (à confirmer sur la fiche) : %1$s</string>
 </resources>

@@ -17,6 +17,9 @@
 *.gguf
 *.wav
 
+# Modèle de locuteur (téléchargé par les workflows, voir ci.yml)
+app/src/main/assets/speaker/
+
 # Native libs (build output)
 app/src/main/jniLibs/
 
