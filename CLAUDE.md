@@ -15,7 +15,8 @@ messages en français.
   lisible anonymement : `GET /repos/{owner}/{repo}/commits/{sha}/comments`.
   État des runs : `GET /repos/{owner}/{repo}/actions/runs?branch=<branche>&per_page=3`.
 - **Vérification locale avant de pousser** : les classes pures (paquets `data`,
-  `summary`, `export`, `audio` hors Android, `stt/ModelCatalog`, `stt/VoiceCommands`)
+  `summary`, `export`, `audio` hors Android — dont `Fbank`, `SpeakerClustering`,
+  `SpeakerDiarizer`, `VoiceEmbedder` —, `stt/ModelCatalog`, `stt/VoiceCommands`)
   se compilent et se testent en JVM avec `kotlinc` 2.0.21 + JUnit 4.13.2 +
   `org.json` + `kotlinx-coroutines-core-jvm` + les jars du SDK Anthropic. Il faut
   deux stubs : `stt/SegmentData` + `StreamResult` (copie des data classes de
@@ -38,11 +39,18 @@ messages en français.
 
 ## État du plan (septembre 2026)
 
-- Vague A (v0.11.0) faite sauf A5 (chaînes externalisées dans `strings.xml`) ; vague B
-  (v0.12.0) faite ; vague C : C1 (natif) et C2 (relecture assistée) faits en v0.13.0,
-  C3 (diarisation par empreintes de locuteurs) non commencée — nécessite un modèle de
-  locuteur ONNX (WeSpeaker/CAM++) inaccessible depuis la session (Hugging Face bloqué)
-  et une validation JVM avec le runtime ONNX de bureau, comme pour la VAD.
+- Vagues A (v0.11.0), B (v0.12.0) et C (v0.13.0 + v0.14.0) faites : A5 (chaînes dans
+  `strings.xml`) et C3 (diarisation par empreintes vocales) livrés en v0.14.0.
+- C3 : modèle WeSpeaker CAM++ VoxCeleb fp32 (28 Mo) pris sur la release
+  `speaker-recongition-models` de sherpa-onnx (GitHub, accessible ; Hugging Face bloqué),
+  téléchargé par `ci.yml`/`release.yml` dans `app/src/main/assets/speaker/` (gitignoré) avec
+  SHA-256 vérifié. Les variantes int8 dynamique (cos 0,86 vs fp32) et fp16 (échec de chargement
+  ORT) ont été rejetées. Validation JVM : `SpeakerEmbedder` compilé avec `onnxruntime-android`
+  (`classes.jar`) et exécuté avec le runtime ONNX de bureau ; empreinte identique à la référence
+  numpy (cos 1,0000). Le `.meta` porte les empreintes (`voices`, 4 décimales, ~3,5 Ko par
+  intervenant).
+- Pistes restantes : seconde variante native « +dotprod+fp16 » choisie d'après `/proc/cpuinfo` ;
+  test du PDF via `PdfRenderer` sous Robolectric ; validation sur appareil de v0.13.0/v0.14.0.
 
 ## Architecture (après la refonte v0.11.0)
 
@@ -57,19 +65,23 @@ messages en français.
   - `summary/AiAssistant` — synthèse, questions, chapitres ; appels Claude via
     `summary/ClaudeCall.kt` (`ClaudeRequest`, `ClaudeTransport`, `SdkClaudeTransport`).
   - `stt/ModelManager` — modèle Whisper actif, catalogue, téléchargements.
+  - `audio/SpeakerDiarizer` + `SpeakerEmbedder` (ONNX, chargé à la première transcription
+    différée, fermé dans `onCleared`) + `SpeakerClustering` + `Fbank` — intervenants par
+    empreintes vocales dans `transcribeStored`, repli `PitchDiarizer` ; mémoire des voix via
+    `RecordingRepository.knownVoices` et `SpeakerDiarizer.recognise` (≥ 0,75).
   - `summary/ActionExtractor` (actions à mener), `data/ReviewMarks` (relecture assistée),
     `ui/DossierScreen` (fiche dossier), import par lots dans le ViewModel + `RecordingService`.
   - `export/DocumentExporter`, `export/ShareComposer`.
 - Interfaces d'injection pour les tests : `KeyProvider` (clé des textes scellés),
   `WavCipher` (chiffrement des WAV), `WindowTranscriber`, `FrameVad`, `ClaudeTransport`,
-  `LiveSettings`, `AiSettings`.
+  `LiveSettings`, `AiSettings`, `VoiceEmbedder`.
 
 ## Conventions de fichiers
 
 - Un enregistrement = `base.wav` (clair), `base.wav.enc` (chiffré AndroidKeyStore)
   ou `base.txt` seul (moteur Google), plus les frères `.txt`, `.srt`, `.json`
   (segments), `.md` (synthèse), `.meta` (JSON : intervenants, dossier, gabarit,
-  chapitres, drapeau `stale`).
+  chapitres, drapeau `stale`, actions, empreintes `voices`).
 - `.txt` = en-tête (`Transcripto Stream`, `Date`, `Durée`, `Chiffré`, `SHA-256 (PCM)`)
   puis `----` puis le texte. Le texte garde les libellés génériques
   `[Intervenant N]` ; les noms sont appliqués à l'affichage (`SpeakerNames`).

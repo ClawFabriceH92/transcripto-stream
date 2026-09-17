@@ -1,15 +1,22 @@
-# Transcripto Stream v0.13.0
+# Transcripto Stream v0.14.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
 
 > Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées). Les versions suivantes s'installeront automatiquement si « Mise à jour automatique » est active.
+
+## Nouveautés v0.14.0 — intervenants par empreintes vocales, mémoire des voix
+
+- **Intervenants reconnus à la voix** : la transcription différée (« Transcrire », import, lots) attribue chaque passage à un intervenant d'après une empreinte de sa voix (modèle de locuteur WeSpeaker CAM++ exécuté sur l'appareil, 28 Mo embarqués) au lieu de la seule hauteur de voix. Les passages d'au moins une seconde sont comparés entre eux et regroupés ; les plus courts suivent leur voisin. En cas de modèle indisponible, l'attribution par hauteur de voix reste le repli.
+- **Mémoire des voix** : l'empreinte de chaque intervenant est conservée avec l'enregistrement (`.meta`, chiffré avec les textes si l'option est active). Quand un intervenant a été **nommé** sur la fiche, sa voix est reconnue dans les enregistrements suivants — ceux du même dossier en priorité — et son nom est proposé automatiquement, avec un message « Voix reconnues (à confirmer sur la fiche) ». Un nom n'est proposé qu'une fois par enregistrement et jamais par-dessus un nom déjà saisi.
+- **Réglages → Comportement** : « Intervenants par empreintes vocales » (désactivable) et « Intervenants attendus » (Auto, 1, 2, 3, 4, 6) pour imposer le nombre d'intervenants d'un entretien à deux ou d'un comité.
+- **Interface** : les libellés des écrans et les messages de l'app sont regroupés dans les ressources (`strings.xml`), première étape vers une version anglaise.
+- Les enregistrements transcrits avant cette version gardent leur attribution par hauteur de voix et n'ont pas d'empreinte : relance « Transcrire » pour en profiter. Compte quelques dizaines de secondes de plus par heure d'audio pour le calcul des empreintes.
 
 ## Nouveautés v0.13.0 — moteur compilé à la source, relecture assistée
 
 - **Moteur Whisper compilé à la source** : whisper.cpp (v1.9.4) est désormais un sous-module du dépôt, compilé par le build (NDK 27, arm64 socle `armv8-a` pour rester compatible avec tous les téléphones Android 10+, pages de 16 Ko) au lieu de binaires figés depuis la v0.2.5. **À valider sur ton appareil** : lance une transcription différée et un enregistrement Whisper ; en cas de souci, la v0.12.0 reste installable.
 - **Confiance par passage** : chaque passage transcrit porte la probabilité moyenne du moteur (fichier `.json`), base de la relecture assistée.
 - **Relecture assistée** : sur la fiche, la puce « Vérifier (n) » teinte les passages dont la confiance est sous 60 %, souligne montants, pourcentages et dates, et « Suivant » saute de passage douteux en passage douteux en calant la lecture. Réglage « Vérification par défaut » (Réglages → Comportement). Les exports Word et PDF indiquent le nombre de passages à vérifier et les marquent « (à vérifier) ». Les enregistrements transcrits avant cette version n'ont pas de confiance : relance « Transcrire ».
-- Non inclus, prévu ensuite : diarisation par empreinte vocale (modèle de locuteur ONNX) et chaînes de l'interface externalisées.
 
 ## v0.12.0 — dossiers, suivi des actions, import par lots
 

@@ -11,7 +11,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Conservation audio** (mode Whisper) : chaque enregistrement est écrit en WAV (`filesDir/recordings/`), avec **empreinte SHA-256 du flux PCM** notée dans le `.txt` (valeur probante).
 - **Transcription différée** (mode Whisper) : bouton « Transcrire » → whisper traite le fichier complet et produit :
   - horodatage `[mm:ss]` par segment,
-  - attribution `[Intervenant 1/2]` (estimation par le pitch de la voix),
+  - attribution `[Intervenant 1/2]` par **empreintes vocales** (modèle de locuteur sur l'appareil, repli par hauteur de voix),
   - **bloc « temps de parole » par intervenant** (durée + %),
   - **sous-titres `.srt`** à côté du WAV.
 - **Marqueurs à chaud** : bouton ⚑ pendant l'enregistrement → insère `[⭐mm:ss]` dans le texte pour retrouver les moments clés.
@@ -24,6 +24,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 - **Sauvegarde chiffrée exportable** : archive protégée par phrase de passe (PBKDF2 + AES-256-GCM), restaurable sur un autre appareil — les WAV chiffrés y sont inclus en clair dans l'archive (elle-même chiffrée) car la clé AndroidKeyStore ne peut pas voyager.
 - **Résilience audio** : pause automatique sur appel entrant (focus audio) avec reprise, arrêt propre et sauvegarde si le micro est perdu.
 - **Mode dictée** : ponctuation dite à la voix (« point », « à la ligne »…), activable dans les Réglages.
+- **Intervenants par empreintes vocales, mémoire des voix** (v0.14.0) : chaque passage d'une transcription différée est attribué d'après une **empreinte de la voix** (WeSpeaker CAM++ en ONNX, log-mel Kaldi calculé sur l'appareil, regroupement agglomératif), empreintes conservées dans le `.meta` ; une voix **nommée** sur une fiche est **reconnue dans les enregistrements suivants** (même dossier en priorité) et son nom proposé « à confirmer » ; réglages « Intervenants par empreintes vocales » et « Intervenants attendus » (Auto, 1..6). Chaînes de l'interface dans `strings.xml`.
 - **Moteur compilé à la source, relecture assistée** (v0.13.0) : whisper.cpp v1.9.4 en sous-module compilé par le build (plus de binaires figés), **confiance par passage** dans le `.json`, mode **Vérification** sur la fiche (passages sous 60 % teintés, montants et dates soulignés, « Suivant »), marquage « (à vérifier) » dans les exports, réglage « Vérification par défaut ».
 - **Dossiers, suivi des actions, import par lots** (v0.12.0) : **actions à mener suivies** (extraites des synthèses, cochables, responsable et échéance, dates françaises reconnues, contexte des actions ouvertes fourni à l'IA), **fiche dossier** (écran dédié : enregistrements, durée cumulée, intervenants, actions ouvertes agrégées, renommer/fusionner, export Word/PDF du dossier avec sommaire), **import par lots** (sélection ou partage multiple, dossier et gabarit communs, notification de progression annulable), **rappel de sauvegarde** (7/30 jours, bandeau sur la liste).
 - **Refonte du code, corrections synchronisées, R8** (v0.11.0) : ViewModel découpé en collaborateurs testables (`RecordingRepository`, `LiveTranscriber`, `PlaybackController`, `BackupManager`, `AiAssistant`, `ModelManager`, `DocumentExporter`…), un seul chemin d'appel Claude (`ClaudeTransport`) avec client HTTP partagé, **correction depuis l'écran principal synchronisée avec les passages** (ou signalée non synchronisée), horodatages `hh:mm:ss` homogènes, **R8** en release avec compilation de la release non signée en CI, 111 tests JVM + Robolectric, `CLAUDE.md`.
@@ -43,6 +44,7 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 app/src/main/
 ├── cpp/whisper_jni.cpp          # JNI : transcription d'un buffer PCM (pas de fichier)
 ├── assets/models/ggml-base.bin  # Modèle Whisper Base (~142 Mo, gitignoré)
+├── assets/speaker/…campplus.onnx # Modèle de locuteur WeSpeaker CAM++ (28 Mo, gitignoré, téléchargé par les workflows)
 ├── cpp/whisper.cpp/             # Sous-module whisper.cpp v1.9.4 (ggml + whisper, compilés en statique)
 ├── cpp/CMakeLists.txt           # libwhisper.so = whisper + ggml + JNI (externalNativeBuild)
 └── java/com/transcripto/stream/
@@ -55,7 +57,11 @@ app/src/main/
     ├── audio/PlaybackController.kt # Lecture MediaPlayer, position, vitesse, temp déchiffré
     ├── audio/AudioFocusGuard.kt    # Focus audio (pause/reprise) + écoute silencieuse
     ├── audio/AudioTransfer.kt      # Import (MediaCodec → WAV) et export SAF d'un audio
-    ├── audio/PitchDiarizer.kt      # Diarisation approximative par hauteur de voix (pur)
+    ├── audio/Fbank.kt              # Log-mel Kaldi 80 bandes pour le modèle de locuteur (pur, testé)
+    ├── audio/SpeakerEmbedder.kt    # Empreinte vocale WeSpeaker CAM++ (ONNX Runtime) ; VoiceEmbedder = interface
+    ├── audio/SpeakerClustering.kt  # Regroupement des empreintes (lien moyen, cosinus) (pur, testé)
+    ├── audio/SpeakerDiarizer.kt    # Intervenants par passage + reconnaissance des voix mémorisées (pur, testé)
+    ├── audio/PitchDiarizer.kt      # Diarisation approximative par hauteur de voix — repli (pur)
     ├── audio/PcmDigest.kt          # Empreinte SHA-256 du flux PCM
     ├── audio/WavFileWriter.kt      # PCM → WAV conservé
     ├── audio/AudioImporter.kt      # Import externe : MediaCodec → WAV 16 kHz mono
@@ -66,7 +72,7 @@ app/src/main/
     ├── data/RecordingRepository.kt # Dépôt des enregistrements : liste, .meta, renommage, rétention, .txt (testé)
     ├── data/BackupManager.kt       # Archive .tsbk chiffrée par phrase de passe (testé, WavCipher factice)
     ├── data/RecordingNames.kt      # Conventions de nommage (.wav / .wav.enc / .txt / .srt / .md / .meta)
-    ├── data/RecordingMeta.kt       # Métadonnées (.meta) : intervenants nommés, dossier, gabarit (pur, testé)
+    ├── data/RecordingMeta.kt       # Métadonnées (.meta) : intervenants nommés, empreintes, dossier, gabarit (pur, testé)
     ├── data/CryptoManager.kt       # AES-256-GCM (AndroidKeyStore) — KeyProvider + WavCipher
     ├── data/TextSealer.kt / TextVault.kt # Chiffrement des textes au repos (scellement + coffre, testés avec clé injectée)
     ├── data/SearchIndex.kt         # Index en mémoire des passages, recherche sans accents (pur, testé)
@@ -133,7 +139,7 @@ changement du code natif ; la CI et la publication la compilent avec l'APK.
 
 ## Binaires non versionnés
 
-- Le modèle `ggml-base.bin` est dans `.gitignore` (142 Mo) : un clone frais compile la bibliothèque native mais ne peut pas produire un APK **fonctionnel en mode Whisper** sans le modèle. Les releases GitHub contiennent l'APK complet ; le workflow de publication reprend le modèle de la release v0.2.5.
+- Le modèle `ggml-base.bin` est dans `.gitignore` (142 Mo) : un clone frais compile la bibliothèque native mais ne peut pas produire un APK **fonctionnel en mode Whisper** sans le modèle. Les releases GitHub contiennent l'APK complet ; le workflow de publication reprend le modèle de la release v0.2.5. Le modèle de locuteur (`assets/speaker/wespeaker_voxceleb_campplus.onnx`, 28 Mo) est lui aussi gitignoré : `ci.yml` et `release.yml` le téléchargent depuis la release `speaker-recongition-models` de sherpa-onnx et vérifient son SHA-256 ; sans lui, l'app attribue les intervenants par hauteur de voix.
 
 ## Roadmap
 
@@ -149,7 +155,7 @@ changement du code natif ; la CI et la publication la compilent avec l'APK.
 - [x] Intervenants nommés, dossiers, correction sur la fiche, gabarits de synthèse par mission, questions à l'IA, exports Word/PDF, chiffrement des textes, biométrie, verrouillage automatique, journal des incidents (v0.9.0)
 - [x] Recherche instantanée dans tous les passages (index en mémoire, sans base persistée en clair), chapitres automatiques, Silero VAD (v0.10.0)
 - [x] Refonte du code en collaborateurs testables, un seul chemin d'appel Claude, R8 en release, tests Robolectric, corrections synchronisées avec les passages (v0.11.0)
-- [ ] Chaînes de l'interface externalisées dans `strings.xml` (préparation d'une version anglaise)
+- [x] Chaînes de l'interface externalisées dans `strings.xml` (préparation d'une version anglaise) (v0.14.0)
 - [x] Suivi des actions, fiche dossier, import par lots, rappel de sauvegarde (v0.12.0)
 - [x] Compilation native en CI (sous-module whisper.cpp), confiance par passage, relecture assistée (v0.13.0)
-- [ ] Diarisation v2 par empreintes de locuteurs (modèle ONNX de locuteur, Fbank, regroupement, mémoire des voix par dossier)
+- [x] Diarisation v2 par empreintes de locuteurs (modèle ONNX de locuteur, Fbank, regroupement, mémoire des voix par dossier) (v0.14.0)
