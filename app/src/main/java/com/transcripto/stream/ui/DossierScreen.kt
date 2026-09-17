@@ -40,8 +40,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.R
 import com.transcripto.stream.data.ActionItem
 import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.export.ExportFormat
@@ -105,11 +107,11 @@ fun DossierScreen(vm: StreamViewModel) {
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(current, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Actions du dossier") }
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.s_actions_du_dossier)) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("Renommer le dossier") }, onClick = { menu = false; renameDialog = true })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.s_renommer_le_dossier)) }, onClick = { menu = false; renameDialog = true })
                         DropdownMenuItem(
-                            text = { Text("Fusionner dans un autre dossier") },
+                            text = { Text(stringResource(R.string.s_fusionner_dans_un_autre_dossier)) },
                             enabled = dossiers.any { !it.equals(current, ignoreCase = true) },
                             onClick = { menu = false; mergeDialog = true },
                         )
@@ -123,18 +125,18 @@ fun DossierScreen(vm: StreamViewModel) {
                 }
                 if (speakers.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
-                    Text("Intervenants rencontrés", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.s_intervenants_rencontres), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(speakers.joinToString(", "), style = MaterialTheme.typography.bodyMedium)
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = { docxLauncher.launch("Dossier $current.docx") }, enabled = items.isNotEmpty()) { Text("Exporter Word") }
-                    FilledTonalButton(onClick = { pdfLauncher.launch("Dossier $current.pdf") }, enabled = items.isNotEmpty()) { Text("Exporter PDF") }
+                    FilledTonalButton(onClick = { docxLauncher.launch("Dossier $current.docx") }, enabled = items.isNotEmpty()) { Text(stringResource(R.string.s_exporter_word)) }
+                    FilledTonalButton(onClick = { pdfLauncher.launch("Dossier $current.pdf") }, enabled = items.isNotEmpty()) { Text(stringResource(R.string.s_exporter_pdf)) }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = includeTranscripts, onCheckedChange = { includeTranscripts = it })
                     Spacer(Modifier.width(8.dp))
-                    Text("Inclure les transcriptions complètes", style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.s_inclure_les_transcriptions_completes), style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -156,7 +158,7 @@ fun DossierScreen(vm: StreamViewModel) {
             }
         }
         item(key = "list-title") {
-            Text("Enregistrements", style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.s_enregistrements), style = MaterialTheme.typography.titleSmall)
         }
         if (items.isEmpty()) {
             item(key = "empty") { HintText("Aucun enregistrement rattaché à ce dossier.") }
@@ -170,17 +172,17 @@ fun DossierScreen(vm: StreamViewModel) {
         var value by rememberSaveable { mutableStateOf(current) }
         AlertDialog(
             onDismissRequest = { renameDialog = false },
-            title = { Text("Renommer le dossier") },
+            title = { Text(stringResource(R.string.s_renommer_le_dossier)) },
             text = {
-                OutlinedTextField(value = value, onValueChange = { value = it }, label = { Text("Nom du dossier") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = value, onValueChange = { value = it }, label = { Text(stringResource(R.string.s_nom_du_dossier)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
             },
             confirmButton = {
                 TextButton(
                     onClick = { vm.renameDossier(current, value); renameDialog = false },
                     enabled = value.isNotBlank() && value.trim() != current,
-                ) { Text("Renommer") }
+                ) { Text(stringResource(R.string.s_renommer)) }
             },
-            dismissButton = { TextButton(onClick = { renameDialog = false }) { Text("Annuler") } },
+            dismissButton = { TextButton(onClick = { renameDialog = false }) { Text(stringResource(R.string.s_annuler)) } },
         )
     }
     if (mergeDialog) {
@@ -192,7 +194,7 @@ fun DossierScreen(vm: StreamViewModel) {
             title = { Text("Fusionner « $current »") },
             text = {
                 Column {
-                    Text("Les enregistrements de ce dossier seront rattachés au dossier choisi.", style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.s_les_enregistrements_de_ce_dossier_seront), style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = { pick = true }) { Text("Vers : ${target.ifBlank { "(choisir)" }}") }
                     DropdownMenu(expanded = pick, onDismissRequest = { pick = false }) {
@@ -201,9 +203,9 @@ fun DossierScreen(vm: StreamViewModel) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { vm.mergeDossier(current, target); mergeDialog = false }, enabled = target.isNotBlank()) { Text("Fusionner") }
+                TextButton(onClick = { vm.mergeDossier(current, target); mergeDialog = false }, enabled = target.isNotBlank()) { Text(stringResource(R.string.s_fusionner)) }
             },
-            dismissButton = { TextButton(onClick = { mergeDialog = false }) { Text("Annuler") } },
+            dismissButton = { TextButton(onClick = { mergeDialog = false }) { Text(stringResource(R.string.s_annuler)) } },
         )
     }
 }

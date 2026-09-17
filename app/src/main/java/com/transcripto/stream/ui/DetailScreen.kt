@@ -72,8 +72,10 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.R
 import com.transcripto.stream.data.ActionItem
 import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.Chapter
@@ -208,7 +210,7 @@ fun DetailScreen(vm: StreamViewModel) {
                     MetaChip(text = vm.formatHms(current.durationMs), icon = AppIcons.Clock)
                     MetaChip(text = "${current.sizeBytes / 1024} Ko")
                     if (current.encrypted) {
-                        MetaChip(text = "Chiffré", icon = Icons.Filled.Lock, contentDescription = "Chiffré")
+                        MetaChip(text = "Chiffré", icon = Icons.Filled.Lock, contentDescription = stringResource(R.string.s_chiffre))
                     }
                     if (!current.hasAudio) MetaChip(text = "Texte seul", icon = AppIcons.Document)
                 }
@@ -329,18 +331,18 @@ fun DetailScreen(vm: StreamViewModel) {
             ) {
                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                 Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-                Text("Partager", maxLines = 1)
+                Text(stringResource(R.string.s_partager), maxLines = 1)
             }
             Box {
                 FilledTonalIconButton(
                     onClick = { exportMenu = true },
                     enabled = !isTranscribing,
                 ) {
-                    Icon(AppIcons.Download, contentDescription = "Exporter en Word ou PDF")
+                    Icon(AppIcons.Download, contentDescription = stringResource(R.string.s_exporter_en_word_ou_pdf))
                 }
                 DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
                     DropdownMenuItem(
-                        text = { Text("Exporter en Word (.docx)") },
+                        text = { Text(stringResource(R.string.s_exporter_en_word_docx)) },
                         leadingIcon = { Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         onClick = {
                             exportMenu = false
@@ -349,7 +351,7 @@ fun DetailScreen(vm: StreamViewModel) {
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Exporter en PDF") },
+                        text = { Text(stringResource(R.string.s_exporter_en_pdf)) },
                         leadingIcon = { Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         onClick = {
                             exportMenu = false
@@ -387,7 +389,7 @@ fun DetailScreen(vm: StreamViewModel) {
                     tint = MaterialTheme.colorScheme.onTertiaryContainer,
                 )
                 Spacer(Modifier.width(10.dp))
-                Text("Synthèse", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.s_synthese), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 if (summary != null && !summaryBusy) {
                     TextButton(onClick = { summaryExpanded = !summaryExpanded }) {
                         Text(if (summaryExpanded) "Réduire" else "Afficher")
@@ -432,7 +434,7 @@ fun DetailScreen(vm: StreamViewModel) {
                     ) {
                         Icon(AppIcons.Sparkle, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                         Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-                        Text("Générer la synthèse")
+                        Text(stringResource(R.string.s_generer_la_synthese))
                     }
                 }
                 else -> {
@@ -457,11 +459,11 @@ fun DetailScreen(vm: StreamViewModel) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         TextButton(onClick = {
                             if (vm.copyText(MarkdownLite.toPlainText(summaryText))) vm.showMessage("Synthèse copiée")
-                        }) { Text("Copier") }
+                        }) { Text(stringResource(R.string.s_copier)) }
                         TextButton(
                             onClick = { vm.generateSummary(current.file) },
                             enabled = !isTranscribing,
-                        ) { Text("Régénérer") }
+                        ) { Text(stringResource(R.string.s_regenerer)) }
                     }
                 }
             }
@@ -514,7 +516,7 @@ fun DetailScreen(vm: StreamViewModel) {
             val doubtful = remember(segments) { segments.indices.filter { ReviewMarks.isDoubtful(segments[it].confidence) } }
             val hasConfidence = remember(segments) { segments.any { it.confidence >= 0f } }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Transcription", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.s_transcription), style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.width(8.dp))
                 FilterChip(
                     selected = reviewMode,
@@ -530,7 +532,7 @@ fun DetailScreen(vm: StreamViewModel) {
                             scope.launch { listState.animateScrollToItem(next) }
                             if (current.hasAudio) vm.playFrom(current.file, segments[next].startMs)
                         },
-                    ) { Text("Suivant") }
+                    ) { Text(stringResource(R.string.s_suivant)) }
                 } else {
                     Text(
                         "Toucher : écouter · appui long : corriger",
@@ -695,15 +697,15 @@ private fun DossierDialog(
     var value by remember { mutableStateOf(current) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Dossier / client") },
+        title = { Text(stringResource(R.string.s_dossier_client)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = value,
                     onValueChange = { value = it },
                     singleLine = true,
-                    label = { Text("Nom du dossier") },
-                    placeholder = { Text("SARL Martin, Audit 2025…") },
+                    label = { Text(stringResource(R.string.s_nom_du_dossier)) },
+                    placeholder = { Text(stringResource(R.string.s_sarl_martin_audit_2025)) },
                 )
                 if (suggestions.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
@@ -720,13 +722,13 @@ private fun DossierDialog(
                 HintText("Sert à filtrer la liste et figure sur les exports.")
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("Enregistrer") } },
+        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text(stringResource(R.string.s_enregistrer)) } },
         dismissButton = {
             Row {
                 if (current.isNotBlank()) {
-                    TextButton(onClick = { onConfirm("") }) { Text("Retirer", color = MaterialTheme.colorScheme.error) }
+                    TextButton(onClick = { onConfirm("") }) { Text(stringResource(R.string.s_retirer), color = MaterialTheme.colorScheme.error) }
                 }
-                TextButton(onClick = onDismiss) { Text("Annuler") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) }
             }
         },
     )
@@ -749,20 +751,20 @@ private fun SpeakerNameDialog(
                     value = value,
                     onValueChange = { value = it },
                     singleLine = true,
-                    label = { Text("Nom affiché") },
-                    placeholder = { Text("M. Martin (DG)") },
+                    label = { Text(stringResource(R.string.s_nom_affiche)) },
+                    placeholder = { Text(stringResource(R.string.s_m_martin_dg)) },
                 )
                 Spacer(Modifier.height(4.dp))
                 HintText("Appliqué à la fiche, au partage, à la synthèse et aux exports ; la transcription brute reste inchangée.")
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("Enregistrer") } },
+        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text(stringResource(R.string.s_enregistrer)) } },
         dismissButton = {
             Row {
                 if (current.isNotBlank()) {
-                    TextButton(onClick = { onConfirm("") }) { Text("Retirer", color = MaterialTheme.colorScheme.error) }
+                    TextButton(onClick = { onConfirm("") }) { Text(stringResource(R.string.s_retirer), color = MaterialTheme.colorScheme.error) }
                 }
-                TextButton(onClick = onDismiss) { Text("Annuler") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) }
             }
         },
     )
@@ -779,7 +781,7 @@ private fun EditSegmentDialog(
     var term by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Corriger le passage") },
+        title = { Text(stringResource(R.string.s_corriger_le_passage)) },
         text = {
             Column {
                 OutlinedTextField(
@@ -787,7 +789,7 @@ private fun EditSegmentDialog(
                     onValueChange = { text = it },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
-                    label = { Text("Texte du passage") },
+                    label = { Text(stringResource(R.string.s_texte_du_passage)) },
                 )
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -796,8 +798,8 @@ private fun EditSegmentDialog(
                         onValueChange = { term = it },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        label = { Text("Terme mal reconnu") },
-                        placeholder = { Text("Nom propre, sigle…") },
+                        label = { Text(stringResource(R.string.s_terme_mal_reconnu)) },
+                        placeholder = { Text(stringResource(R.string.s_nom_propre_sigle)) },
                     )
                     Spacer(Modifier.width(6.dp))
                     TextButton(
@@ -806,17 +808,17 @@ private fun EditSegmentDialog(
                             term = ""
                         },
                         enabled = term.isNotBlank(),
-                    ) { Text("Vocabulaire") }
+                    ) { Text(stringResource(R.string.s_vocabulaire)) }
                 }
                 HintText("Les termes ajoutés au vocabulaire sont soufflés aux moteurs pour les prochaines transcriptions.")
             }
         },
         confirmButton = {
             TextButton(onClick = { onSave(text) }, enabled = text.isNotBlank() && text.trim() != initial.trim()) {
-                Text("Enregistrer")
+                Text(stringResource(R.string.s_enregistrer))
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) } },
     )
 }
 
@@ -869,7 +871,7 @@ private fun ChaptersCard(
                 )
                 Spacer(Modifier.height(8.dp))
                 FilledTonalButton(onClick = onGenerate, enabled = enabled) {
-                    Text("Détecter les chapitres")
+                    Text(stringResource(R.string.s_detecter_les_chapitres))
                 }
             }
             else -> {
@@ -895,7 +897,7 @@ private fun ChaptersCard(
                     }
                 }
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onGenerate, enabled = enabled) { Text("Redétecter") }
+                    TextButton(onClick = onGenerate, enabled = enabled) { Text(stringResource(R.string.s_redetecter)) }
                 }
             }
         }
@@ -938,7 +940,7 @@ private fun ActionsCard(
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = { editing = ActionItem(id = "", text = "") }, enabled = enabled) { Text("Ajouter") }
+            TextButton(onClick = { editing = ActionItem(id = "", text = "") }, enabled = enabled) { Text(stringResource(R.string.s_ajouter)) }
         }
         if (actions.isEmpty()) {
             Spacer(Modifier.height(6.dp))
@@ -1000,13 +1002,13 @@ private fun ActionDialog(initial: ActionItem, onDismiss: () -> Unit, onSave: (Ac
         title = { Text(if (initial.id.isBlank()) "Nouvelle action" else "Modifier l'action") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("Quoi") }, minLines = 2, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = owner, onValueChange = { owner = it }, label = { Text("Qui (facultatif)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text(stringResource(R.string.s_quoi)) }, minLines = 2, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = owner, onValueChange = { owner = it }, label = { Text(stringResource(R.string.s_qui_facultatif)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
                     value = due,
                     onValueChange = { due = it },
-                    label = { Text("Échéance (facultatif)") },
-                    placeholder = { Text("avant le 30 septembre, fin juin, T2 2026…") },
+                    label = { Text(stringResource(R.string.s_echeance_facultatif)) },
+                    placeholder = { Text(stringResource(R.string.s_avant_le_30_septembre_fin_juin_t2_2026)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1016,12 +1018,12 @@ private fun ActionDialog(initial: ActionItem, onDismiss: () -> Unit, onSave: (Ac
             TextButton(
                 onClick = { onSave(initial.copy(text = text, owner = owner, dueLabel = due)) },
                 enabled = text.isNotBlank(),
-            ) { Text("Enregistrer") }
+            ) { Text(stringResource(R.string.s_enregistrer)) }
         },
         dismissButton = {
             Row {
-                if (onDelete != null) TextButton(onClick = onDelete) { Text("Supprimer", color = MaterialTheme.colorScheme.error) }
-                TextButton(onClick = onDismiss) { Text("Annuler") }
+                if (onDelete != null) TextButton(onClick = onDelete) { Text(stringResource(R.string.s_supprimer_2), color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) }
             }
         },
     )
@@ -1078,9 +1080,9 @@ private fun QaCard(
                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
             )
             Spacer(Modifier.width(10.dp))
-            Text("Questions à l'IA", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.s_questions_a_l_ia), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             if (turns.isNotEmpty() && !busy) {
-                TextButton(onClick = onClear) { Text("Effacer") }
+                TextButton(onClick = onClear) { Text(stringResource(R.string.s_effacer)) }
             }
         }
         if (turns.isEmpty() && !busy) {
@@ -1112,7 +1114,7 @@ private fun QaCard(
                 value = question,
                 onValueChange = { question = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Poser une question sur l'enregistrement…") },
+                placeholder = { Text(stringResource(R.string.s_poser_une_question_sur_l_enregistrement)) },
                 maxLines = 3,
                 enabled = !busy,
             )
@@ -1121,7 +1123,7 @@ private fun QaCard(
                 onClick = { onAsk(question) },
                 enabled = enabled && !busy && question.isNotBlank(),
             ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Envoyer la question")
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.s_envoyer_la_question))
             }
         }
     }

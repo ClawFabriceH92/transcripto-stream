@@ -31,7 +31,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.transcripto.stream.R
 import com.transcripto.stream.ui.theme.AppIcons
 
 /**
@@ -83,7 +85,7 @@ fun PinScreen(
             tint = MaterialTheme.colorScheme.onPrimary,
         )
         Spacer(Modifier.height(18.dp))
-        Text("Transcripto Stream", style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.s_transcripto_stream), style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(6.dp))
         Text(
             "Saisis ton code pour continuer",
@@ -129,7 +131,7 @@ fun PinScreen(
             textAlign = TextAlign.Center,
         )
         if (canBiometric) {
-            TextButton(onClick = showPrompt) { Text("Empreinte, visage ou code de l'appareil") }
+            TextButton(onClick = showPrompt) { Text(stringResource(R.string.s_empreinte_visage_ou_code_de_l_appareil)) }
             Spacer(Modifier.height(8.dp))
         } else {
             Spacer(Modifier.height(28.dp))

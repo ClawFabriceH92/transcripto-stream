@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.transcripto.stream.R
 import com.transcripto.stream.BatchState
 import com.transcripto.stream.RecordingService
 import com.transcripto.stream.RecordingState
@@ -482,7 +483,7 @@ class StreamViewModel(
     /** Renomme le dossier ouvert (réécrit le .meta de chacun de ses enregistrements). */
     fun renameDossier(oldName: String, newName: String) {
         if (_backupBusy.value || _summaryBusy.value) {
-            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_operation_en_cours_reessaie_ensuite)
             return
         }
         val target = newName.trim()
@@ -499,7 +500,7 @@ class StreamViewModel(
                     "Dossier renommé ($n enregistrement${if (n > 1) "s" else ""})"
                 }
             } else {
-                _uiMessage.value = "Aucun enregistrement à renommer"
+                _uiMessage.value = appContext.getString(R.string.m_aucun_enregistrement_a_renommer)
             }
             refreshRecordings()
         }
@@ -511,7 +512,7 @@ class StreamViewModel(
     /** Écrit le document Word ou PDF d'un dossier entier dans [destUri]. */
     fun exportDossier(name: String, destUri: Uri, format: ExportFormat, includeTranscripts: Boolean) {
         if (_isTranscribingFile.value) {
-            _uiMessage.value = "Transcription en cours — exporte ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_transcription_en_cours_exporte_ensuite)
             return
         }
         viewModelScope.launch {
@@ -566,7 +567,7 @@ class StreamViewModel(
      */
     fun updateSegmentText(file: File, index: Int, newText: String) {
         if (_isTranscribingFile.value || _summaryBusy.value || _backupBusy.value) {
-            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_operation_en_cours_reessaie_ensuite)
             return
         }
         viewModelScope.launch {
@@ -574,13 +575,13 @@ class StreamViewModel(
                 repo.updateSegmentText(file, index, newText, settings.useTimestamps)
             }
             if (r != null) {
-                if (!r.sealed) _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
+                if (!r.sealed) _lastError.value = appContext.getString(R.string.m_chiffrement_du_texte_impossible)
                 if (_lastRecording.value == file) refreshFileTranscript(file)
                 _transcriptVersion.value = _transcriptVersion.value + 1
                 refreshRecordings()
-                _uiMessage.value = "Passage corrigé"
+                _uiMessage.value = appContext.getString(R.string.m_passage_corrige)
             } else {
-                _uiMessage.value = "Correction impossible (segments introuvables)"
+                _uiMessage.value = appContext.getString(R.string.m_correction_impossible_segments)
             }
         }
     }
@@ -630,7 +631,7 @@ class StreamViewModel(
         if (_backupBusy.value || _isTranscribingFile.value || _summaryBusy.value ||
             _isStreaming.value || _isImporting.value
         ) {
-            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_operation_en_cours_reessaie_ensuite)
             return false
         }
         settings.encryptTexts = enabled
@@ -785,11 +786,11 @@ class StreamViewModel(
     fun startStreaming() {
         if (_isStreaming.value) return
         if (_isImporting.value) {
-            _lastError.value = "Import audio en cours — réessaie dans un instant"
+            _lastError.value = appContext.getString(R.string.m_import_audio_en_cours_reessaie_dans_un)
             return
         }
         if (_backupBusy.value) {
-            _lastError.value = "Sauvegarde en cours — réessaie quand elle est terminée"
+            _lastError.value = appContext.getString(R.string.m_sauvegarde_en_cours_reessaie_quand_elle)
             return
         }
         // Seul Whisper a besoin du modèle : Google (moteur système) fonctionne
@@ -846,9 +847,9 @@ class StreamViewModel(
                 togglePause() // remet pausedByFocusLoss à false : le drapeau se pose après
                 if (transient) {
                     pausedByFocusLoss = true
-                    _lastError.value = "Micro interrompu (appel en cours ?) — reprise automatique à la fin"
+                    _lastError.value = appContext.getString(R.string.m_micro_interrompu_appel_en_cours_reprise)
                 } else {
-                    _lastError.value = "Micro interrompu — enregistrement en pause, appuie sur Reprendre"
+                    _lastError.value = appContext.getString(R.string.m_micro_interrompu_enregistrement_en_pause)
                 }
             }
         },
@@ -869,17 +870,17 @@ class StreamViewModel(
         // Contrôle d'espace : mieux vaut refuser avant la réunion qu'échouer en silence pendant
         val usableMb = recDir.usableSpace / (1024L * 1024L)
         if (usableMb < 10) {
-            _lastError.value = "Stockage plein ($usableMb Mo libres) — libère de l'espace avant d'enregistrer"
+            _lastError.value = appContext.getString(R.string.m_stockage_plein_usablemb_mo_libres_libere, usableMb)
             return false
         }
         if (usableMb in 10 until 200) {
-            _lastError.value = "Stockage presque plein ($usableMb Mo libres) — l'enregistrement peut s'interrompre"
+            _lastError.value = appContext.getString(R.string.m_stockage_presque_plein_usablemb_mo, usableMb)
         }
         val recFile = File(recDir, "rec_${REC_DATE_FORMAT.format(Date())}.wav")
         val writer = try {
             WavFileWriter(recFile)
         } catch (e: Exception) {
-            _lastError.value = "Impossible de créer le fichier audio : ${e.message}"
+            _lastError.value = appContext.getString(R.string.m_impossible_de_creer_le_fichier_audio_e, e.message)
             return false
         }
         wavWriter = writer
@@ -894,7 +895,7 @@ class StreamViewModel(
                 // La capture est morte sans stop() (micro préempté, erreur matérielle)
                 viewModelScope.launch {
                     if (_isStreaming.value && _selectedEngine.value == "whisper") {
-                        _lastError.value = "Micro perdu — enregistrement arrêté et sauvegardé"
+                        _lastError.value = appContext.getString(R.string.m_micro_perdu_enregistrement_arrete_et)
                         stopStreaming()
                     }
                 }
@@ -919,7 +920,7 @@ class StreamViewModel(
             }
         }
         if (!rec.start()) {
-            _lastError.value = "Impossible de démarrer l'enregistrement (micro ?)"
+            _lastError.value = appContext.getString(R.string.m_impossible_de_demarrer_l_enregistrement)
             try { writer.close() } catch (_: Exception) {}
             wavWriter = null
             activeRecordingFile = null
@@ -1035,7 +1036,7 @@ class StreamViewModel(
             file.delete()
             enc
         } else {
-            _lastError.value = "Chiffrement impossible — WAV conservé en clair"
+            _lastError.value = appContext.getString(R.string.m_chiffrement_impossible_wav_conserve_en)
             file
         }
     }
@@ -1076,7 +1077,7 @@ class StreamViewModel(
      */
     private fun renameFile(f: File, newName: String): File? {
         if (_summaryBusy.value) {
-            _lastError.value = "Synthèse en cours — renommage possible ensuite"
+            _lastError.value = appContext.getString(R.string.m_synthese_en_cours_renommage_possible)
             return null
         }
         return when (val r = repo.rename(f, newName)) {
@@ -1086,11 +1087,11 @@ class StreamViewModel(
             }
             RenameResult.Unchanged -> null
             RenameResult.Clash -> {
-                _lastError.value = "Un enregistrement porte déjà ce nom"
+                _lastError.value = appContext.getString(R.string.m_un_enregistrement_porte_deja_ce_nom)
                 null
             }
             RenameResult.Failed -> {
-                _lastError.value = "Renommage impossible"
+                _lastError.value = appContext.getString(R.string.m_renommage_impossible)
                 null
             }
         }
@@ -1157,11 +1158,11 @@ class StreamViewModel(
     fun generateSummary(file: File) {
         _summaryProposal.value = null // la proposition est consommée, même si on refuse
         if (_summaryBusy.value) {
-            _uiMessage.value = "Une synthèse est déjà en cours"
+            _uiMessage.value = appContext.getString(R.string.m_une_synthese_est_deja_en_cours)
             return
         }
         if (_backupBusy.value) {
-            _uiMessage.value = "Sauvegarde en cours — réessaie quand elle est terminée"
+            _uiMessage.value = appContext.getString(R.string.m_sauvegarde_en_cours_reessaie_quand_elle)
             return
         }
         viewModelScope.launch {
@@ -1170,7 +1171,7 @@ class StreamViewModel(
                 val message = withContext(Dispatchers.IO) { ai.summarize(file) }
                 _uiMessage.value = message
             } catch (t: Throwable) {
-                _uiMessage.value = "Synthèse impossible : ${t.message}"
+                _uiMessage.value = appContext.getString(R.string.m_synthese_impossible_t_message, t.message)
             } finally {
                 // Jamais d'état « en cours » figé, quoi qu'il arrive
                 _summaryBusy.value = false
@@ -1263,11 +1264,11 @@ class StreamViewModel(
         if (q.isEmpty()) return
         val current = _qa.value
         if (current.busy) {
-            _uiMessage.value = "Une réponse est déjà en cours"
+            _uiMessage.value = appContext.getString(R.string.m_une_reponse_est_deja_en_cours)
             return
         }
         if (_isTranscribingFile.value) {
-            _uiMessage.value = "Transcription en cours — pose ta question ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_transcription_en_cours_pose_ta_question)
             return
         }
         val turns = if (current.file == file) current.turns else emptyList()
@@ -1302,7 +1303,7 @@ class StreamViewModel(
     fun generateChapters(file: File) {
         if (_chaptersBusy.value) return
         if (_isTranscribingFile.value || _backupBusy.value) {
-            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_operation_en_cours_reessaie_ensuite)
             return
         }
         viewModelScope.launch {
@@ -1311,7 +1312,7 @@ class StreamViewModel(
                 val message = withContext(Dispatchers.IO) { ai.chapters(file) }
                 _uiMessage.value = message
             } catch (t: Throwable) {
-                _uiMessage.value = "Chapitrage impossible : ${t.message}"
+                _uiMessage.value = appContext.getString(R.string.m_chapitrage_impossible_t_message, t.message)
             } finally {
                 _chaptersBusy.value = false
             }
@@ -1370,23 +1371,23 @@ class StreamViewModel(
     fun transcribeFile(file: File) {
         if (_isTranscribingFile.value) return
         if (_isStreaming.value) {
-            _lastError.value = "Transcription impossible pendant un enregistrement"
+            _lastError.value = appContext.getString(R.string.m_transcription_impossible_pendant_un)
             return
         }
         if (_backupBusy.value) {
             // La transcription réécrit .txt/.srt/.json — pendant que le zip de
             // sauvegarde copie peut-être ces mêmes fichiers (entrée tronquée).
-            _lastError.value = "Sauvegarde en cours — réessaie quand elle est terminée"
+            _lastError.value = appContext.getString(R.string.m_sauvegarde_en_cours_reessaie_quand_elle)
             return
         }
         if (_isImporting.value) {
-            _lastError.value = "Import en cours — réessaie quand il est terminé"
+            _lastError.value = appContext.getString(R.string.m_import_en_cours_reessaie_quand_il_est)
             return
         }
         if (!RecordingNames.isAudio(file.name)) return
         val engineRef = (modelState.value as? ModelState.Ready)?.engine
         if (engineRef == null) {
-            _lastError.value = "Modèle Whisper non chargé — transcription différée indisponible"
+            _lastError.value = appContext.getString(R.string.m_modele_whisper_non_charge_transcription)
             return
         }
         viewModelScope.launch {
@@ -1449,11 +1450,11 @@ class StreamViewModel(
     fun requestBatch(uris: List<Uri>) {
         if (uris.isEmpty()) return
         if (_isStreaming.value) {
-            _uiMessage.value = "Import impossible pendant un enregistrement"
+            _uiMessage.value = appContext.getString(R.string.m_import_impossible_pendant_un)
             return
         }
         if (_isImporting.value || _isTranscribingFile.value || _backupBusy.value) {
-            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_operation_en_cours_reessaie_ensuite)
             return
         }
         _pendingBatch.value = uris
@@ -1475,7 +1476,7 @@ class StreamViewModel(
         _pendingBatch.value = emptyList()
         if (uris.isEmpty()) return
         if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value || _backupBusy.value) {
-            _uiMessage.value = "Opération en cours — réessaie ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_operation_en_cours_reessaie_ensuite)
             return
         }
         viewModelScope.launch {
@@ -1559,7 +1560,7 @@ class StreamViewModel(
     /** Écrit le .txt d'un enregistrement ; signale un scellement impossible (texte gardé en clair). */
     private fun writeTranscript(audioFile: File, text: String, durationMs: Long, sha256: String? = null) {
         if (!repo.writeTranscriptFile(audioFile, text, durationMs, sha256)) {
-            _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
+            _lastError.value = appContext.getString(R.string.m_chiffrement_du_texte_impossible)
         }
     }
 
@@ -1573,9 +1574,9 @@ class StreamViewModel(
             // L'encart affiche les noms d'intervenants : le dépôt les ramène aux libellés
             // génériques avant d'écrire, le .txt ne fige jamais un nom
             val r = withContext(Dispatchers.IO) { repo.saveEditedTranscript(file, newText) }
-            if (!r.sealed) _lastError.value = "Chiffrement du texte impossible — transcription conservée en clair"
+            if (!r.sealed) _lastError.value = appContext.getString(R.string.m_chiffrement_du_texte_impossible)
             if (r.segmentsStale) {
-                _uiMessage.value = "Texte enregistré — passages horodatés non synchronisés : relance « Transcrire » pour les réaligner"
+                _uiMessage.value = appContext.getString(R.string.m_texte_enregistre_passages_horodates_non)
             }
             _transcriptVersion.value = _transcriptVersion.value + 1
             refreshRecordings()
@@ -1613,19 +1614,19 @@ class StreamViewModel(
      */
     fun importAudio(uri: Uri) {
         if (_isImporting.value) {
-            _uiMessage.value = "Un import est déjà en cours"
+            _uiMessage.value = appContext.getString(R.string.m_un_import_est_deja_en_cours)
             return
         }
         if (_isStreaming.value) {
-            _uiMessage.value = "Import impossible pendant un enregistrement"
+            _uiMessage.value = appContext.getString(R.string.m_import_impossible_pendant_un)
             return
         }
         if (_isTranscribingFile.value) {
-            _uiMessage.value = "Transcription en cours — réessaie quand elle est terminée"
+            _uiMessage.value = appContext.getString(R.string.m_transcription_en_cours_reessaie_quand)
             return
         }
         if (_backupBusy.value) {
-            _uiMessage.value = "Sauvegarde en cours — réessaie quand elle est terminée"
+            _uiMessage.value = appContext.getString(R.string.m_sauvegarde_en_cours_reessaie_quand_elle)
             return
         }
         viewModelScope.launch {
@@ -1636,7 +1637,7 @@ class StreamViewModel(
             }
             val err = r.error
             val file = r.file
-            if (r.unsealed) _lastError.value = "Chiffrement impossible — WAV conservé en clair"
+            if (r.unsealed) _lastError.value = appContext.getString(R.string.m_chiffrement_impossible_wav_conserve_en)
             if (err != null || file == null) {
                 _uiMessage.value = err ?: "Import impossible"
             } else {
@@ -1671,7 +1672,7 @@ class StreamViewModel(
     /** Écrit le document Word ou PDF de [file] dans [destUri] (emplacement choisi via SAF). */
     fun exportDocument(file: File, destUri: Uri, format: ExportFormat) {
         if (_isTranscribingFile.value) {
-            _uiMessage.value = "Transcription en cours — exporte ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_transcription_en_cours_exporte_ensuite)
             return
         }
         viewModelScope.launch {
@@ -1713,7 +1714,7 @@ class StreamViewModel(
     fun backupBlocked(): Boolean {
         val blocked = _backupBusy.value || _isStreaming.value ||
             _isImporting.value || _isTranscribingFile.value || _summaryBusy.value
-        if (blocked) _uiMessage.value = "Sauvegarde impossible pendant une opération en cours"
+        if (blocked) _uiMessage.value = appContext.getString(R.string.m_sauvegarde_impossible_pendant_une)
         return blocked
     }
 
@@ -1722,7 +1723,7 @@ class StreamViewModel(
         // Un WAV en cours d'écriture (enregistrement) ou en cours de création
         // (import/transcription) partirait tronqué dans l'archive.
         if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value || _summaryBusy.value) {
-            _uiMessage.value = "Sauvegarde impossible pendant une opération en cours"
+            _uiMessage.value = appContext.getString(R.string.m_sauvegarde_impossible_pendant_une)
             return
         }
         viewModelScope.launch {
@@ -1753,7 +1754,7 @@ class StreamViewModel(
     fun restoreBackup(srcUri: Uri, passphrase: String) {
         if (_backupBusy.value) return
         if (_isStreaming.value || _isImporting.value || _isTranscribingFile.value || _summaryBusy.value) {
-            _uiMessage.value = "Restauration impossible pendant une opération en cours"
+            _uiMessage.value = appContext.getString(R.string.m_restauration_impossible_pendant_une)
             return
         }
         viewModelScope.launch {
@@ -1821,7 +1822,7 @@ class StreamViewModel(
 
     fun deleteRecording(item: RecordingItem) {
         if (_summaryBusy.value) {
-            _uiMessage.value = "Synthèse en cours — suppression possible ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_synthese_en_cours_suppression_possible)
             return
         }
         if (_summaryProposal.value == item.file) _summaryProposal.value = null
@@ -1837,7 +1838,7 @@ class StreamViewModel(
     fun deleteLastRecording() {
         if (_isStreaming.value) return
         if (_summaryBusy.value) {
-            _uiMessage.value = "Synthèse en cours — suppression possible ensuite"
+            _uiMessage.value = appContext.getString(R.string.m_synthese_en_cours_suppression_possible)
             return
         }
         val f = _lastRecording.value ?: return

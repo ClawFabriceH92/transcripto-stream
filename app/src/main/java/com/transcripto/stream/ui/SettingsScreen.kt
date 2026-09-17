@@ -58,9 +58,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.R
 import com.transcripto.stream.stt.ModelState
 import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.CrashLog
@@ -189,7 +191,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                             TextButton(
                                 onClick = { vm.selectModel(model.id) },
                                 enabled = !modelBusy,
-                            ) { Text("Activer") }
+                            ) { Text(stringResource(R.string.s_activer)) }
                             if (model.url != null) {
                                 IconButton(
                                     onClick = { vm.deleteModel(model.id) },
@@ -259,12 +261,12 @@ fun SettingsScreen(vm: StreamViewModel) {
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 3,
                 textStyle = MaterialTheme.typography.bodyMedium,
-                placeholder = { Text("CAC, commissaire aux comptes, exercice, noms de clients…") },
-                supportingText = { Text("Termes séparés par des virgules, soufflés aux moteurs de reconnaissance.") },
+                placeholder = { Text(stringResource(R.string.s_cac_commissaire_aux_comptes_exercice)) },
+                supportingText = { Text(stringResource(R.string.s_termes_separes_par_des_virgules_souffles)) },
             )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 FilledTonalButton(onClick = { vm.setVocabulary(vocab) }) {
-                    Text("Enregistrer le vocabulaire")
+                    Text(stringResource(R.string.s_enregistrer_le_vocabulaire))
                 }
             }
         }
@@ -406,13 +408,13 @@ fun SettingsScreen(vm: StreamViewModel) {
                                 }
                             },
                             enabled = keyInput.isNotBlank(),
-                        ) { Text("Enregistrer la clé") }
+                        ) { Text(stringResource(R.string.s_enregistrer_la_cle)) }
                         if (hasKey) {
                             TextButton(onClick = {
                                 vm.setAiApiKey("")
                                 hasKey = false
                                 vm.showMessage("Clé API effacée")
-                            }) { Text("Effacer", color = MaterialTheme.colorScheme.error) }
+                            }) { Text(stringResource(R.string.s_effacer), color = MaterialTheme.colorScheme.error) }
                         }
                     }
                     Spacer(Modifier.height(12.dp))
@@ -541,7 +543,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                 ) {
                     Icon(AppIcons.Restore, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                     Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-                    Text("Restaurer", maxLines = 1)
+                    Text(stringResource(R.string.s_restaurer), maxLines = 1)
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -551,7 +553,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                     "illisible : note-la précieusement.",
             )
             Spacer(Modifier.height(12.dp))
-            Text("Me rappeler de sauvegarder", style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(R.string.s_me_rappeler_de_sauvegarder), style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(6.dp))
             var reminderDays by remember { mutableStateOf(vm.settings.backupReminderDays.toString()) }
             SegmentedChoice(
@@ -620,7 +622,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                 )
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Verrouillage PIN", style = MaterialTheme.typography.bodyLarge)
+                    Text(stringResource(R.string.s_verrouillage_pin), style = MaterialTheme.typography.bodyLarge)
                     Text(
                         if (pinActive) "Actif — code demandé au lancement et après le délai choisi" else "Désactivé",
                         style = MaterialTheme.typography.bodySmall,
@@ -628,15 +630,15 @@ fun SettingsScreen(vm: StreamViewModel) {
                     )
                 }
                 if (!pinActive) {
-                    FilledTonalButton(onClick = { pinDialog = true }) { Text("Activer") }
+                    FilledTonalButton(onClick = { pinDialog = true }) { Text(stringResource(R.string.s_activer)) }
                 }
             }
             if (pinActive) {
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { vm.lockNow() }) { Text("Verrouiller maintenant") }
+                    OutlinedButton(onClick = { vm.lockNow() }) { Text(stringResource(R.string.s_verrouiller_maintenant)) }
                     TextButton(onClick = { vm.disablePin() }) {
-                        Text("Désactiver", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.s_desactiver), color = MaterialTheme.colorScheme.error)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -702,7 +704,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                                 colors = ButtonDefaults.textButtonColors(
                                     contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                                 ),
-                            ) { Text("Autoriser") }
+                            ) { Text(stringResource(R.string.s_autoriser)) }
                         },
                     )
                 }
@@ -775,7 +777,7 @@ fun SettingsScreen(vm: StreamViewModel) {
             )
             if (crashCount > 0) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { showCrashLog = true }) { Text("Voir") }
+                    TextButton(onClick = { showCrashLog = true }) { Text(stringResource(R.string.s_voir)) }
                     TextButton(onClick = {
                         // Pièce jointe via FileProvider : un journal de 200 000 caractères en
                         // EXTRA_TEXT frôlerait la limite des transactions Binder (1 Mo)
@@ -791,17 +793,17 @@ fun SettingsScreen(vm: StreamViewModel) {
                             }
                             context.startActivity(Intent.createChooser(intent, "Partager le journal"))
                         }
-                    }) { Text("Partager") }
+                    }) { Text(stringResource(R.string.s_partager)) }
                     TextButton(onClick = {
                         CrashLog.clear(context)
                         crashCount = 0
-                    }) { Text("Effacer", color = MaterialTheme.colorScheme.error) }
+                    }) { Text(stringResource(R.string.s_effacer), color = MaterialTheme.colorScheme.error) }
                 }
             }
             if (showCrashLog) {
                 AlertDialog(
                     onDismissRequest = { showCrashLog = false },
-                    title = { Text("Journal des incidents") },
+                    title = { Text(stringResource(R.string.s_journal_des_incidents)) },
                     text = {
                         Text(
                             CrashLog.read(context),
@@ -809,7 +811,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                             modifier = Modifier.height(360.dp).verticalScroll(rememberScrollState()),
                         )
                     },
-                    confirmButton = { TextButton(onClick = { showCrashLog = false }) { Text("Fermer") } },
+                    confirmButton = { TextButton(onClick = { showCrashLog = false }) { Text(stringResource(R.string.s_fermer)) } },
                 )
             }
         }
@@ -853,7 +855,7 @@ private fun PassphraseDialog(
                 OutlinedTextField(
                     value = pass1,
                     onValueChange = { pass1 = it },
-                    label = { Text("Phrase de passe") },
+                    label = { Text(stringResource(R.string.s_phrase_de_passe)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -863,7 +865,7 @@ private fun PassphraseDialog(
                     OutlinedTextField(
                         value = pass2,
                         onValueChange = { pass2 = it },
-                        label = { Text("Confirmer") },
+                        label = { Text(stringResource(R.string.s_confirmer)) },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -886,7 +888,7 @@ private fun PassphraseDialog(
             }) { Text(if (isExport) "Exporter" else "Restaurer") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Annuler") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) }
         },
     )
 }
@@ -902,13 +904,13 @@ private fun PinSetupDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Définir un PIN (4 chiffres)") },
+        title = { Text(stringResource(R.string.s_definir_un_pin_4_chiffres)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = pin1,
                     onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) pin1 = it },
-                    label = { Text("Nouveau PIN") },
+                    label = { Text(stringResource(R.string.s_nouveau_pin)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -917,7 +919,7 @@ private fun PinSetupDialog(
                 OutlinedTextField(
                     value = pin2,
                     onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) pin2 = it },
-                    label = { Text("Confirmer le PIN") },
+                    label = { Text(stringResource(R.string.s_confirmer_le_pin)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -935,10 +937,10 @@ private fun PinSetupDialog(
                     pin1 != pin2 -> error = "Les deux saisies ne correspondent pas"
                     else -> onConfirm(pin1)
                 }
-            }) { Text("Activer") }
+            }) { Text(stringResource(R.string.s_activer)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Annuler") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) }
         },
     )
 }

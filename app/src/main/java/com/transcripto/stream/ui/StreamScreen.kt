@@ -89,6 +89,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -101,6 +102,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.transcripto.stream.R
 import com.transcripto.stream.export.TranscriptExporter
 import com.transcripto.stream.stt.ModelState
 import com.transcripto.stream.data.RecordingItem
@@ -243,10 +245,10 @@ fun StreamScreen() {
                         TopAppBar(
                             title = {
                                 when (screen) {
-                                    1 -> Text("Enregistrements")
-                                    2 -> Text("Réglages")
-                                    3 -> Text("Fiche")
-                                    4 -> Text("Dossier")
+                                    1 -> Text(stringResource(R.string.s_enregistrements))
+                                    2 -> Text(stringResource(R.string.s_reglages))
+                                    3 -> Text(stringResource(R.string.s_fiche))
+                                    4 -> Text(stringResource(R.string.s_dossier))
                                     else -> Row(verticalAlignment = Alignment.CenterVertically) {
                                         IconAvatar(
                                             icon = AppIcons.Mic,
@@ -257,14 +259,14 @@ fun StreamScreen() {
                                             tint = MaterialTheme.colorScheme.onPrimary,
                                         )
                                         Spacer(Modifier.width(10.dp))
-                                        Text("Transcripto Stream")
+                                        Text(stringResource(R.string.s_transcripto_stream))
                                     }
                                 }
                             },
                             navigationIcon = {
                                 if (screen == 3 || screen == 4) {
                                     IconButton(onClick = { vm.navigate(1) }) {
-                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour à la liste")
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_retour_a_la_liste))
                                     }
                                 }
                             },
@@ -278,7 +280,7 @@ fun StreamScreen() {
                             ExtendedFloatingActionButton(
                                 onClick = { importLauncher.launch("audio/*") },
                                 icon = { Icon(AppIcons.Upload, contentDescription = null) },
-                                text = { Text("Importer") },
+                                text = { Text(stringResource(R.string.s_importer)) },
                             )
                         }
                     },
@@ -287,20 +289,20 @@ fun StreamScreen() {
                             NavigationBarItem(
                                 selected = screen == 0,
                                 onClick = { vm.navigate(0) },
-                                icon = { Icon(AppIcons.Mic, contentDescription = "Transcrire") },
-                                label = { Text("Transcrire") },
+                                icon = { Icon(AppIcons.Mic, contentDescription = stringResource(R.string.s_transcrire)) },
+                                label = { Text(stringResource(R.string.s_transcrire)) },
                             )
                             NavigationBarItem(
                                 selected = screen == 1 || screen == 3 || screen == 4,
                                 onClick = { vm.navigate(1) },
-                                icon = { Icon(AppIcons.Folder, contentDescription = "Enregistrements") },
-                                label = { Text("Enregistrements") },
+                                icon = { Icon(AppIcons.Folder, contentDescription = stringResource(R.string.s_enregistrements)) },
+                                label = { Text(stringResource(R.string.s_enregistrements)) },
                             )
                             NavigationBarItem(
                                 selected = screen == 2,
                                 onClick = { vm.navigate(2) },
-                                icon = { Icon(Icons.Filled.Settings, contentDescription = "Réglages") },
-                                label = { Text("Réglages") },
+                                icon = { Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.s_reglages)) },
+                                label = { Text(stringResource(R.string.s_reglages)) },
                             )
                         }
                     },
@@ -372,7 +374,7 @@ private fun BatchImportDialog(
                     value = dossier,
                     onValueChange = { dossier = it },
                     singleLine = true,
-                    label = { Text("Dossier / client (facultatif)") },
+                    label = { Text(stringResource(R.string.s_dossier_client_facultatif)) },
                 )
                 if (dossiers.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
@@ -386,7 +388,7 @@ private fun BatchImportDialog(
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                Text("Type de mission (oriente la synthèse) :", style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.s_type_de_mission_oriente_la_synthese), style = MaterialTheme.typography.labelMedium)
                 Spacer(Modifier.height(4.dp))
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -398,8 +400,8 @@ private fun BatchImportDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(dossier, template) }) { Text("Importer") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
+        confirmButton = { TextButton(onClick = { onConfirm(dossier, template) }) { Text(stringResource(R.string.s_importer)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) } },
     )
 }
 
@@ -415,7 +417,7 @@ private fun NameRecordingDialog(
     var template by remember { mutableStateOf(SummaryTemplates.DEFAULT_ID) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Enregistrement terminé") },
+        title = { Text(stringResource(R.string.s_enregistrement_termine)) },
         text = {
             Column {
                 Text(
@@ -428,14 +430,14 @@ private fun NameRecordingDialog(
                     value = name,
                     onValueChange = { name = it },
                     singleLine = true,
-                    label = { Text("Nom") },
+                    label = { Text(stringResource(R.string.s_nom)) },
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = dossier,
                     onValueChange = { dossier = it },
                     singleLine = true,
-                    label = { Text("Dossier / client (facultatif)") },
+                    label = { Text(stringResource(R.string.s_dossier_client_facultatif)) },
                 )
                 if (dossiers.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
@@ -476,10 +478,10 @@ private fun NameRecordingDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(name, dossier, template) }) { Text("Enregistrer") }
+            TextButton(onClick = { onConfirm(name, dossier, template) }) { Text(stringResource(R.string.s_enregistrer)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Plus tard") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_plus_tard)) }
         },
     )
 }
@@ -493,7 +495,7 @@ private fun EditTranscriptDialog(
     var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Corriger la transcription") },
+        title = { Text(stringResource(R.string.s_corriger_la_transcription)) },
         text = {
             OutlinedTextField(
                 value = text,
@@ -503,10 +505,10 @@ private fun EditTranscriptDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(text) }) { Text("Enregistrer") }
+            TextButton(onClick = { onConfirm(text) }) { Text(stringResource(R.string.s_enregistrer)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Annuler") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) }
         },
     )
 }
@@ -699,7 +701,7 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                             colors = ButtonDefaults.textButtonColors(
                                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
                             ),
-                        ) { Text("Réessayer") }
+                        ) { Text(stringResource(R.string.s_reessayer)) }
                     },
                 )
                 Spacer(Modifier.height(8.dp))
@@ -721,7 +723,7 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                         modifier = Modifier.size(SegmentedButtonDefaults.IconSize),
                     )
                 },
-                label = { Text("Google", maxLines = 1) },
+                label = { Text(stringResource(R.string.s_google), maxLines = 1) },
             )
             SegmentedButton(
                 selected = selectedEngine == "whisper",
@@ -735,7 +737,7 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                         modifier = Modifier.size(SegmentedButtonDefaults.IconSize),
                     )
                 },
-                label = { Text("Whisper local", maxLines = 1) },
+                label = { Text(stringResource(R.string.s_whisper_local), maxLines = 1) },
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -1007,7 +1009,7 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
     if (confirmDeleteLast) {
         AlertDialog(
             onDismissRequest = { confirmDeleteLast = false },
-            title = { Text("Supprimer ?") },
+            title = { Text(stringResource(R.string.s_supprimer)) },
             text = {
                 Text(
                     "« ${lastRecording?.let { RecordingNames.baseName(it.name) } ?: ""} » " +
@@ -1018,10 +1020,10 @@ private fun MainScreen(vm: StreamViewModel, snackbarHostState: SnackbarHostState
                 TextButton(onClick = {
                     vm.deleteLastRecording()
                     confirmDeleteLast = false
-                }) { Text("Supprimer", color = MaterialTheme.colorScheme.error) }
+                }) { Text(stringResource(R.string.s_supprimer_2), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmDeleteLast = false }) { Text("Annuler") }
+                TextButton(onClick = { confirmDeleteLast = false }) { Text(stringResource(R.string.s_annuler)) }
             },
         )
     }
@@ -1083,17 +1085,17 @@ private fun LastRecordingCard(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     MetaChip(text = "Dernier enregistrement")
-                    if (encrypted) MetaChip(text = "Chiffré", icon = Icons.Filled.Lock, contentDescription = "Chiffré")
+                    if (encrypted) MetaChip(text = "Chiffré", icon = Icons.Filled.Lock, contentDescription = stringResource(R.string.s_chiffre))
                     if (!hasAudio) MetaChip(text = "Texte seul", icon = AppIcons.Document)
                 }
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "Plus d'actions")
+                    Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.s_plus_d_actions))
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("Copier le texte") },
+                        text = { Text(stringResource(R.string.s_copier_le_texte)) },
                         leadingIcon = { Icon(AppIcons.Copy, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         onClick = {
                             menuOpen = false
@@ -1101,7 +1103,7 @@ private fun LastRecordingCard(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Partager") },
+                        text = { Text(stringResource(R.string.s_partager)) },
                         leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         onClick = {
                             menuOpen = false
@@ -1109,7 +1111,7 @@ private fun LastRecordingCard(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Corriger la transcription") },
+                        text = { Text(stringResource(R.string.s_corriger_la_transcription)) },
                         leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         onClick = {
                             menuOpen = false
@@ -1117,7 +1119,7 @@ private fun LastRecordingCard(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Supprimer", color = MaterialTheme.colorScheme.error) },
+                        text = { Text(stringResource(R.string.s_supprimer_2), color = MaterialTheme.colorScheme.error) },
                         leadingIcon = {
                             Icon(
                                 Icons.Filled.Delete,
@@ -1175,7 +1177,7 @@ private fun LastRecordingCard(
                 ) {
                     Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                     Spacer(Modifier.width(6.dp))
-                    Text("Partager", maxLines = 1)
+                    Text(stringResource(R.string.s_partager), maxLines = 1)
                 }
                 OutlinedButton(
                     onClick = onEdit,
@@ -1184,7 +1186,7 @@ private fun LastRecordingCard(
                 ) {
                     Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                     Spacer(Modifier.width(6.dp))
-                    Text("Corriger", maxLines = 1)
+                    Text(stringResource(R.string.s_corriger), maxLines = 1)
                 }
             }
         }
@@ -1223,7 +1225,7 @@ private fun LastRecordingCard(
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onOpen, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                Text("Ouvrir la fiche", style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(R.string.s_ouvrir_la_fiche), style = MaterialTheme.typography.labelLarge)
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp))
             }
         }

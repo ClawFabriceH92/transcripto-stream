@@ -61,8 +61,10 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.transcripto.stream.R
 import com.transcripto.stream.data.RecordingItem
 import com.transcripto.stream.data.SearchHit
 import com.transcripto.stream.data.SpeakerNames
@@ -159,7 +161,7 @@ fun RecordingListScreen(
                 text = if (b.cancelling) "Import : arrêt après le fichier en cours…" else "Import ${minOf(b.done + 1, b.total)} sur ${b.total} — ${b.label}",
                 icon = AppIcons.Upload,
                 progress = if (b.total > 0) b.done.toFloat() / b.total else null,
-                action = if (b.cancelling) null else ({ TextButton(onClick = { vm.cancelBatch() }) { Text("Annuler") } }),
+                action = if (b.cancelling) null else ({ TextButton(onClick = { vm.cancelBatch() }) { Text(stringResource(R.string.s_annuler)) } }),
             )
             Spacer(Modifier.height(8.dp))
         }
@@ -173,7 +175,7 @@ fun RecordingListScreen(
                 icon = AppIcons.Backup,
                 container = MaterialTheme.colorScheme.tertiaryContainer,
                 contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                action = { TextButton(onClick = { vm.openBackupSettings() }) { Text("Sauvegarder") } },
+                action = { TextButton(onClick = { vm.openBackupSettings() }) { Text(stringResource(R.string.s_sauvegarder)) } },
             )
             Spacer(Modifier.height(8.dp))
         }
@@ -181,12 +183,12 @@ fun RecordingListScreen(
             value = query,
             onValueChange = { vm.setSearchQuery(it) },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Rechercher un nom ou un passage…") },
+            placeholder = { Text(stringResource(R.string.s_rechercher_un_nom_ou_un_passage)) },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             trailingIcon = if (query.isNotEmpty()) {
                 {
                     IconButton(onClick = { vm.setSearchQuery("") }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Effacer la recherche")
+                        Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.s_effacer_la_recherche))
                     }
                 }
             } else {
@@ -210,7 +212,7 @@ fun RecordingListScreen(
                 FilterChip(
                     selected = dossierFilter == null,
                     onClick = { vm.setDossierFilter(null) },
-                    label = { Text("Tous") },
+                    label = { Text(stringResource(R.string.s_tous)) },
                 )
                 dossiers.forEach { d ->
                     FilterChip(
@@ -338,16 +340,16 @@ fun RecordingListScreen(
     deleteTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
-            title = { Text("Supprimer ?") },
+            title = { Text(stringResource(R.string.s_supprimer)) },
             text = { Text("« ${target.baseName} » (${target.sizeBytes / 1024} Ko) sera définitivement supprimé.") },
             confirmButton = {
                 TextButton(onClick = {
                     vm.deleteRecording(target)
                     deleteTarget = null
-                }) { Text("Supprimer", color = MaterialTheme.colorScheme.error) }
+                }) { Text(stringResource(R.string.s_supprimer_2), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("Annuler") }
+                TextButton(onClick = { deleteTarget = null }) { Text(stringResource(R.string.s_annuler)) }
             },
         )
     }
@@ -530,10 +532,10 @@ private fun RecordingCard(
                     MetaChip(text = timeFmt.format(Date(item.modifiedAt)))
                     if (item.hasAudio) MetaChip(text = formatHms(item.durationMs), icon = AppIcons.Clock)
                     if (item.encrypted) {
-                        MetaChip(text = "Chiffré", icon = Icons.Filled.Lock, contentDescription = "Chiffré")
+                        MetaChip(text = "Chiffré", icon = Icons.Filled.Lock, contentDescription = stringResource(R.string.s_chiffre))
                     }
                     if (!item.hasAudio) {
-                        MetaChip(text = "Texte seul", icon = AppIcons.Document, contentDescription = "Texte seul, sans audio")
+                        MetaChip(text = "Texte seul", icon = AppIcons.Document, contentDescription = stringResource(R.string.s_texte_seul_sans_audio))
                     }
                 }
                 if (item.transcript.isNotBlank()) {
@@ -550,11 +552,11 @@ private fun RecordingCard(
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "Actions")
+                    Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.s_actions))
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("Partager") },
+                        text = { Text(stringResource(R.string.s_partager)) },
                         leadingIcon = {
                             Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(20.dp))
                         },
@@ -565,7 +567,7 @@ private fun RecordingCard(
                     )
                     if (item.hasAudio) {
                         DropdownMenuItem(
-                            text = { Text("Exporter l'audio (WAV)") },
+                            text = { Text(stringResource(R.string.s_exporter_l_audio_wav)) },
                             leadingIcon = {
                                 Icon(AppIcons.Download, contentDescription = null, modifier = Modifier.size(20.dp))
                             },
@@ -576,7 +578,7 @@ private fun RecordingCard(
                         )
                     }
                     DropdownMenuItem(
-                        text = { Text("Exporter en Word (.docx)") },
+                        text = { Text(stringResource(R.string.s_exporter_en_word_docx)) },
                         leadingIcon = {
                             Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp))
                         },
@@ -586,7 +588,7 @@ private fun RecordingCard(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Exporter en PDF") },
+                        text = { Text(stringResource(R.string.s_exporter_en_pdf)) },
                         leadingIcon = {
                             Icon(AppIcons.Document, contentDescription = null, modifier = Modifier.size(20.dp))
                         },
@@ -596,7 +598,7 @@ private fun RecordingCard(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Renommer") },
+                        text = { Text(stringResource(R.string.s_renommer)) },
                         leadingIcon = {
                             Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
                         },
@@ -606,7 +608,7 @@ private fun RecordingCard(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Supprimer", color = MaterialTheme.colorScheme.error) },
+                        text = { Text(stringResource(R.string.s_supprimer_2), color = MaterialTheme.colorScheme.error) },
                         leadingIcon = {
                             Icon(
                                 Icons.Filled.Delete,
@@ -635,20 +637,20 @@ private fun RenameDialog(
     var name by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Renommer l'enregistrement") },
+        title = { Text(stringResource(R.string.s_renommer_l_enregistrement)) },
         text = {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
                 singleLine = true,
-                label = { Text("Nom") },
+                label = { Text(stringResource(R.string.s_nom)) },
             )
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(name) }) { Text("Renommer") }
+            TextButton(onClick = { onConfirm(name) }) { Text(stringResource(R.string.s_renommer)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Annuler") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_annuler)) }
         },
     )
 }

@@ -4,6 +4,7 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.transcripto.stream.R
 import com.transcripto.stream.data.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -129,7 +130,7 @@ class ModelManager(
                 val f = downloadedModelFile(model)
                 if (f == null || !withContext(Dispatchers.IO) { f.exists() }) {
                     // Supprimé ou stockage indisponible → repli sur l'embarqué
-                    onMessage("Modèle « ${model.label} » introuvable — retour au modèle embarqué")
+                    onMessage(context.getString(R.string.m_modele_model_label_introuvable_retour_au, model.label))
                     fallbackToEmbedded()
                     return@launch
                 }
@@ -149,7 +150,7 @@ class ModelManager(
                 // terminé — on le libère pour ne pas garder ~1,5 Go en état d'erreur.
                 lock.withLock { engine.unloadModel() }
                 if (model.url != null) {
-                    onMessage("« ${model.label} » trop long à charger — retour au modèle embarqué")
+                    onMessage(context.getString(R.string.m_model_label_trop_long_a_charger_retour, model.label))
                     fallbackToEmbedded()
                 } else {
                     _modelState.value = ModelState.Error(
@@ -219,23 +220,23 @@ class ModelManager(
         val model = ModelCatalog.byId(id)
         if (model.url == null) return
         if (settings.modelDownloadId >= 0) {
-            onMessage("Un téléchargement de modèle est déjà en cours")
+            onMessage(context.getString(R.string.m_un_telechargement_de_modele_est_deja_en))
             return
         }
         if (id in _downloadedModels.value) return
         val dest = downloadedModelFile(model)
         if (dest == null) {
-            onMessage("Stockage indisponible pour les modèles")
+            onMessage(context.getString(R.string.m_stockage_indisponible_pour_les_modeles))
             return
         }
         val usableMb = (dest.parentFile ?: context.filesDir).usableSpace / (1024L * 1024L)
         if (usableMb < model.approxMb + 100) {
-            onMessage("Espace insuffisant ($usableMb Mo libres, ${model.approxMb} Mo requis)")
+            onMessage(context.getString(R.string.m_espace_insuffisant_usablemb_mo_libres, usableMb, model.approxMb))
             return
         }
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
         if (dm == null) {
-            onMessage("Téléchargement indisponible sur cet appareil")
+            onMessage(context.getString(R.string.m_telechargement_indisponible_sur_cet))
             return
         }
         dest.parentFile?.mkdirs()
@@ -249,7 +250,7 @@ class ModelManager(
         val dlId = try {
             dm.enqueue(request)
         } catch (e: Exception) {
-            onMessage("Téléchargement impossible : ${e.message}")
+            onMessage(context.getString(R.string.m_telechargement_impossible_e_message, e.message))
             return
         }
         settings.setModelDownload(dlId, id)
@@ -264,7 +265,7 @@ class ModelManager(
         (context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager)
             ?.remove(settings.modelDownloadId)
         clearModelDownloadState(deletePartial = true)
-        onMessage("Téléchargement annulé")
+        onMessage(context.getString(R.string.m_telechargement_annule))
     }
 
     private fun clearModelDownloadState(deletePartial: Boolean) {
@@ -305,7 +306,7 @@ class ModelManager(
                 when {
                     found && status == DownloadManager.STATUS_SUCCESSFUL -> {
                         clearModelDownloadState(deletePartial = false)
-                        onMessage("Modèle téléchargé — appuie sur « Activer » pour l'utiliser")
+                        onMessage(context.getString(R.string.m_modele_telecharge_appuie_sur_activer))
                         break
                     }
                     !found || status == DownloadManager.STATUS_FAILED -> {
@@ -337,11 +338,11 @@ class ModelManager(
     fun select(id: String) {
         if (id == _activeModelId.value && _modelState.value is ModelState.Ready) return
         if (_modelState.value is ModelState.Loading) {
-            onMessage("Un modèle est déjà en cours de chargement")
+            onMessage(context.getString(R.string.m_un_modele_est_deja_en_cours_de))
             return
         }
         if (busy()) {
-            onMessage("Changement de modèle impossible pendant une opération en cours")
+            onMessage(context.getString(R.string.m_changement_de_modele_impossible_pendant))
             return
         }
         val model = ModelCatalog.byId(id)
@@ -349,7 +350,7 @@ class ModelManager(
             val available = model.url == null ||
                 withContext(Dispatchers.IO) { downloadedModelFile(model)?.exists() == true }
             if (!available) {
-                onMessage("Télécharge d'abord ce modèle")
+                onMessage(context.getString(R.string.m_telecharge_d_abord_ce_modele))
                 return@launch
             }
             settings.modelId = model.id
@@ -363,11 +364,11 @@ class ModelManager(
         val model = ModelCatalog.byId(id)
         if (model.url == null) return
         if (_modelState.value is ModelState.Loading) {
-            onMessage("Attends la fin du chargement du modèle")
+            onMessage(context.getString(R.string.m_attends_la_fin_du_chargement_du_modele))
             return
         }
         if (busy()) {
-            onMessage("Suppression impossible pendant une opération en cours")
+            onMessage(context.getString(R.string.m_suppression_impossible_pendant_une))
             return
         }
         if (_activeModelId.value == id) {
@@ -380,7 +381,7 @@ class ModelManager(
             // l'inode d'un fichier encore mmappé survit jusqu'à sa fermeture.
             withContext(Dispatchers.IO) { downloadedModelFile(model)?.delete() }
             refreshDownloaded()
-            onMessage("Modèle « ${model.label} » supprimé")
+            onMessage(context.getString(R.string.m_modele_model_label_supprime, model.label))
         }
     }
 
