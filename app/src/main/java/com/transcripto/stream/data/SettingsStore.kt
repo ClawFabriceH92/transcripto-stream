@@ -35,7 +35,7 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("speaker_embeddings", true)
         set(v) = prefs.edit().putBoolean("speaker_embeddings", v).apply()
 
-    // ---- Intervenants attendus : 0 = automatique, sinon nombre imposé (2..6) ----
+    // ---- Intervenants attendus : 0 = automatique, sinon nombre imposé (1..6) ----
     var expectedSpeakers: Int
         get() = prefs.getInt("expected_speakers", 0)
         set(v) = prefs.edit().putInt("expected_speakers", v).apply()

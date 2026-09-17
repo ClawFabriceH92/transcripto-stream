@@ -1,5 +1,6 @@
 package com.transcripto.stream.data
 
+import com.transcripto.stream.stt.SegmentData
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -30,7 +31,7 @@ data class RecordingMeta(
 ) {
     val isEmpty: Boolean
         get() = speakers.isEmpty() && dossier.isBlank() && template.isBlank() && chapters.isEmpty() &&
-            !segmentsStale && actions.isEmpty() && dismissedActions.isEmpty() && voices.isEmpty()
+            !segmentsStale && actions.isEmpty() && dismissedActions.isEmpty() && voices.values.all { it.isEmpty() }
 
     /** Égalité de contenu des empreintes (les tableaux se comparent par référence dans `==`). */
     fun voicesContentEquals(other: Map<Int, FloatArray>): Boolean =
@@ -100,8 +101,11 @@ object MetaCodec {
         return o.toString()
     }
 
-    /** Métadonnées vides si le JSON est absent ou illisible. */
-    fun fromJson(json: String?): RecordingMeta {
+    /**
+     * Métadonnées vides si le JSON est absent ou illisible. [withVoices] = false saute les
+     * empreintes (quelques Ko par intervenant) quand seuls les noms servent — liste, fiche dossier.
+     */
+    fun fromJson(json: String?, withVoices: Boolean = true): RecordingMeta {
         if (json.isNullOrBlank()) return RecordingMeta()
         return try {
             val o = JSONObject(json)
@@ -140,7 +144,7 @@ object MetaCodec {
                 }
             }
             val voices = LinkedHashMap<Int, FloatArray>()
-            o.optJSONObject("voices")?.let { vo ->
+            if (withVoices) o.optJSONObject("voices")?.let { vo ->
                 vo.keys().forEach { k ->
                     val id = k.toIntOrNull() ?: return@forEach
                     val arr = vo.optJSONArray(k) ?: return@forEach
@@ -190,6 +194,58 @@ object SpeakerNames {
             val name = id?.let { names[it] }?.takeIf { it.isNotBlank() }
             if (name != null) "$name : " else m.value
         }
+    }
+
+    /** Résultat de [remap] : noms sur la nouvelle numérotation, et noms qu'aucun intervenant ne reprend. */
+    data class Remap(val names: Map<Int, String>, val dropped: List<String>)
+
+    /** Part minimale du temps de parole d'un ancien intervenant que doit reprendre son successeur. */
+    const val REMAP_MIN_SHARE = 0.6
+
+    /**
+     * Re-transcription : la numérotation des intervenants peut changer (autre diarisation, autre
+     * nombre attendu). Chaque ancien intervenant nommé est projeté, par recouvrement temporel de ses
+     * anciens passages ([old]) sur les nouveaux ([segments] étiquetés [ids]), vers le nouvel
+     * intervenant qui reprend la majorité ([REMAP_MIN_SHARE]) de son temps de parole. Un nouvel
+     * intervenant ne reçoit qu'un nom (le recouvrement le plus long gagne) ; les noms sans
+     * successeur net sont abandonnés plutôt qu'attribués au hasard.
+     */
+    fun remap(old: List<StoredSegment>, names: Map<Int, String>, segments: List<SegmentData>, ids: List<Int>): Remap {
+        if (names.isEmpty()) return Remap(emptyMap(), emptyList())
+        if (old.isEmpty() || segments.isEmpty() || ids.size != segments.size) return Remap(names, emptyList())
+        // overlap[ancien][nouveau] = ms de recouvrement
+        val overlap = HashMap<Int, HashMap<Int, Long>>()
+        val sortedNew = segments.indices.sortedBy { segments[it].startMs }
+        for (o in old) {
+            if (o.speaker !in names || o.endMs <= o.startMs) continue
+            val row = overlap.getOrPut(o.speaker) { HashMap() }
+            for (j in sortedNew) {
+                val s = segments[j]
+                if (s.startMs >= o.endMs) break
+                val ov = minOf(o.endMs, s.endMs) - maxOf(o.startMs, s.startMs)
+                if (ov > 0) row[ids[j]] = (row[ids[j]] ?: 0L) + ov
+            }
+        }
+        data class Candidate(val oldId: Int, val newId: Int, val ms: Long)
+        val candidates = ArrayList<Candidate>()
+        for ((oldId, row) in overlap) {
+            val total = row.values.sum()
+            if (total <= 0L) continue
+            val (newId, ms) = row.maxByOrNull { it.value }!!
+            if (ms.toDouble() / total >= REMAP_MIN_SHARE) candidates += Candidate(oldId, newId, ms)
+        }
+        val out = LinkedHashMap<Int, String>()
+        val usedOld = HashSet<Int>()
+        val usedNames = HashSet<String>()
+        for (c in candidates.sortedByDescending { it.ms }) {
+            val name = names.getValue(c.oldId)
+            if (c.newId in out || c.oldId in usedOld || name.trim().lowercase() in usedNames) continue
+            out[c.newId] = name
+            usedOld += c.oldId
+            usedNames += name.trim().lowercase()
+        }
+        val dropped = names.filterKeys { it !in usedOld }.values.filter { it.isNotBlank() }
+        return Remap(out.toSortedMap(), dropped)
     }
 
     /**

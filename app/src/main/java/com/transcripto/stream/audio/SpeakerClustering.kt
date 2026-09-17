@@ -22,38 +22,54 @@ object SpeakerClustering {
         val valid = embeddings.indices.filter { embeddings[it] != null }
         if (valid.isEmpty()) return List(n) { 1 }
         val vecs = valid.map { normalize(embeddings[it]!!) }
+        val m = vecs.size
         val target = expected?.coerceIn(1, MAX_SPEAKERS)
-        // Groupes : listes d'indices dans « vecs »
-        val groups = ArrayList<MutableList<Int>>(vecs.indices.map { mutableListOf(it) })
-        val cap = if (target != null) target else 1
-        while (groups.size > cap) {
+        // Similarités calculées une seule fois. sum[g][h] = somme des similarités entre les membres
+        // des groupes g et h (lien moyen = sum / (|g|·|h|)), entretenue à chaque fusion par la
+        // récurrence de Lance–Williams : O(m²) par fusion, indépendant de la dimension.
+        val sum = Array(m) { FloatArray(m) }
+        for (i in 0 until m) for (j in i + 1 until m) {
+            val s = cosine(vecs[i], vecs[j])
+            sum[i][j] = s
+            sum[j][i] = s
+        }
+        val members = Array<MutableList<Int>>(m) { i -> mutableListOf(i) }
+        val alive = BooleanArray(m) { true }
+        var count = m
+        while (count > 1) {
             var bi = -1
             var bj = -1
-            var best = -2f
-            for (i in groups.indices) for (j in i + 1 until groups.size) {
-                val s = averageSimilarity(vecs, groups[i], groups[j])
-                if (s > best) {
-                    best = s
-                    bi = i
-                    bj = j
+            var best = Float.NEGATIVE_INFINITY
+            for (g in 0 until m) {
+                if (!alive[g]) continue
+                val row = sum[g]
+                val sg = members[g].size
+                for (h in g + 1 until m) {
+                    if (!alive[h]) continue
+                    val avg = row[h] / (sg * members[h].size)
+                    if (avg > best) {
+                        best = avg
+                        bi = g
+                        bj = h
+                    }
                 }
             }
-            if (target == null && best < threshold) break
-            if (target == null && groups.size <= MAX_SPEAKERS && best < threshold) break
-            groups[bi].addAll(groups[bj])
-            groups.removeAt(bj)
-            if (target == null && groups.size <= MAX_SPEAKERS && (groups.size == 1)) break
-        }
-        // Auto : borne haute de six locuteurs même sous le seuil
-        while (target == null && groups.size > MAX_SPEAKERS) {
-            var bi = -1; var bj = -1; var best = -2f
-            for (i in groups.indices) for (j in i + 1 until groups.size) {
-                val s = averageSimilarity(vecs, groups[i], groups[j])
-                if (s > best) { best = s; bi = i; bj = j }
+            // Nombre imposé : fusionner jusqu'à l'atteindre ; auto : s'arrêter sous le seuil,
+            // mais jamais plus de MAX_SPEAKERS groupes
+            val done = if (target != null) count <= target else (best < threshold && count <= MAX_SPEAKERS)
+            if (done) break
+            for (k in 0 until m) {
+                if (!alive[k] || k == bi || k == bj) continue
+                sum[bi][k] += sum[bj][k]
+                sum[k][bi] = sum[bi][k]
             }
-            groups[bi].addAll(groups[bj]); groups.removeAt(bj)
+            members[bi].addAll(members[bj])
+            members[bj].clear()
+            alive[bj] = false
+            count--
         }
-        val labelOfVec = IntArray(vecs.size)
+        val groups = members.indices.filter { alive[it] }.map { members[it] }
+        val labelOfVec = IntArray(m)
         // Numérotation par ordre de première apparition
         val firstIndex = groups.map { g -> g.minOrNull()!! }
         val order = groups.indices.sortedBy { firstIndex[it] }
@@ -68,8 +84,9 @@ object SpeakerClustering {
         return out.toList()
     }
 
-    /** Similarité cosinus entre deux empreintes (normalisées ou non). */
+    /** Similarité cosinus entre deux empreintes (normalisées ou non) ; 0 si les tailles diffèrent. */
     fun cosine(a: FloatArray, b: FloatArray): Float {
+        if (a.size != b.size || a.isEmpty()) return 0f
         var dot = 0.0
         var na = 0.0
         var nb = 0.0
@@ -84,10 +101,9 @@ object SpeakerClustering {
 
     /** Centroïde normalisé d'un groupe d'empreintes (mémoire des voix). */
     fun centroid(vectors: List<FloatArray>): FloatArray? {
-        if (vectors.isEmpty()) return null
-        val dim = vectors[0].size
+        val dim = vectors.firstOrNull { it.isNotEmpty() }?.size ?: return null
         val c = FloatArray(dim)
-        for (v in vectors) for (i in 0 until dim) c[i] += v[i]
+        for (v in vectors) if (v.size == dim) for (i in 0 until dim) c[i] += v[i]
         return normalize(c)
     }
 
@@ -96,9 +112,4 @@ object SpeakerClustering {
         return if (n == 0f) v.copyOf() else FloatArray(v.size) { v[it] / n }
     }
 
-    private fun averageSimilarity(vecs: List<FloatArray>, a: List<Int>, b: List<Int>): Float {
-        var s = 0.0
-        for (i in a) for (j in b) s += cosine(vecs[i], vecs[j])
-        return (s / (a.size * b.size)).toFloat()
-    }
 }

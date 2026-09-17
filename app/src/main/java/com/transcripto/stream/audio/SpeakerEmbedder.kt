@@ -36,6 +36,7 @@ class SpeakerEmbedder private constructor(
                 session.run(mapOf(INPUT to x)).use { out ->
                     @Suppress("UNCHECKED_CAST")
                     val raw = (out[0].value as Array<FloatArray>)[0]
+                    if (raw.any { !it.isFinite() }) return null
                     val n = Fbank.l2(raw)
                     return if (n == 0f) null else FloatArray(raw.size) { raw[it] / n }
                 }

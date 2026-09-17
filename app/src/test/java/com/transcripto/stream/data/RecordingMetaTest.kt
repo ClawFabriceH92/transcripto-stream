@@ -1,5 +1,6 @@
 package com.transcripto.stream.data
 
+import com.transcripto.stream.stt.SegmentData
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -55,6 +56,51 @@ class RecordingMetaTest {
         val broken = MetaCodec.fromJson("""{"dossier":"D","voices":{"a":[1,2],"2":"x","3":[]}}""")
         assertEquals("D", broken.dossier)
         assertTrue(broken.voices.isEmpty())
+    }
+
+    @Test
+    fun voicesCanBeSkippedAndEmptyArraysDoNotCount() {
+        val meta = RecordingMeta(speakers = mapOf(1 to "A"), voices = mapOf(1 to floatArrayOf(0.5f, 0.5f)))
+        val json = MetaCodec.toJson(meta)
+        val light = MetaCodec.fromJson(json, withVoices = false)
+        assertEquals(mapOf(1 to "A"), light.speakers)
+        assertTrue(light.voices.isEmpty())
+        assertEquals(1, MetaCodec.fromJson(json).voices.size)
+        assertTrue(RecordingMeta(voices = mapOf(1 to FloatArray(0))).isEmpty)
+    }
+
+    private fun stored(startS: Int, endS: Int, speaker: Int) = StoredSegment(startS * 1000L, endS * 1000L, "x", speaker)
+    private fun seg(startS: Int, endS: Int) = SegmentData("x", startS * 1000L, endS * 1000L)
+
+    @Test
+    fun remapFollowsSpeechNotNumbers() {
+        // Ancienne numérotation : 1 parle 0-10 s, 2 parle 10-20 s ; nouvelle : inversée et redécoupée
+        val old = listOf(stored(0, 10, 1), stored(10, 20, 2))
+        val names = mapOf(1 to "M. Martin", 2 to "Mme Durand")
+        val segments = listOf(seg(0, 4), seg(4, 10), seg(10, 15), seg(15, 20))
+        val r = SpeakerNames.remap(old, names, segments, listOf(2, 2, 1, 1))
+        assertEquals(mapOf(1 to "Mme Durand", 2 to "M. Martin"), r.names)
+        assertTrue(r.dropped.isEmpty())
+        // Numérotation identique : inchangé
+        assertEquals(names, SpeakerNames.remap(old, names, segments, listOf(1, 1, 2, 2)).names)
+    }
+
+    @Test
+    fun remapDropsAmbiguousNamesAndKeepsOneNamePerSpeaker() {
+        // L'ancien 1 (nommé) est réparti 50/50 sur les nouveaux 1 et 2 : pas de successeur net
+        val old = listOf(stored(0, 10, 1), stored(10, 20, 2))
+        val names = mapOf(1 to "M. Martin", 2 to "Mme Durand")
+        val r = SpeakerNames.remap(old, names, listOf(seg(0, 5), seg(5, 10), seg(10, 20)), listOf(1, 2, 3))
+        assertEquals(mapOf(3 to "Mme Durand"), r.names)
+        assertEquals(listOf("M. Martin"), r.dropped)
+        // Deux anciens fusionnés dans un seul nouveau : le plus long recouvrement garde le nom, l'autre est abandonné
+        val merged = SpeakerNames.remap(old, names, listOf(seg(0, 20)), listOf(1))
+        assertEquals(mapOf(1 to "M. Martin"), merged.names)
+        assertEquals(listOf("Mme Durand"), merged.dropped)
+        // Sans anciens passages ou sans nouveaux : noms conservés tels quels
+        assertEquals(names, SpeakerNames.remap(emptyList(), names, listOf(seg(0, 1)), listOf(1)).names)
+        assertEquals(names, SpeakerNames.remap(old, names, emptyList(), emptyList()).names)
+        assertTrue(SpeakerNames.remap(old, emptyMap(), listOf(seg(0, 1)), listOf(1)).names.isEmpty())
     }
 
     @Test

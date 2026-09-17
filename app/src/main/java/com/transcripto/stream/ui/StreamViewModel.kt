@@ -324,7 +324,7 @@ class StreamViewModel(
      * Encodeur d'empreintes vocales (modèle ONNX de 28 Mo) : chargé à la première transcription
      * différée si le réglage est actif, null si le modèle est absent (repli par hauteur de voix).
      */
-    private var speakerEmbedder: SpeakerEmbedder? = null
+    @Volatile private var speakerEmbedder: SpeakerEmbedder? = null
     private var speakerEmbedderTried = false
     private val speakerEmbedderLock = Mutex()
 
@@ -1408,6 +1408,7 @@ class StreamViewModel(
             val error = transcribeStored(file, engineRef, showInMain = true)
             if (error != null) _lastError.value = error else refreshRecordings()
             _isTranscribingFile.value = false
+            releaseSpeakerEmbedder()
         }
     }
 
@@ -1428,7 +1429,6 @@ class StreamViewModel(
         val embedder = if (settings.speakerEmbeddings) speakerEmbedder() else null
         val expected = settings.expectedSpeakers.takeIf { it in 1..SpeakerClustering.MAX_SPEAKERS }
         val diarization = withContext(Dispatchers.IO) { diarize(pcm, res.segments, embedder, expected) }
-        val voices = diarization.voices
         val (text, srt, segmentsJson) = withContext(Dispatchers.IO) {
             val speakerIds = diarization.speakerIds
             Triple(
@@ -1437,30 +1437,60 @@ class StreamViewModel(
                 if (res.segments.isEmpty()) "" else SegmentsCodec.toJson(res.segments, speakerIds),
             )
         }
-        // Mémoire des voix : empreintes conservées dans le .meta ; les voix déjà nommées ailleurs
-        // (même dossier d'abord) pré-remplissent les intervenants sans nom — à confirmer sur la fiche.
-        val recognised = withContext(Dispatchers.IO) {
-            if (voices.isEmpty()) return@withContext emptyMap<Int, String>()
-            val meta = repo.readMeta(file)
-            val known = repo.knownVoices(meta.dossier, except = file)
-            val found = SpeakerDiarizer.recognise(voices, known).filterKeys { it !in meta.speakers }
-            repo.updateMeta(file) { m -> m.copy(voices = voices, speakers = found + m.speakers) }
-            found
-        }
-        if (showInMain) {
-            _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { repo.readMeta(file).speakers })
-        }
-        // Sauvegarde .txt auto + .srt + segments .json à côté du fichier
+        // Sauvegarde .txt auto + .srt + segments .json à côté du fichier, puis .meta (noms suivis
+        // sur la nouvelle numérotation, empreintes, voix reconnues)
         val durationMs = pcm.size / 32L // 16 kHz × 2 octets = 32 octets/ms
-        withContext(Dispatchers.IO) {
+        val voices = withContext(Dispatchers.IO) {
+            val previous = repo.readSegments(file)
             writeTranscript(file, text, durationMs)
             repo.writeSidecars(file, srt, segmentsJson)
+            rememberVoices(file, previous, res.segments, diarization)
         }
-        if (recognised.isNotEmpty() && showInMain) {
-            val names = recognised.entries.sortedBy { it.key }.joinToString(", ") { "Intervenant ${it.key} → ${it.value}" }
-            _uiMessage.value = appContext.getString(R.string.m_voix_reconnues, names)
+        if (showInMain) {
+            _fileTranscript.value = SpeakerNames.apply(text, withContext(Dispatchers.IO) { repo.readMeta(file, withVoices = false).speakers })
+            val notes = ArrayList<String>()
+            if (voices.recognised.isNotEmpty()) {
+                val names = voices.recognised.entries.sortedBy { it.key }
+                    .joinToString(", ") { appContext.getString(R.string.m_intervenant_vers_nom, it.key, it.value) }
+                notes += appContext.getString(R.string.m_voix_reconnues, names)
+            }
+            if (voices.dropped.isNotEmpty()) notes += appContext.getString(R.string.m_noms_a_ressaisir, voices.dropped.joinToString(", "))
+            if (notes.isNotEmpty()) _uiMessage.value = notes.joinToString(" — ")
         }
         return null
+    }
+
+    /** Noms proposés d'après les voix mémorisées, et noms abandonnés faute de successeur net. */
+    private data class VoiceOutcome(val recognised: Map<Int, String>, val dropped: List<String>)
+
+    /**
+     * Met à jour le .meta après une transcription différée : les noms d'intervenants suivent
+     * leurs passages ([SpeakerNames.remap]) plutôt que leur numéro, les empreintes sont
+     * remplacées (vides si la diarisation n'en a pas produit — jamais d'empreinte périmée), et
+     * les voix déjà nommées ailleurs proposent un nom aux intervenants restés anonymes.
+     */
+    private fun rememberVoices(file: File, previous: List<StoredSegment>, segments: List<SegmentData>, d: SpeakerDiarizer.Result): VoiceOutcome = try {
+        val meta = repo.readMeta(file)
+        val remap = if (meta.speakers.isEmpty() || previous.isEmpty()) {
+            SpeakerNames.Remap(meta.speakers, emptyList())
+        } else {
+            SpeakerNames.remap(previous, meta.speakers, segments, d.speakerIds)
+        }
+        var names = remap.names
+        var found = emptyMap<Int, String>()
+        if (d.voices.isNotEmpty()) {
+            val known = repo.knownVoices(meta.dossier, except = file)
+            val usedNames = names.values.map { it.trim().lowercase() }.toSet()
+            found = SpeakerDiarizer.recognise(d.voices, known)
+                .filter { (id, name) -> id !in names && name.trim().lowercase() !in usedNames }
+            names = names + found
+        }
+        val finalNames = names
+        repo.updateMeta(file) { m -> m.copy(voices = d.voices, speakers = finalNames) }
+        VoiceOutcome(found, remap.dropped)
+    } catch (t: Throwable) {
+        Log.e(TAG, "Mémoire des voix : ${t.message}")
+        VoiceOutcome(emptyMap(), emptyList())
     }
 
     /**
@@ -1468,7 +1498,7 @@ class StreamViewModel(
      * d'erreur d'inférence, par hauteur de voix — sans mémoire des voix).
      */
     private fun diarize(pcm: ByteArray, segments: List<SegmentData>, embedder: VoiceEmbedder?, expected: Int?): SpeakerDiarizer.Result {
-        if (expected == 1) return SpeakerDiarizer.Result(List(segments.size) { 1 }, emptyMap())
+        if (embedder == null && expected == 1) return SpeakerDiarizer.Result(List(segments.size) { 1 }, emptyMap())
         val shorts = PitchDiarizer.toShorts(pcm)
         if (embedder != null) {
             try {
@@ -1489,15 +1519,20 @@ class StreamViewModel(
         speakerEmbedder
     }
 
-    fun setSpeakerEmbeddings(enabled: Boolean) {
-        settings.speakerEmbeddings = enabled
-        if (!enabled) viewModelScope.launch(Dispatchers.IO) {
+    /** Libère la session ONNX (≈ 30 Mo) une fois la transcription ou le lot terminés ; rechargée au besoin. */
+    private fun releaseSpeakerEmbedder() {
+        viewModelScope.launch(Dispatchers.IO) {
             speakerEmbedderLock.withLock {
                 speakerEmbedder?.close()
                 speakerEmbedder = null
                 speakerEmbedderTried = false
             }
         }
+    }
+
+    fun setSpeakerEmbeddings(enabled: Boolean) {
+        settings.speakerEmbeddings = enabled
+        if (!enabled) releaseSpeakerEmbedder()
     }
 
     fun setExpectedSpeakers(count: Int) {
@@ -1611,6 +1646,7 @@ class StreamViewModel(
                 _importProgress.value = null
                 _isImporting.value = false
                 _batch.value = null
+                releaseSpeakerEmbedder()
             }
             val cancelled = BatchState.cancelRequested
             BatchState.reset()
@@ -1943,7 +1979,10 @@ class StreamViewModel(
         playback.stop()
         models.release()
         claude.close()
-        speakerEmbedder?.close()
+        speakerEmbedder?.let { e ->
+            speakerEmbedder = null
+            Thread { e.close() }.start() // attend une inférence en cours sans bloquer le thread principal
+        }
         super.onCleared()
     }
 }

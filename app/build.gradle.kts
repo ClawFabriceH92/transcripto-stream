@@ -88,6 +88,11 @@ android {
         jvmTarget = "17"
     }
 
+    androidResources {
+        // Modèles ONNX (VAD, locuteur) stockés tels quels : pas de décompression de 28 Mo au chargement
+        noCompress.add("onnx")
+    }
+
     buildFeatures {
         compose = true
     }

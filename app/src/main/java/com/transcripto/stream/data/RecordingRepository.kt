@@ -97,10 +97,10 @@ class RecordingRepository(private val root: File) {
     /** Transcription seule (sans en-tête), libellés génériques ; vide si absente ou illisible. */
     fun transcriptBody(file: File): String = readTranscript(file)?.let { bodyOf(it) } ?: ""
 
-    /** Lecture du fichier .meta (I/O légère : quelques centaines d'octets). */
-    fun readMeta(file: File): RecordingMeta = try {
+    /** Lecture du fichier .meta ; [withVoices] = false ignore les empreintes vocales (liste, fiche dossier). */
+    fun readMeta(file: File, withVoices: Boolean = true): RecordingMeta = try {
         val f = RecordingNames.metaSibling(file)
-        if (f.exists()) MetaCodec.fromJson(TextVault.read(f)) else RecordingMeta()
+        if (f.exists()) MetaCodec.fromJson(TextVault.read(f), withVoices) else RecordingMeta()
     } catch (e: Exception) {
         RecordingMeta()
     }
@@ -397,7 +397,7 @@ class RecordingRepository(private val root: File) {
         // Texte scellé illisible (clé KeyStore perdue) : aperçu vide, la liste reste utilisable
         val content = readTranscript(f)
         val transcript = content?.let { bodyOf(it) }?.take(200) ?: ""
-        val meta = readMeta(f)
+        val meta = readMeta(f, withVoices = false)
         return RecordingItem(
             file = f,
             baseName = RecordingNames.baseName(f.name),

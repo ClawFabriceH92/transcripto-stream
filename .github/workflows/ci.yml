@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p app/src/main/assets/speaker
-          curl -fsSL --retry 3 -o app/src/main/assets/speaker/wespeaker_voxceleb_campplus.onnx \
+          curl -fsSL --retry 3 --retry-connrefused -o app/src/main/assets/speaker/wespeaker_voxceleb_campplus.onnx \
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx"
           echo "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef  app/src/main/assets/speaker/wespeaker_voxceleb_campplus.onnx" | sha256sum -c -
 

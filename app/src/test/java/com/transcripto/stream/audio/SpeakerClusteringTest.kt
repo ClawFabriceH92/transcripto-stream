@@ -50,4 +50,31 @@ class SpeakerClusteringTest {
         val centroid = SpeakerClustering.centroid(listOf(floatArrayOf(2f, 0f), floatArrayOf(0f, 2f)))!!
         assertEquals(0.7071f, centroid[0], 1e-3f)
     }
+
+    @Test
+    fun scalesToAnHourOfSegments() {
+        // 600 passages de trois voix : quelques dixièmes de seconde, pas des minutes (matrice + Lance–Williams)
+        val rnd = Random(11)
+        val centers = listOf(a, b, c).map { center -> FloatArray(512) { i -> if (i < 4) center[i] else 0f } }
+        val truth = List(600) { it % 3 }
+        val embs = truth.map { around(centers[it], rnd, noise = 0.05f) }
+        val t0 = System.nanoTime()
+        val labels = SpeakerClustering.cluster(embs)
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        assertTrue("$ms ms", ms < 5_000)
+        assertEquals(3, labels.toSet().size)
+        // Cohérent avec la vérité terrain à une permutation près
+        val mapping = HashMap<Int, Int>()
+        truth.forEachIndexed { i, tv -> assertEquals(labels[i], mapping.getOrPut(tv) { labels[i] }) }
+    }
+
+    @Test
+    fun cosineAndCentroidGuardMismatchedSizes() {
+        assertEquals(0f, SpeakerClustering.cosine(floatArrayOf(1f, 0f), floatArrayOf(1f, 0f, 0f)), 0f)
+        assertEquals(0f, SpeakerClustering.cosine(FloatArray(0), FloatArray(0)), 0f)
+        assertEquals(1f, SpeakerClustering.cosine(floatArrayOf(2f, 0f), floatArrayOf(1f, 0f)), 1e-6f)
+        val c = SpeakerClustering.centroid(listOf(floatArrayOf(1f, 0f), floatArrayOf(1f, 0f, 0f), floatArrayOf(0f, 1f)))!!
+        assertEquals(2, c.size)
+        assertEquals(c[0], c[1], 1e-6f)
+    }
 }

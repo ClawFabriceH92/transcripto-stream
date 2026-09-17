@@ -154,4 +154,6 @@
     <string name="m_une_reponse_est_deja_en_cours">Une réponse est déjà en cours</string>
     <string name="m_une_synthese_est_deja_en_cours">Une synthèse est déjà en cours</string>
     <string name="m_voix_reconnues">Voix reconnues (à confirmer sur la fiche) : %1$s</string>
+    <string name="m_intervenant_vers_nom">Intervenant %1$d → %2$s</string>
+    <string name="m_noms_a_ressaisir">Intervenants renumérotés, noms à ressaisir sur la fiche : %1$s</string>
 </resources>

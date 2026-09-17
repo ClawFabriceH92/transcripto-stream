@@ -314,7 +314,7 @@ fun SettingsScreen(vm: StreamViewModel) {
             SettingLabel("Intervenants attendus", modifier = Modifier.padding(horizontal = 8.dp))
             Spacer(Modifier.height(6.dp))
             SegmentedChoice(
-                options = listOf("0" to "Auto", "1" to "1", "2" to "2", "3" to "3", "4" to "4", "6" to "6"),
+                options = listOf("0" to "Auto", "1" to "1", "2" to "2", "3" to "3", "4" to "4", "5" to "5", "6" to "6"),
                 selected = expectedSpeakers.toString(),
                 onSelect = {
                     val n = it.toIntOrNull() ?: 0
@@ -324,7 +324,7 @@ fun SettingsScreen(vm: StreamViewModel) {
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
             Spacer(Modifier.height(4.dp))
-            HintText("Nombre d'intervenants imposé aux transcriptions différées (entretien à deux, comité…) ; Auto le détecte.", modifier = Modifier.padding(horizontal = 8.dp))
+            HintText("Nombre d'intervenants imposé aux transcriptions différées par empreintes vocales (entretien à deux, comité…) ; Auto le détecte. Sans effet sur l'attribution par hauteur de voix.", modifier = Modifier.padding(horizontal = 8.dp))
             Spacer(Modifier.height(8.dp))
             var reviewByDefault by remember { mutableStateOf(settings.reviewByDefault) }
             SettingSwitchRow(
