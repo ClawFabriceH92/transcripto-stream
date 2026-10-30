@@ -1,3 +1,17 @@
+# Transcripto Stream v0.15.1
+
+APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués).
+
+> ⚠️ **Installation manuelle une seule fois** : la 0.15.0 n'arrivait pas à installer sa mise à jour (mécanique DownloadManager). Installe cet APK par-dessus l'app existante depuis cette page, tes enregistrements sont conservés. À partir de cette version, la mise à jour se fait toute seule dans l'app.
+
+## Correctif v0.15.1 — la mise à jour s'installe vraiment
+
+- **Téléchargement par l'app, plus par DownloadManager** : même mécanique que Note de frais. GitHub sert l'APK depuis un CDN après une chaîne de redirections que DownloadManager ne suivait pas, d'où des fichiers tronqués que l'installeur refusait (« problème lors de l'analyse du package »). L'APK est maintenant récupéré en direct (OkHttp), avec vérification de la taille et de l'en-tête « PK » avant de proposer l'installation.
+- **Progression et boutons explicites** : Réglages → Mises à jour affiche le pourcentage de téléchargement, puis « Installer » ; si aucune version n'est encore téléchargée, « Télécharger ».
+- **Rythme** : vérification au lancement puis toutes les heures (auparavant à 14 h fixes), téléchargement silencieux uniquement sur réseau non facturé.
+- **Permission « installer des apps inconnues »** : le bouton ouvre l'écran système, et le bandeau reste visible tant que l'autorisation manque (cause classique d'un téléchargement sans installation).
+- Tests : 4 tests de plus sur le rythme de vérification.
+
 # Transcripto Stream v0.15.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.

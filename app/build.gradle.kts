@@ -16,8 +16,8 @@ android {
         applicationId = "com.transcripto.stream"
         minSdk = 29
         targetSdk = 35
-        versionCode = 29
-        versionName = "0.15.0"
+        versionCode = 30
+        versionName = "0.15.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -140,6 +140,10 @@ dependencies {
     implementation("androidx.fragment:fragment-ktx:1.8.5")
     // Détection de parole neuronale Silero VAD (modèle ONNX embarqué dans assets/vad)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
+    // Téléchargement direct de l'APK de mise à jour (DownloadManager tronque les
+    // fichiers servis par le CDN de GitHub derrière ses redirections)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Synthèse IA (opt-in) : SDK Java officiel Anthropic — seule la transcription est envoyée
     implementation("com.anthropic:anthropic-java:2.62.0")
     testImplementation("junit:junit:4.13.2")

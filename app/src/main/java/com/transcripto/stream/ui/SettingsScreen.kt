@@ -785,7 +785,7 @@ fun SettingsScreen(vm: StreamViewModel) {
             var autoUpdate by remember { mutableStateOf(UpdateManager.autoUpdateEnabled(context)) }
             SettingSwitchRow(
                 title = "Mise à jour automatique",
-                subtitle = "Vérifie GitHub au lancement et chaque jour à 14 h, puis télécharge et installe la nouvelle version.",
+                subtitle = "Vérifie GitHub au lancement puis toutes les heures, télécharge l'APK sur Wi-Fi et propose « Installer » (même mécanique que Note de frais).",
                 checked = autoUpdate,
                 onChange = {
                     autoUpdate = it
@@ -814,6 +814,66 @@ fun SettingsScreen(vm: StreamViewModel) {
                 }
                 var checkingUpdate by remember { mutableStateOf(false) }
                 val updateScope = rememberCoroutineScope()
+                val updateState by UpdateManager.state.collectAsStateWithLifecycle()
+                when (val etat = updateState) {
+                    is UpdateManager.State.Downloading -> {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Téléchargement de la v${etat.version} : " +
+                                "${(etat.progress * 100).toInt()} %",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        LinearProgressIndicator(
+                            progress = { etat.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    is UpdateManager.State.ReadyToInstall -> {
+                        Spacer(Modifier.height(4.dp))
+                        InlineBanner(
+                            text = "v${etat.version} téléchargée : l'installation remplace l'app, " +
+                                "les enregistrements sont conservés.",
+                            icon = AppIcons.Download,
+                            container = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            action = {
+                                TextButton(
+                                    onClick = { UpdateManager.install(context) },
+                                    colors = ButtonDefaults.textButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    ),
+                                ) { Text("Installer") }
+                            },
+                        )
+                    }
+                    is UpdateManager.State.Available -> {
+                        Spacer(Modifier.height(4.dp))
+                        InlineBanner(
+                            text = "v${etat.version} disponible.",
+                            icon = AppIcons.Update,
+                            container = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            action = {
+                                TextButton(
+                                    onClick = { UpdateManager.download(context) },
+                                    colors = ButtonDefaults.textButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    ),
+                                ) { Text("Télécharger") }
+                            },
+                        )
+                    }
+                    is UpdateManager.State.Failed -> {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Mise à jour impossible : ${etat.detail ?: "erreur inconnue"}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    else -> Unit
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = {
