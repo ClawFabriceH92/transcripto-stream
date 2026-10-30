@@ -16,8 +16,8 @@ android {
         applicationId = "com.transcripto.stream"
         minSdk = 29
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.14.0"
+        versionCode = 29
+        versionName = "0.15.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")

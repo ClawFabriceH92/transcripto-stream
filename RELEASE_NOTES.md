@@ -1,3 +1,15 @@
+# Transcripto Stream v0.15.0
+
+APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.
+
+> Mise à jour directe depuis toute version ≥ v0.2.5 (même signature, données conservées).
+
+## Nouveautés v0.15.0 — synthèse par modèle du réseau, actions vers le tableur
+
+- **Synthèse rédigée par un modèle local (Ollama)** : nouveau choix « Modèle du réseau » à côté de « Extraction locale » et « Claude (cloud) » (Réglages → Synthèse). Le verbatim part sur le serveur Ollama du réseau domestique, **jamais sur Internet** ; l'adresse et le modèle se règlent sur place, avec un bouton « Enregistrer et tester » qui indique le nombre de modèles installés ou l'erreur exacte. La consigne envoyée est exactement celle de Claude : seuls le fournisseur et le lieu de calcul changent. Serveur injoignable : retour à la synthèse locale, avec le message d'erreur affiché.
+- **Export CSV des actions suivies** : bouton « Actions CSV » sur la fiche dossier. Une ligne par action avec dossier, enregistrement d'origine, date, action, responsable, échéance et statut (ouverte / faite) ; séparateur « ; » et BOM UTF-8, donc lecture directe dans Excel et LibreOffice. Pratique pour tenir un tableau de suivi de mission.
+- Tests : 8 tests supplémentaires sur la requête et la lecture des réponses Ollama (transport factice, serveur injoignable, verbatim vide, actions ouvertes rappelées) et 7 sur le CSV (échappement, BOM, entêtes, dates).
+
 # Transcripto Stream v0.14.0
 
 APK **complet et signé** (binaires whisper.cpp + modèle Base embarqués) : l'app fonctionne dès l'installation — Google immédiatement, Whisper local dès la fin du chargement du modèle.

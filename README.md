@@ -4,6 +4,8 @@ Application Android de transcription vocale **en temps réel**, pensée pour les
 
 ## Fonctionnement
 
+- **Synthèse par modèle local (v0.15.0)** : en plus de l'extraction locale et de Claude, la synthèse peut être rédigée par un modèle servi par **Ollama** sur le réseau domestique (adresse et modèle réglables, défaut `http://192.168.0.162:11434` / `ministral-3:8b`). Le verbatim ne sort pas du LAN ; consigne identique à celle de Claude ; repli local si le serveur ne répond pas. **Export CSV des actions suivies** d'un dossier (statut, responsable, échéance, enregistrement d'origine, `;` + BOM UTF-8) depuis la fiche dossier.
+
 - **Deux moteurs de transcription temps réel** :
   - **Google (qualité)** — SpeechRecognizer système, la même qualité que Gboard/assistant Android. Audio envoyé au service du fournisseur (cloud) sauf pack hors-ligne téléchargé. La transcription est **sauvegardée en entrée « texte seul »** (pas l'audio).
   - **Whisper (100% local)** — whisper.cpp embarqué, l'audio ne quitte jamais l'appareil. **Google est disponible immédiatement**, même si le modèle Whisper charge encore ou est en erreur.

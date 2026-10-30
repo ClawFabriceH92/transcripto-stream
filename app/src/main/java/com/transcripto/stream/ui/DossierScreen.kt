@@ -85,6 +85,10 @@ fun DossierScreen(vm: StreamViewModel) {
     val pdfLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(ExportFormat.PDF.mime)) { uri ->
         if (uri != null) vm.exportDossier(current, uri, ExportFormat.PDF, includeTranscripts)
     }
+    // Actions suivies vers un tableur (suivi de mission)
+    val csvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) vm.exportActionsCsv(current, uri)
+    }
     var menu by remember { mutableStateOf(false) }
     var renameDialog by remember { mutableStateOf(false) }
     var mergeDialog by remember { mutableStateOf(false) }
@@ -132,6 +136,10 @@ fun DossierScreen(vm: StreamViewModel) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilledTonalButton(onClick = { docxLauncher.launch("Dossier $current.docx") }, enabled = items.isNotEmpty()) { Text(stringResource(R.string.s_exporter_word)) }
                     FilledTonalButton(onClick = { pdfLauncher.launch("Dossier $current.pdf") }, enabled = items.isNotEmpty()) { Text(stringResource(R.string.s_exporter_pdf)) }
+                    FilledTonalButton(
+                        onClick = { csvLauncher.launch("Dossier $current actions.csv") },
+                        enabled = items.isNotEmpty(),
+                    ) { Text("Actions CSV") }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = includeTranscripts, onCheckedChange = { includeTranscripts = it })

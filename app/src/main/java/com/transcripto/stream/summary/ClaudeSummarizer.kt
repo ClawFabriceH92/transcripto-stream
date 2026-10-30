@@ -64,8 +64,23 @@ object ClaudeSummarizer {
      * qui sont traitées ou reconduites dans « Actions à mener ».
      */
     fun request(input: SummaryInput, template: SummaryTemplate, openActions: List<String> = emptyList()): ClaudeRequest {
+        // Effort « medium » : synthèse = tâche de rédaction, pas de raisonnement long
+        return ClaudeRequest.single(
+            systemPrompt(template),
+            userMessage(input, openActions),
+            MAX_TOKENS,
+            ClaudeRequest.Effort.MEDIUM,
+        )
+    }
+
+    /**
+     * Message utilisateur envoyé au modèle (métadonnées, actions ouvertes du
+     * dossier, transcription). Partagé avec la synthèse par modèle local afin
+     * qu'un changement de fournisseur ne change pas la consigne.
+     */
+    fun userMessage(input: SummaryInput, openActions: List<String> = emptyList()): String {
         val (body, truncated) = ClaudeSupport.truncate(input.transcript.trim())
-        val user = buildString {
+        return buildString {
             append("Titre : ").append(input.title.ifBlank { "Enregistrement" }).append('\n')
             append("Date : ").append(input.dateLabel).append('\n')
             if (input.durationMs > 0) {
@@ -79,8 +94,6 @@ object ClaudeSummarizer {
             }
             append("\nTranscription :\n<<<\n").append(body).append("\n>>>")
         }
-        // Effort « medium » : synthèse = tâche de rédaction, pas de raisonnement long
-        return ClaudeRequest.single(systemPrompt(template), user, MAX_TOKENS, ClaudeRequest.Effort.MEDIUM)
     }
 
     fun summarize(

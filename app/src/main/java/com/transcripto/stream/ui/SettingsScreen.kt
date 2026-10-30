@@ -379,6 +379,78 @@ fun SettingsScreen(vm: StreamViewModel) {
                 },
                 icon = AppIcons.Sparkle,
             )
+            // Fournisseur de la synthèse rédigée : extraction locale, modèle du
+            // réseau domestique (Ollama) ou Claude (cloud).
+            var provider by remember { mutableStateOf(settings.aiProvider) }
+            var ollamaUrl by remember { mutableStateOf(settings.ollamaUrl) }
+            var ollamaModel by remember { mutableStateOf(settings.ollamaModel) }
+            val etatOllama by vm.etatOllama.collectAsStateWithLifecycle()
+            Text(
+                "Synthèse rédigée par",
+                fontWeight = FontWeight.Medium,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    "local" to "Extraction locale",
+                    "ollama" to "Modèle du réseau",
+                    "claude" to "Claude (cloud)",
+                ).forEach { (code, libelle) ->
+                    FilterChip(
+                        selected = provider == code,
+                        onClick = {
+                            provider = code
+                            vm.setAiProvider(code)
+                        },
+                        label = { Text(libelle, fontSize = 12.sp) },
+                    )
+                }
+            }
+            if (provider == "ollama") {
+                Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Text(
+                        "Le verbatim part sur le serveur Ollama du réseau domestique : " +
+                            "aucun texte n'est envoyé à un service extérieur.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = ollamaUrl,
+                        onValueChange = { ollamaUrl = it },
+                        label = { Text("Adresse du serveur", fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = ollamaModel,
+                        onValueChange = { ollamaModel = it },
+                        label = { Text("Modèle", fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(onClick = {
+                            vm.setOllamaUrl(ollamaUrl)
+                            vm.setOllamaModel(ollamaModel)
+                            vm.testerOllama()
+                        }) { Text("Enregistrer et tester", fontSize = 12.sp) }
+                    }
+                    etatOllama?.let { etat ->
+                        Text(
+                            etat,
+                            fontSize = 11.sp,
+                            color = if (etat.startsWith("Injoignable")) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+
             var aiEnabled by remember { mutableStateOf(settings.aiSummaryEnabled) }
             SettingSwitchRow(
                 title = "Synthèse rédigée par l'IA (Claude)",

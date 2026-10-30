@@ -14,6 +14,13 @@ import java.util.Locale
 interface AiSettings {
     val aiSummaryEnabled: Boolean
     val aiModel: String
+
+    /** Fournisseur de la synthèse rédigée : « local » (extraction), « ollama » ou « claude ». */
+    val aiProvider: String get() = "local"
+
+    /** Serveur Ollama du réseau domestique (synthèse locale par modèle). */
+    val ollamaUrl: String get() = OllamaSummarizer.URL_DEFAUT
+    val ollamaModel: String get() = OllamaSummarizer.MODELE_DEFAUT
     /** Une clé API est enregistrée (même si elle s'avère indéchiffrable). */
     val hasApiKey: Boolean
 }
@@ -32,6 +39,8 @@ class AiAssistant(
     private val apiKey: () -> String?,
     /** Transport des requêtes Claude (SDK en production, factice en test). */
     private val transport: ClaudeTransport,
+    /** Transport des requêtes vers le serveur Ollama (factice en test). */
+    private val ollamaTransport: OllamaTransport = HttpOllamaTransport(),
 ) {
 
     companion object {
@@ -72,28 +81,42 @@ class AiAssistant(
             dateLabel = DATE_FORMAT.format(Date(file.lastModified())),
         )
         var (key, failure) = keyForAi()
-        val markdown = if (key != null) {
-            // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
-            val named = input.copy(transcript = SpeakerNames.apply(text, names))
-            // Actions encore ouvertes du dossier : le modèle signale celles traitées ou reconduites
-            val open = repo.openActionsInDossier(meta.dossier, except = file).map { d ->
-                val a = d.action
-                buildString {
-                    append(a.text)
-                    if (a.owner.isNotBlank()) append(" (").append(a.owner).append(')')
-                    if (a.dueLabel.isNotBlank()) append(", échéance ").append(a.dueLabel)
-                    append(" — ").append(d.baseName)
+        // Actions encore ouvertes du dossier : le modèle signale celles traitées ou reconduites
+        val open = openActionLines(meta.dossier, file)
+        val provider = settings.aiProvider.lowercase(Locale.ROOT)
+        val markdown = when {
+            // Synthèse par le modèle local du réseau domestique : rien ne sort du LAN
+            provider == "ollama" -> {
+                val named = input.copy(transcript = SpeakerNames.apply(text, names))
+                when (
+                    val r = OllamaSummarizer.summarize(
+                        settings.ollamaUrl,
+                        settings.ollamaModel,
+                        named,
+                        template,
+                        ollamaTransport,
+                        open,
+                    )
+                ) {
+                    is AiSummaryResult.Ok -> wrapLocalAiSummary(input, r)
+                    is AiSummaryResult.Failed -> {
+                        failure = r.message
+                        SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
+                    }
                 }
             }
-            when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template, transport, open)) {
-                is AiSummaryResult.Ok -> wrapAiSummary(input, r)
-                is AiSummaryResult.Failed -> {
-                    failure = r.message
-                    SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
+            key != null -> {
+                // L'IA reçoit les vrais noms (meilleure rédaction) ; le local les applique en sortie
+                val named = input.copy(transcript = SpeakerNames.apply(text, names))
+                when (val r = ClaudeSummarizer.summarize(key, settings.aiModel, named, template, transport, open)) {
+                    is AiSummaryResult.Ok -> wrapAiSummary(input, r)
+                    is AiSummaryResult.Failed -> {
+                        failure = r.message
+                        SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
+                    }
                 }
             }
-        } else {
-            SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
+            else -> SpeakerNames.apply(LocalSummarizer.summarize(input, template), names)
         }
         return try {
             repo.writeSummary(file, markdown)
@@ -118,12 +141,36 @@ class AiAssistant(
             }
             when {
                 failure != null -> "$failure — synthèse locale générée à la place"
+                provider == "ollama" -> "Synthèse par le modèle local prête"
                 key != null -> "Synthèse IA prête"
                 else -> "Synthèse prête"
             }
         } catch (e: Exception) {
             "Écriture de la synthèse impossible : ${e.message}"
         }
+    }
+
+    /** Lignes « action (responsable, échéance) — enregistrement » pour le modèle. */
+    private fun openActionLines(dossier: String, file: File): List<String> =
+        repo.openActionsInDossier(dossier, except = file).map { d ->
+            val a = d.action
+            buildString {
+                append(a.text)
+                if (a.owner.isNotBlank()) append(" (").append(a.owner).append(')')
+                if (a.dueLabel.isNotBlank()) append(", échéance ").append(a.dueLabel)
+                append(" — ").append(d.baseName)
+            }
+        }
+
+    /** En-tête d'une synthèse rédigée par le modèle local (Ollama). */
+    private fun wrapLocalAiSummary(input: SummaryInput, r: AiSummaryResult.Ok): String = buildString {
+        append("# Synthèse — ").append(input.title).append('\n')
+        append('_').append(input.dateLabel)
+        if (input.durationMs > 0) append(" · ").append(TranscriptExporter.formatHms(input.durationMs))
+        append(" · modèle local (").append(r.model).append(")_\n\n")
+        append(r.markdown.trim()).append("\n\n")
+        append("_Synthèse rédigée sur le réseau domestique (").append(r.model)
+            .append(") à partir de la transcription — rien n'est sorti du réseau, à relire avant diffusion._\n")
     }
 
     private fun wrapAiSummary(input: SummaryInput, r: AiSummaryResult.Ok): String = buildString {

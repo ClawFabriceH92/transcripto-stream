@@ -440,6 +440,28 @@ class RecordingRepository(private val root: File) {
     }
 
     /**
+     * Toutes les actions d'un [dossier], faites et ouvertes, du plus récent au plus
+     * ancien — base de l'export CSV des actions.
+     */
+    fun actionsInDossier(dossier: String): List<DossierAction> {
+        val d = dossier.trim()
+        if (d.isEmpty()) return emptyList()
+        val files = (dir.listFiles() ?: return emptyList())
+            .filter { it.isFile && (RecordingNames.isAudio(it.name) || RecordingNames.isTextOnly(it.name)) }
+            .sortedByDescending { it.lastModified() }
+        val out = ArrayList<DossierAction>()
+        val seenBases = HashSet<String>()
+        for (f in files) {
+            val base = RecordingNames.baseName(f.name)
+            if (!seenBases.add(base)) continue
+            val meta = readMeta(f)
+            if (!meta.dossier.equals(d, ignoreCase = true)) continue
+            meta.actions.forEach { out += DossierAction(f, base, it) }
+        }
+        return out
+    }
+
+    /**
      * Mémoire des voix : nom d'intervenant → empreinte moyenne (normalisée), à partir des
      * intervenants à la fois nommés et dotés d'une empreinte dans les autres enregistrements.
      * Les enregistrements du même [dossier] sont lus en premier ; les noms se comparent sans

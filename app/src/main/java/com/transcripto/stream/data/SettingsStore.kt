@@ -121,6 +121,27 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("ai_summary_enabled", false)
         set(v) = prefs.edit().putBoolean("ai_summary_enabled", v).apply()
 
+    /**
+     * Fournisseur de la synthèse rédigée : « local » (extraction de phrases),
+     * « ollama » (modèle du réseau domestique) ou « claude » (API Anthropic).
+     */
+    var aiProvider: String
+        get() = prefs.getString("ai_provider", "local") ?: "local"
+        set(v) = prefs.edit().putString("ai_provider", v).apply()
+
+    /** Serveur Ollama du réseau domestique, pour la synthèse par modèle local. */
+    var ollamaUrl: String
+        get() = prefs.getString("ollama_url", com.transcripto.stream.summary.OllamaSummarizer.URL_DEFAUT)
+            ?: com.transcripto.stream.summary.OllamaSummarizer.URL_DEFAUT
+        set(v) = prefs.edit().putString("ollama_url", v).apply()
+
+    var ollamaModel: String
+        get() = prefs.getString(
+            "ollama_model",
+            com.transcripto.stream.summary.OllamaSummarizer.MODELE_DEFAUT,
+        ) ?: com.transcripto.stream.summary.OllamaSummarizer.MODELE_DEFAUT
+        set(v) = prefs.edit().putString("ollama_model", v).apply()
+
     /** Identifiant du modèle Claude utilisé pour la synthèse IA. */
     var aiModel: String
         get() = prefs.getString("ai_model", DEFAULT_AI_MODEL) ?: DEFAULT_AI_MODEL

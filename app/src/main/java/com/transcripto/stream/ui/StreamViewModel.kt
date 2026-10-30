@@ -56,6 +56,8 @@ import com.transcripto.stream.summary.ActionExtractor
 import com.transcripto.stream.summary.AiAnswer
 import com.transcripto.stream.summary.AiAssistant
 import com.transcripto.stream.summary.AiSettings
+import com.transcripto.stream.summary.OllamaProbe
+import com.transcripto.stream.summary.OllamaSummarizer
 import com.transcripto.stream.summary.QaTurn
 import com.transcripto.stream.summary.SdkClaudeTransport
 import com.transcripto.stream.stt.WhisperStreamEngine
@@ -134,6 +136,9 @@ class StreamViewModel(
         object : AiSettings {
             override val aiSummaryEnabled: Boolean get() = settings.aiSummaryEnabled
             override val aiModel: String get() = settings.aiModel
+            override val aiProvider: String get() = settings.aiProvider
+            override val ollamaUrl: String get() = settings.ollamaUrl
+            override val ollamaModel: String get() = settings.ollamaModel
             override val hasApiKey: Boolean get() = settings.aiApiKeyEncrypted.isNotBlank()
         },
         apiKey = { CryptoManager.decryptString(settings.aiApiKeyEncrypted)?.takeIf { it.isNotBlank() } },
@@ -544,6 +549,42 @@ class StreamViewModel(
                 }
             }
             _uiMessage.value = if (ok) "${format.label} du dossier « $name » exporté" else "Export ${format.label} impossible"
+        }
+    }
+
+    /** Exporte les actions suivies d'un dossier en CSV (tableur). */
+    fun exportActionsCsv(dossier: String, destUri: Uri) {
+        viewModelScope.launch {
+            val nombre = withContext(Dispatchers.IO) {
+                try {
+                    val lignes = repo.actionsInDossier(dossier).map { d ->
+                        com.transcripto.stream.export.ActionsCsv.LigneAction(
+                            dossier = dossier,
+                            enregistrement = d.baseName,
+                            dateEnregistrement = com.transcripto.stream.export.ActionsCsv
+                                .dateLisible(d.file.lastModified()),
+                            action = d.action.text,
+                            responsable = d.action.owner,
+                            echeance = d.action.dueLabel,
+                            statut = if (d.action.done) "faite" else "ouverte",
+                        )
+                    }
+                    val flux = appContext.contentResolver.openOutputStream(destUri, "wt")
+                        ?: throw IllegalStateException("flux indisponible")
+                    flux.use {
+                        it.write(com.transcripto.stream.export.ActionsCsv.octets(lignes))
+                    }
+                    lignes.size
+                } catch (e: Exception) {
+                    Log.e(TAG, "exportActionsCsv: ${e.message}")
+                    -1
+                }
+            }
+            _uiMessage.value = if (nombre >= 0) {
+                "$nombre action(s) exportée(s) en CSV"
+            } else {
+                "Export CSV impossible"
+            }
         }
     }
 
@@ -1139,6 +1180,44 @@ class StreamViewModel(
 
     fun setAiModel(id: String) {
         settings.aiModel = id
+    }
+
+    // ---- Synthèse par modèle local (Ollama du réseau domestique) ----
+    private val _etatOllama = MutableStateFlow<String?>(null)
+    val etatOllama: StateFlow<String?> = _etatOllama.asStateFlow()
+
+    /** Fournisseur de la synthèse rédigée : « local », « ollama » ou « claude ». */
+    fun setAiProvider(provider: String) {
+        settings.aiProvider = provider
+        if (provider == "ollama") testerOllama()
+    }
+
+    fun setOllamaUrl(valeur: String) {
+        settings.ollamaUrl = valeur.trim().ifBlank { OllamaSummarizer.URL_DEFAUT }
+    }
+
+    fun setOllamaModel(valeur: String) {
+        settings.ollamaModel = valeur.trim().ifBlank { OllamaSummarizer.MODELE_DEFAUT }
+    }
+
+    /** Teste le serveur local sans bloquer l'interface. */
+    fun testerOllama() {
+        _etatOllama.value = "Test en cours…"
+        viewModelScope.launch {
+            val resultat = withContext(Dispatchers.IO) {
+                runCatching { OllamaProbe.modeles(settings.ollamaUrl) }
+            }
+            _etatOllama.value = resultat.fold(
+                onSuccess = { modeles ->
+                    if (modeles.isEmpty()) {
+                        "Serveur joignable, aucun modèle installé"
+                    } else {
+                        "Connecté · ${modeles.size} modèle(s) · ${settings.ollamaModel}"
+                    }
+                },
+                onFailure = { erreur -> "Injoignable : ${erreur.message ?: "erreur réseau"}" },
+            )
+        }
     }
 
     fun hasAiApiKey(): Boolean = settings.aiApiKeyEncrypted.isNotBlank()
