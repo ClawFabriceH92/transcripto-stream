@@ -18,7 +18,8 @@ object OllamaSummarizer {
     const val MODELE_DEFAUT = "ministral-3:8b"
 
     private const val MAX_TOKENS = 900
-    private const val DELAI_LECTURE_MS = 240_000
+    /** Délai de lecture d'une génération (une synthèse locale peut être longue). */
+    const val DELAI_LECTURE_MS = 240_000
 
     /** Adresse normalisée (sans barre oblique finale). */
     fun normaliser(adresse: String): String =
@@ -146,7 +147,7 @@ class HttpOllamaTransport : OllamaTransport {
         try {
             connexion.requestMethod = "POST"
             connexion.connectTimeout = 8_000
-            connexion.readTimeout = DELAI_LECTURE_MS
+            connexion.readTimeout = OllamaSummarizer.DELAI_LECTURE_MS
             connexion.doOutput = true
             connexion.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             connexion.outputStream.use { flux ->
